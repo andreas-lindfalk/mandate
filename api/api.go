@@ -141,7 +141,7 @@ func (h *authHandler) Me(ctx context.Context, _ *mandatev1.MeRequest) (*mandatev
 	if !ok {
 		return nil, fault.ToConnect(fault.New(fault.Unauthenticated, "missing session"))
 	}
-	memberships, err := h.auth.Memberships(ctx, session.Email)
+	memberships, err := h.auth.Memberships(ctx, session)
 	if err != nil {
 		return nil, fault.ToConnect(err)
 	}

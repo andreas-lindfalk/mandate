@@ -409,3 +409,30 @@ func TestSetupAsAManagedAdmin(t *testing.T) {
 	require.NoError(t, err, "the password stays what it was")
 	app.Close()
 }
+
+// The server's front door limits failed token checks per client address.
+func TestTheFrontDoorLimitsFailures(t *testing.T) {
+	cfg, err := loadConfig()
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mandate.v1.AuthService/Me", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer good" {
+			http.Error(w, "unauthenticated", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte("{}"))
+	})
+	door := frontDoor(mux, cfg)
+	ask := func(token string) int {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8585/mandate.v1.AuthService/Me", nil)
+		req.RemoteAddr = "192.0.2.10:4000"
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		door.ServeHTTP(w, req)
+		return w.Code
+	}
+	for range 20 {
+		require.Equal(t, http.StatusUnauthorized, ask("bad"))
+	}
+	require.Equal(t, http.StatusTooManyRequests, ask("good"))
+}

@@ -72,7 +72,7 @@ This is the critical path, so it starts at once.
    - **What people see.** Waiting dry-run proposals show in the inbox, marked as such. A person may dismiss one, never approve it, and they send no chat notice.
    - **In the record.** Dry runs stay in the log, tagged, so the chain and its export stay whole. They are left out of the decisions export and the figures on how often people agree.
    - **What it gives a team.** It sees what its mandates would allow, and what people would be asked, before it takes the key away. Principle 1 in the scope names this as its one exception.
-7. **Sign-in that holds up.**
+7. **Sign-in that holds up.** Built ([design-sign-in.md](design-sign-in.md)).
    - People are identified by their provider's issuer and subject id together, not only by email. The binding is per tenant, so a later sign-in per organisation needs no second migration.
    - A person not yet bound is bound at their first sign-in to that tenant, by verified email, once. Once bound, the same email under another issuer and subject is refused in that tenant.
    - Failed sign-ins and bad agent tokens are limited.

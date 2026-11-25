@@ -42,6 +42,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 	"github.com/andreas-lindfalk/pgmandate/modules/tenants"
 	"github.com/andreas-lindfalk/pgmandate/pkg/actor"
+	"github.com/andreas-lindfalk/pgmandate/pkg/authlimit"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/events"
 	"github.com/andreas-lindfalk/pgmandate/pkg/jobs"
@@ -141,7 +142,10 @@ type config struct {
 	createAppRole bool
 	// revokePublicCreate revokes CREATE on the schema public from PUBLIC.
 	revokePublicCreate bool
-	httpAddr           string
+	// clientIpHeader names the header a trusted reverse proxy writes the
+	// client's address in; empty uses the connection's.
+	clientIpHeader string
+	httpAddr       string
 	// appUrl, when set, is how the server connects as the app role; the
 	// owner connection is then not needed to serve.
 	appUrl     string
@@ -167,6 +171,7 @@ func loadConfig() (config, error) {
 		receiverAddr: env("MANDATE_RECEIVER_ADDR", "127.0.0.1:8586"),
 
 		appPasswordGiven: os.Getenv("MANDATE_APP_PASSWORD") != "",
+		clientIpHeader:   os.Getenv("MANDATE_CLIENT_IP_HEADER"),
 	}
 	var err error
 	if cfg.createAppRole, err = strconv.ParseBool(env("MANDATE_CREATE_APP_ROLE", "true")); err != nil {
@@ -487,7 +492,7 @@ func serve(ctx context.Context, cfg config) error {
 		_, _ = w.Write([]byte("ok"))
 	})
 	server := &http.Server{
-		Addr: cfg.httpAddr, Handler: harden(mux, cfg),
+		Addr: cfg.httpAddr, Handler: frontDoor(mux, cfg),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 2 * time.Minute,
 	}
 	// Requests get a context that is cancelled a moment after shutdown
@@ -528,6 +533,14 @@ const maxMcpBytes = 1 << 20
 // on, refuses requests that did not ask for this machine by name: a page
 // elsewhere cannot then reach the dev login by rebinding its own name to
 // 127.0.0.1.
+// frontDoor is what every request passes before the mux: the hardening,
+// and the limit on failed sign-ins and token checks per client address, in
+// this instance's memory.
+func frontDoor(mux http.Handler, cfg config) http.Handler {
+	limiter := authlimit.New(authlimit.Options{Header: cfg.clientIpHeader, SessionCookie: auth.CookieName, FlowCookie: auth.FlowCookieName})
+	return harden(limiter.Handler(mux), cfg)
+}
+
 func harden(next http.Handler, cfg config) http.Handler {
 	secure := strings.HasPrefix(cfg.publicUrl, "https://")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

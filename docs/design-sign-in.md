@@ -1,6 +1,6 @@
 # Design note: sign-in that holds up
 
-Status: proposed, 2026-11-25. Roadmap item 7. When the code differs from this note, one of them is wrong.
+Status: built, 2026-11-25. Roadmap item 7. When the code differs from this note, one of them is wrong.
 
 ## The problem
 
@@ -47,7 +47,7 @@ A person is a row per tenant, found by email. On every call the server takes the
 
 - `persons`: `issuer text`, `subject text`, a check that both are empty or both set, a unique index on `(tenant_id, issuer, subject)` for persons who are not removed, and the guard rule above.
 - `sessions`: `issuer text`, `subject text`, both empty for dev login.
-- `tenants_for_email` becomes `tenants_for_sign_in(email, issuer, subject)`. A new function binds the person, as the system, in the tenant's scope, with its event in the same transaction.
+- `tenants_for_email` becomes `tenants_for_sign_in(email, issuer, subject)`, which says for each person whether they are bound to this identity, unbound, or bound to another. The auth service binds the person, as the system, in the tenant's scope, with its event in the same transaction.
 - The first migration is edited in place, as before 0.1.0.
 
 ## Tests

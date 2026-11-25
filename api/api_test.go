@@ -14,11 +14,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/suite"
 	"google.golang.org/protobuf/proto"
 
@@ -29,6 +31,8 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/modules/auth"
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
+	"github.com/andreas-lindfalk/pgmandate/pkg/db"
+	"github.com/andreas-lindfalk/pgmandate/pkg/events"
 )
 
 type ApiSuite struct {
@@ -493,6 +497,7 @@ type fakeProvider struct {
 	server      *httptest.Server
 	key         *rsa.PrivateKey
 	email       string
+	subject     string
 	audience    string
 	verified    bool
 	sawVerifier bool
@@ -504,7 +509,7 @@ func newFakeProvider(t *testing.T) *fakeProvider {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &fakeProvider{key: key, email: "oidc@acme.example", audience: "mandate-web", verified: true}
+	p := &fakeProvider{key: key, email: "oidc@acme.example", subject: "user-1", audience: "mandate-web", verified: true}
 	mux := http.NewServeMux()
 	p.server = httptest.NewServer(mux)
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
@@ -529,7 +534,7 @@ func newFakeProvider(t *testing.T) *fakeProvider {
 		p.sawVerifier = r.PostFormValue("code_verifier") != ""
 		w.Header().Set("Content-Type", "application/json")
 		now := time.Now().Unix()
-		claims := map[string]any{"iss": p.server.URL, "sub": "user-1", "aud": p.audience, "exp": now + 300, "iat": now, "email": p.email, "email_verified": p.verified, "name": "Olga"}
+		claims := map[string]any{"iss": p.server.URL, "sub": p.subject, "aud": p.audience, "exp": now + 300, "iat": now, "email": p.email, "email_verified": p.verified, "name": "Olga"}
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "token_type": "Bearer", "expires_in": 300, "id_token": p.jwt(claims)})
 	})
 	return p
@@ -542,4 +547,181 @@ func (p *fakeProvider) jwt(claims map[string]any) string {
 	digest := sha256.Sum256([]byte(signing))
 	signed, _ := rsa.SignPKCS1v15(rand.Reader, p.key, crypto.SHA256, digest[:])
 	return signing + "." + base64.RawURLEncoding.EncodeToString(signed)
+}
+
+// signIn goes through the provider as the identity, and returns a browser
+// with the session's cookie.
+func (s *ApiSuite) signIn(email, subject string) *http.Client {
+	s.T().Helper()
+	s.provider.email, s.provider.subject = email, subject
+	defer func() { s.provider.email, s.provider.subject = "oidc@acme.example", "user-1" }()
+	jar, err := cookiejar.New(nil)
+	s.Require().NoError(err)
+	browser := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	start, err := browser.Get(s.server.URL + auth.PathStart)
+	s.Require().NoError(err)
+	_ = start.Body.Close()
+	location, err := url.Parse(start.Header.Get("Location"))
+	s.Require().NoError(err)
+	done, err := browser.Get(s.server.URL + auth.PathCallback + "?code=good&state=" + url.QueryEscape(location.Query().Get("state")))
+	s.Require().NoError(err)
+	_ = done.Body.Close()
+	s.Require().Equal(http.StatusFound, done.StatusCode)
+	return &http.Client{Jar: jar}
+}
+
+// A person is bound to the identity that first signs in as them, in each
+// tenant; another identity with the same email is refused there, and an
+// email that changes at the provider still reaches the person.
+func (s *ApiSuite) Test_APersonIsBoundToOneIdentity() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	other := s.W.NewTenant(s.T(), "Other")
+	ada, err := s.W.Kernel.Tenants.AddPerson(t.Owner, "ada@acme.example", "Ada", "reviewer")
+	s.Require().NoError(err)
+	_, err = s.W.Kernel.Tenants.AddPerson(other.Owner, "ada@acme.example", "Ada", "reviewer")
+	s.Require().NoError(err)
+	in := func(tenant testfix.Tenant) context.Context { return as("", tenant.Id.String()) }
+
+	first := s.signIn("ada@acme.example", "ada-1")
+	people := mandatev1connect.NewPersonServiceClient(first, s.server.URL)
+	_, err = people.ListPersons(in(t), &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err, "the first call binds")
+	s.Require().Contains(s.eventTypes(t.Owner, ada.Id), "person.bound")
+	var issuer string
+	var subjectDigest string
+	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(),
+		`SELECT payload->>'issuer', payload->>'subjectSha256' FROM mandate.events WHERE type = 'person.bound' AND subject_id = $1`, ada.Id).Scan(&issuer, &subjectDigest))
+	s.Require().Equal(s.provider.server.URL, issuer)
+	s.Require().Len(subjectDigest, 64, "the subject is in the log as a digest")
+
+	// Another identity with Ada's email: no tenant where she is bound, and
+	// a call there is refused, with what to do.
+	impostor := s.signIn("ada@acme.example", "someone-else")
+	me, err := mandatev1connect.NewAuthServiceClient(impostor, s.server.URL).Me(context.Background(), &mandatev1.MeRequest{})
+	s.Require().NoError(err)
+	var names []string
+	for _, m := range me.GetTenants() {
+		names = append(names, m.GetTenantName())
+	}
+	s.Require().Equal([]string{"Other"}, names, "only where Ada is still unbound")
+	_, err = mandatev1connect.NewPersonServiceClient(impostor, s.server.URL).ListPersons(in(t), &mandatev1.ListPersonsRequest{})
+	s.code(err, connect.CodePermissionDenied)
+	s.Require().Contains(err.Error(), "belongs to another sign-in in this tenant")
+	// In the other tenant Ada was still unbound, so this identity binds
+	// there: a binding is per tenant.
+	_, err = mandatev1connect.NewPersonServiceClient(impostor, s.server.URL).ListPersons(in(other), &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err)
+	_, err = mandatev1connect.NewPersonServiceClient(first, s.server.URL).ListPersons(in(other), &mandatev1.ListPersonsRequest{})
+	s.code(err, connect.CodePermissionDenied)
+
+	// Ada's address changes at the provider: she is still Ada, by her
+	// identity.
+	renamed := s.signIn("ada.lovelace@acme.example", "ada-1")
+	listed, err := mandatev1connect.NewPersonServiceClient(renamed, s.server.URL).ListPersons(in(t), &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err)
+	s.Require().NotEmpty(listed.GetPersons())
+
+	// Dev login reaches people by email, bound or not, and binds nobody.
+	dev := as(s.login("ada@acme.example"), t.Id.String())
+	_, err = s.persons.ListPersons(dev, &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err)
+
+	// An owner removes Ada and adds her again: the new row is unbound, and
+	// the next identity binds it.
+	_, err = s.W.Kernel.Tenants.AddPerson(t.Owner, "grace@acme.example", "Grace", "owner")
+	s.Require().NoError(err)
+	s.Require().NoError(s.W.Kernel.Tenants.RemovePerson(t.Owner, ada.Id))
+	again, err := s.W.Kernel.Tenants.AddPerson(t.Owner, "ada@acme.example", "Ada", "reviewer")
+	s.Require().NoError(err)
+	_, err = mandatev1connect.NewPersonServiceClient(impostor, s.server.URL).ListPersons(in(t), &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err, "re-added, the person binds to whoever signs in first")
+	s.Require().Contains(s.eventTypes(t.Owner, again.Id), "person.bound")
+}
+
+// eventTypes lists the types of the events about a subject, in order.
+func (s *ApiSuite) eventTypes(ctx context.Context, subject uuid.UUID) []string {
+	s.T().Helper()
+	var types []string
+	s.Require().NoError(db.InTx(ctx, s.W.Pg.App, func(tx pgx.Tx) error {
+		list, err := events.List(ctx, tx, &subject, 0)
+		for _, e := range list {
+			types = append(types, e.Type)
+		}
+		return err
+	}))
+	return types
+}
+
+// Two first calls at once bind the person once.
+func (s *ApiSuite) Test_TwoFirstCallsBindOnce() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	bo, err := s.W.Kernel.Tenants.AddPerson(t.Owner, "bo@acme.example", "Bo", "reviewer")
+	s.Require().NoError(err)
+	browser := s.signIn("bo@acme.example", "bo-1")
+	people := mandatev1connect.NewPersonServiceClient(browser, s.server.URL)
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = people.ListPersons(as("", t.Id.String()), &mandatev1.ListPersonsRequest{})
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		s.Require().NoError(err)
+	}
+	bound := 0
+	for _, e := range s.eventTypes(t.Owner, bo.Id) {
+		if e == "person.bound" {
+			bound++
+		}
+	}
+	s.Require().Equal(1, bound)
+}
+
+// A session cookie that opens nothing any more is cleared, so a page left
+// open stops sending it; a bearer token is not a cookie to clear.
+func (s *ApiSuite) Test_AStaleSessionCookieIsCleared() {
+	ask := func(set func(*http.Request)) (int, []*http.Cookie) {
+		req, err := http.NewRequest(http.MethodPost, s.server.URL+"/mandate.v1.AuthService/Me", strings.NewReader(`{}`))
+		s.Require().NoError(err)
+		req.Header.Set("Content-Type", "application/json")
+		set(req)
+		resp, err := http.DefaultClient.Do(req)
+		s.Require().NoError(err)
+		defer resp.Body.Close() //nolint:errcheck
+		return resp.StatusCode, resp.Cookies()
+	}
+	stale := strings.Repeat("x", 43)
+	status, cookies := ask(func(r *http.Request) { r.AddCookie(&http.Cookie{Name: auth.CookieName, Value: stale}) })
+	s.Require().Equal(http.StatusUnauthorized, status)
+	var cleared bool
+	for _, c := range cookies {
+		if c.Name == auth.CookieName && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	s.Require().True(cleared, "the cookie is cleared")
+	status, cookies = ask(func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+stale) })
+	s.Require().Equal(http.StatusUnauthorized, status)
+	s.Require().Empty(cookies)
+}
+
+// Dev login reaches a person by email and binds nobody.
+func (s *ApiSuite) Test_DevLoginBindsNobody() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	cy, err := s.W.Kernel.Tenants.AddPerson(t.Owner, "cy@acme.example", "Cy", "reviewer")
+	s.Require().NoError(err)
+	_, err = s.persons.ListPersons(as(s.login("cy@acme.example"), t.Id.String()), &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err)
+	s.Require().NotContains(s.eventTypes(t.Owner, cy.Id), "person.bound")
+	var issuer *string
+	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(), `SELECT issuer FROM mandate.persons WHERE id = $1`, cy.Id).Scan(&issuer))
+	s.Require().Nil(issuer)
+	// A provider's sign-in then still binds Cy.
+	_, err = mandatev1connect.NewPersonServiceClient(s.signIn("cy@acme.example", "cy-1"), s.server.URL).ListPersons(as("", t.Id.String()), &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err)
+	s.Require().Contains(s.eventTypes(t.Owner, cy.Id), "person.bound")
 }

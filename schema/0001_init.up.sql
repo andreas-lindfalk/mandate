@@ -81,12 +81,24 @@ CREATE TABLE mandate.persons (
     -- A removed person keeps the row, so the chain still names them, and
     -- has no role from then on.
     removed_at  timestamptz,
-    removed_by  uuid
+    removed_by  uuid,
+    -- The identity the person is bound to: the sign-in provider's issuer
+    -- and subject, set together by the system at the person's first sign-in
+    -- to the tenant, and never changed. From then on that identity, and
+    -- no other with the same email, is this person here.
+    issuer      text CHECK (issuer IS NULL OR length(issuer) BETWEEN 1 AND 500),
+    subject     text CHECK (subject IS NULL OR length(subject) BETWEEN 1 AND 255),
+    CHECK ((issuer IS NULL) = (subject IS NULL))
 );
 
 -- One live person per email in a tenant; a removed one can be added again,
 -- as a new row.
 CREATE UNIQUE INDEX persons_live_email_idx ON mandate.persons (tenant_id, email) WHERE removed_at IS NULL;
+-- One person per identity in a tenant.
+CREATE UNIQUE INDEX persons_live_identity_idx ON mandate.persons (tenant_id, issuer, subject) WHERE removed_at IS NULL AND issuer IS NOT NULL;
+-- For a sign-in, across tenants: by email, and by identity.
+CREATE INDEX persons_sign_in_email_idx ON mandate.persons (email) WHERE removed_at IS NULL;
+CREATE INDEX persons_sign_in_identity_idx ON mandate.persons (issuer, subject) WHERE removed_at IS NULL AND issuer IS NOT NULL;
 
 ALTER TABLE mandate.persons ENABLE ROW LEVEL SECURITY;
 CREATE POLICY persons_scope ON mandate.persons
@@ -95,6 +107,7 @@ CREATE POLICY persons_scope ON mandate.persons
 
 GRANT SELECT, INSERT ON mandate.persons TO mandate_app;
 GRANT UPDATE (removed_at, removed_by) ON mandate.persons TO mandate_app;
+GRANT UPDATE (issuer, subject) ON mandate.persons TO mandate_app;
 
 -- The role of the person acting now, or NULL when the actor is not a person
 -- of the current tenant.
@@ -133,6 +146,19 @@ BEGIN
         NEW.created_at := now();
         NEW.removed_at := NULL;
         NEW.removed_by := NULL;
+        -- A person is bound at their own first sign-in, never on the way in.
+        NEW.issuer := NULL;
+        NEW.subject := NULL;
+        RETURN NEW;
+    END IF;
+    -- The binding: by the system, once, both columns together, nothing else
+    -- changed, and only for a person who is not removed.
+    IF NEW.issuer IS DISTINCT FROM OLD.issuer OR NEW.subject IS DISTINCT FROM OLD.subject THEN
+        IF mandate.current_actor_kind() IS DISTINCT FROM 'system' OR OLD.issuer IS NOT NULL
+            OR NEW.issuer IS NULL OR OLD.removed_at IS NOT NULL
+            OR (to_jsonb(NEW) - 'issuer' - 'subject') <> (to_jsonb(OLD) - 'issuer' - 'subject') THEN
+            RAISE EXCEPTION 'a person is bound to an identity once, by the system, and never changed' USING ERRCODE = 'insufficient_privilege';
+        END IF;
         RETURN NEW;
     END IF;
     IF mandate.current_role() IS DISTINCT FROM 'owner' THEN
@@ -1412,9 +1438,14 @@ CREATE TABLE mandate.sessions (
     token_hash    bytea PRIMARY KEY CHECK (length(token_hash) = 32),
     email         text NOT NULL CHECK (email = lower(email) AND email LIKE '%_@_%' AND length(email) <= 200),
     name          text NOT NULL DEFAULT '' CHECK (length(name) <= 200),
+    -- The provider's issuer and subject from the verified ID token; both
+    -- empty for dev login, which has no provider.
+    issuer        text CHECK (issuer IS NULL OR length(issuer) BETWEEN 1 AND 500),
+    subject       text CHECK (subject IS NULL OR length(subject) BETWEEN 1 AND 255),
     created_at    timestamptz NOT NULL DEFAULT now(),
     expires_at    timestamptz NOT NULL,
-    last_seen_at  timestamptz
+    last_seen_at  timestamptz,
+    CHECK ((issuer IS NULL) = (subject IS NULL))
 );
 
 CREATE INDEX sessions_email_idx ON mandate.sessions (email);
@@ -1422,20 +1453,37 @@ CREATE INDEX sessions_email_idx ON mandate.sessions (email);
 GRANT SELECT, INSERT, DELETE ON mandate.sessions TO mandate_app;
 GRANT UPDATE (last_seen_at) ON mandate.sessions TO mandate_app;
 
--- The tenants where an email is a person, for the tenant picker after
--- sign-in. Runs as the owner because no tenant is in scope yet; it reads
--- only rows for the exact email given.
-CREATE FUNCTION mandate.tenants_for_email(p_email text)
-RETURNS TABLE (tenant_id uuid, tenant_name text, person_id uuid, role text)
+-- The persons a sign-in may be, across tenants, for the tenant picker and
+-- for each call. Runs as the owner because no tenant is in scope yet; it
+-- reads only rows for the exact identity or email given. match is
+--   bound:   the person is bound to this issuer and subject;
+--   unbound: the person has this email and is bound to nobody yet, and is
+--            bound at the first call in that tenant;
+--   other:   the person has this email but is bound to another identity,
+--            and is not this sign-in.
+-- A sign-in without an issuer (dev login) matches by email alone, bound or
+-- not, as bound.
+CREATE FUNCTION mandate.tenants_for_sign_in(p_email text, p_issuer text, p_subject text)
+RETURNS TABLE (tenant_id uuid, tenant_name text, person_id uuid, role text, match text)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = mandate, pg_temp AS $$
-    SELECT t.id, t.name, p.id, p.role
-    FROM mandate.persons p
+    SELECT t.id, t.name, p.id, p.role,
+        CASE
+            WHEN p_issuer IS NULL THEN 'bound'
+            WHEN p.issuer = p_issuer AND p.subject = p_subject THEN 'bound'
+            WHEN p.issuer IS NULL THEN 'unbound'
+            ELSE 'other'
+        END
+    FROM (
+        -- Two lookups, each by its own index, rather than one OR.
+        SELECT * FROM mandate.persons WHERE removed_at IS NULL AND email = lower(p_email)
+        UNION
+        SELECT * FROM mandate.persons WHERE removed_at IS NULL AND p_issuer IS NOT NULL AND issuer = p_issuer AND subject = p_subject
+    ) p
     JOIN mandate.tenants t ON t.id = p.tenant_id
-    WHERE p.email = lower(p_email) AND p.removed_at IS NULL
     ORDER BY t.name
 $$;
-REVOKE ALL ON FUNCTION mandate.tenants_for_email(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mandate.tenants_for_email(text) TO mandate_app;
+REVOKE ALL ON FUNCTION mandate.tenants_for_sign_in(text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mandate.tenants_for_sign_in(text, text, text) TO mandate_app;
 
 ------------------------------------------------------------------------------
 -- The event chain

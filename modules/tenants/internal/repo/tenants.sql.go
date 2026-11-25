@@ -12,7 +12,7 @@ import (
 )
 
 const findPerson = `-- name: FindPerson :one
-SELECT id, tenant_id, email, name, role, created_at, removed_at, removed_by FROM mandate.persons WHERE email = $1 AND removed_at IS NULL
+SELECT id, tenant_id, email, name, role, created_at, removed_at, removed_by, issuer, subject FROM mandate.persons WHERE email = $1 AND removed_at IS NULL
 `
 
 func (q *Queries) FindPerson(ctx context.Context, email string) (MandatePerson, error) {
@@ -27,12 +27,14 @@ func (q *Queries) FindPerson(ctx context.Context, email string) (MandatePerson, 
 		&i.CreatedAt,
 		&i.RemovedAt,
 		&i.RemovedBy,
+		&i.Issuer,
+		&i.Subject,
 	)
 	return i, err
 }
 
 const getPerson = `-- name: GetPerson :one
-SELECT id, tenant_id, email, name, role, created_at, removed_at, removed_by FROM mandate.persons WHERE id = $1
+SELECT id, tenant_id, email, name, role, created_at, removed_at, removed_by, issuer, subject FROM mandate.persons WHERE id = $1
 `
 
 func (q *Queries) GetPerson(ctx context.Context, id uuid.UUID) (MandatePerson, error) {
@@ -47,6 +49,8 @@ func (q *Queries) GetPerson(ctx context.Context, id uuid.UUID) (MandatePerson, e
 		&i.CreatedAt,
 		&i.RemovedAt,
 		&i.RemovedBy,
+		&i.Issuer,
+		&i.Subject,
 	)
 	return i, err
 }
@@ -100,7 +104,7 @@ func (q *Queries) InsertTenant(ctx context.Context, arg InsertTenantParams) erro
 }
 
 const listPersons = `-- name: ListPersons :many
-SELECT id, tenant_id, email, name, role, created_at, removed_at, removed_by FROM mandate.persons ORDER BY created_at, id
+SELECT id, tenant_id, email, name, role, created_at, removed_at, removed_by, issuer, subject FROM mandate.persons ORDER BY created_at, id
 `
 
 func (q *Queries) ListPersons(ctx context.Context) ([]MandatePerson, error) {
@@ -121,6 +125,8 @@ func (q *Queries) ListPersons(ctx context.Context) ([]MandatePerson, error) {
 			&i.CreatedAt,
 			&i.RemovedAt,
 			&i.RemovedBy,
+			&i.Issuer,
+			&i.Subject,
 		); err != nil {
 			return nil, err
 		}

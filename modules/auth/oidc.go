@@ -21,7 +21,7 @@ const (
 	// the person back.
 	PathStart    = "/auth/oidc/start"
 	PathCallback = "/auth/oidc/callback"
-	flowCookie   = "mandate_oidc"
+	flowCookie   = FlowCookieName
 	flowTtl      = 10 * time.Minute
 )
 
@@ -157,7 +157,9 @@ func (c *oidcClient) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the provider has not verified the email address", http.StatusUnauthorized)
 		return
 	}
-	session, err := c.service.createSession(r.Context(), who.Email, who.Name)
+	// The identity is the issuer and subject the verified ID token names:
+	// what a person is bound to, where an email can change hands.
+	session, err := c.service.createSession(r.Context(), Session{Email: who.Email, Name: who.Name, Issuer: idToken.Issuer, Subject: idToken.Subject})
 	if err != nil {
 		slog.Error("oidc session", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

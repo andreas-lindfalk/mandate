@@ -2,6 +2,16 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
+## 2026-11-25: sign-in that holds up
+
+Built as [design-sign-in.md](design-sign-in.md) says; its three questions were answered as proposed.
+
+- **A person is bound to one identity per tenant,** at their first call in it: `persons.issuer` and `subject`, set by the system once, both together, never changed, unique per tenant, with `person.bound` in the log (the issuer, and the subject as a digest, as the log keeps no email). Sessions keep the identity from the verified ID token.
+- **Dev login stays by email** and binds nobody.
+- **No unbind:** an owner removes and re-adds the person.
+- **Failed attempts** (`pkg/authlimit`): an HTTP middleware in front of everything that checks credentials counts a 401 to a request that carried a token or the session cookie, and a failed sign-in callback that carried the sign-in's own cookie; twenty a minute per client address (an IPv6 address by its /64), then 429 for every credential check from it until the minute ends. A request with neither is no failure: a signed-out page does not lock anyone out, and neither does a page elsewhere that makes browsers fetch the callback. A host that embeds pgmandate puts the same middleware in front of its own mux.
+- **Found in review and closed:** gRPC and gRPC-Web are refused where credentials are checked, since they answer a refusal with HTTP 200 and would go uncounted; pgmandate's clients speak Connect. A session cookie that opens nothing is cleared in the answer, so a page left open after its session ends stops failing. The client address header is read from its last line, which a proxy that adds a line writes. The map of addresses is bounded and swept at most once a minute. The sign-in lookup uses an index for the email and one for the identity, rather than scanning every person.
+
 ## 2026-11-25: setup without a superuser
 
 - **Setup sets no attribute only a superuser may set.** `Bootstrap` creates `mandate_app` with `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`, which an admin with `CREATEROLE` may give. An existing role's password is set only when `MANDATE_APP_PASSWORD` is given, never to the local default; from Postgres 16 on only the role's maker may, and a refusal says so. It no longer corrects an existing role's attributes, which needed a superuser; it checks them and refuses.
