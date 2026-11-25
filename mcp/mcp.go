@@ -25,6 +25,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/modules/agentapi"
 	"github.com/andreas-lindfalk/pgmandate/modules/agents"
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
+	"github.com/andreas-lindfalk/pgmandate/pkg/version"
 )
 
 const (
@@ -50,7 +51,7 @@ pgmandate covers changes only. Read what you need with your other tools. Everyth
 // NewHandler serves MCP over streamable HTTP. Every request carries a
 // bearer token, which is checked against the database before any tool runs.
 func NewHandler(service *agentapi.Service) http.Handler {
-	server := sdk.NewServer(&sdk.Implementation{Name: "pgmandate", Title: "pgmandate", Version: "0.1"}, &sdk.ServerOptions{Instructions: instructions})
+	server := sdk.NewServer(&sdk.Implementation{Name: "pgmandate", Title: "pgmandate", Version: version.String()}, &sdk.ServerOptions{Instructions: instructions})
 	register(server, service)
 	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server },
 		&sdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true})

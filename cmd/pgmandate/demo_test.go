@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -24,6 +25,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/internal/testfix"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/testkit"
+	"github.com/andreas-lindfalk/pgmandate/pkg/version"
 )
 
 // demoTenant finds the tenant id the demo printed.
@@ -112,14 +114,14 @@ func TestDemoAndCommandLine(t *testing.T) {
 	t.Setenv("MANDATE_APP_PASSWORD", "app")
 	out.Reset()
 	require.NoError(t, run(ctx, "tenant", []string{"create", "-name", "Cli Co", "-owner", "cli@test.example", "-owner-name", "Cli"}, &out))
-	tenantId := regexp.MustCompile(`tenant ([0-9a-f-]{36})`).FindStringSubmatch(out.String())[1]
+	tenantId := submatch(t, `tenant ([0-9a-f-]{36})`, out.String())
 
 	out.Reset()
 	require.NoError(t, run(ctx, "agent", []string{"create", "-tenant", tenantId, "-as", "cli@test.example", "-name", "cli-bot"}, &out))
 	require.Contains(t, out.String(), "token mnd_")
 	require.Contains(t, out.String(), "in dry run: what it proposes is recorded and never carried out", "a new agent starts in dry run")
-	agentId := regexp.MustCompile(`agent ([0-9a-f-]{36})`).FindStringSubmatch(out.String())[1]
-	agentToken := regexp.MustCompile(`token (mnd_\S+)`).FindStringSubmatch(out.String())[1]
+	agentId := submatch(t, `agent ([0-9a-f-]{36})`, out.String())
+	agentToken := submatch(t, `token (mnd_\S+)`, out.String())
 
 	out.Reset()
 	require.NoError(t, run(ctx, "grant", []string{"-tenant", tenantId, "-as", "cli@test.example", "-agent", agentId, "-actions", "tickets.*", "-max-risk", "low", "-budget", "5", "-policy", "CLI-POLICY",
@@ -173,7 +175,7 @@ func TestDemoAndCommandLine(t *testing.T) {
 	out.Reset()
 	require.NoError(t, run(ctx, "propose", append(slices.Clone(proposeArgs[:len(proposeArgs)-2]), "-run", "dry-1"), &out))
 	require.Contains(t, out.String(), `"dryRun": true`)
-	dryId := regexp.MustCompile(`"proposalId": "([0-9a-f-]{36})"`).FindStringSubmatch(out.String())[1]
+	dryId := submatch(t, `"proposalId": "([0-9a-f-]{36})"`, out.String())
 	out.Reset()
 	require.Error(t, run(ctx, "approve", []string{"-tenant", tenantId, "-as", "cli@test.example", "-proposal", dryId}, &out), "a dry run is never approved")
 	require.NoError(t, run(ctx, "dismiss", []string{"-tenant", tenantId, "-as", "cli@test.example", "-proposal", dryId, "-note", "seen"}, &out))
@@ -188,6 +190,13 @@ func TestDemoAndCommandLine(t *testing.T) {
 	require.NoError(t, run(ctx, "propose", proposeArgs, &out))
 	require.Contains(t, out.String(), `"created": true`)
 	require.Contains(t, out.String(), `"dryRun": false`)
+	// The command line names itself and its release in the provenance the
+	// log keeps.
+	shellId := submatch(t, `"proposalId": "([0-9a-f-]{36})"`, out.String())
+	var client, clientVersion string
+	require.NoError(t, pg.Owner.QueryRow(ctx, `SELECT provenance->>'client', provenance->>'clientVersion' FROM mandate.proposals WHERE id = $1`, shellId).Scan(&client, &clientVersion))
+	require.Equal(t, "pgmandate-cli", client)
+	require.Equal(t, version.String(), clientVersion)
 	require.Contains(t, out.String(), "9007199254740993", "the payload goes as written")
 	require.Contains(t, out.String(), "run shell-1, key shell-1:1")
 	out.Reset()
@@ -215,6 +224,12 @@ func TestDemoAndCommandLine(t *testing.T) {
 	require.Equal(t, 1, queued, "the delivery job waits for a server")
 
 	require.Error(t, run(ctx, "nonsense", nil, &out))
+	for _, command := range []string{"version", "--version"} {
+		out.Reset()
+		require.NoError(t, run(ctx, command, nil, &out))
+		require.Equal(t, "pgmandate "+version.String()+"\n", out.String())
+	}
+	require.Error(t, run(ctx, "-v", nil, &out), "-v stays free for verbosity")
 	require.Error(t, run(ctx, "approve", []string{"-tenant", tenantId, "-as", "nobody@test.example", "-proposal", agentId}, &out))
 
 	// Notifications are set and turned off from the command line too.
@@ -297,4 +312,41 @@ func newTestKey(t *testing.T, fill byte) ed25519.PublicKey {
 		seed[i] = fill + byte(i)
 	}
 	return ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+}
+
+// submatch is the first group of pattern in text, or a test failure that
+// shows the text.
+func submatch(t *testing.T, pattern, text string) string {
+	t.Helper()
+	m := regexp.MustCompile(pattern).FindStringSubmatch(text)
+	require.Len(t, m, 2, "no %s in:\n%s", pattern, text)
+	return m[1]
+}
+
+// The version and the help answer even when the environment is wrong,
+// which is when an operator asks.
+func TestVersionNeedsNoConfiguration(t *testing.T) {
+	t.Setenv("MANDATE_SESSION_TTL", "not a duration")
+	var out bytes.Buffer
+	require.Error(t, run(context.Background(), "migrate", nil, &out), "the configuration is wrong")
+	require.NoError(t, run(context.Background(), "version", nil, &out))
+	require.Equal(t, "pgmandate "+version.String()+"\n", out.String())
+	out.Reset()
+	require.NoError(t, run(context.Background(), "help", nil, &out))
+	require.Contains(t, out.String(), "pgmandate version")
+}
+
+// A release build reports the version it was linked with: the path the
+// Dockerfile and a release use is the one the binary reads.
+func TestALinkedVersionIsReported(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the binary")
+	}
+	binary := filepath.Join(t.TempDir(), "pgmandate")
+	build := exec.Command("go", "build", "-ldflags", "-X 'github.com/andreas-lindfalk/pgmandate/pkg/version.Version=v9.8.7-test'", "-o", binary, ".")
+	output, err := build.CombinedOutput()
+	require.NoError(t, err, string(output))
+	printed, err := exec.Command(binary, "version").Output()
+	require.NoError(t, err)
+	require.Equal(t, "pgmandate v9.8.7-test\n", string(printed))
 }

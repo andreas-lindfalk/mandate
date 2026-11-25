@@ -23,13 +23,12 @@ AI agents have started to change things. They refund orders, change customers' a
 Think of pull requests for agent actions. A proposal is the pull request. A mandate is the branch rule that allows auto-merge. The log is the history.
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": false}}}%%
 flowchart LR
-    A[Agent<br/>any framework,<br/>no credentials] -- propose --> P[(pgmandate<br/>on your Postgres)]
-    H[Person<br/>UI or API] -- approve, edit, reject<br/>grant mandates --> P
-    P -- signed delivery,<br/>once decided --> R[Receiver<br/>holds the credential,<br/>checks the facts]
-    R -- does the write --> S[Your system]
-    R -- result --> P
-    P -- decision and result --> A
+    A["Agent<br/>any framework,<br/>no credentials"] <-- "propose /<br/>decision and result" --> P[("pgmandate<br/>on your Postgres")]
+    H["Person<br/>UI or API"] -- "approve, edit, reject,<br/>grant mandates" --> P
+    P <-- "signed delivery once decided /<br/>result" --> R["Receiver<br/>holds the credential,<br/>checks the facts"]
+    R -- "does the write" --> S["Your system"]
 ```
 
 It consists of three things:
@@ -198,19 +197,20 @@ Questions and pilots start with an issue on the repository. Security reports go 
 pgmandate needs Postgres, tested on version 18. It does not care what language the agent is written in or which framework runs it.
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": false}}}%%
 flowchart TB
-    subgraph agents [Agents, any language]
-        F1[OpenAI Agents SDK,<br/>LangGraph, Claude Agent SDK,<br/>any MCP client]
+    subgraph agents ["Agents, any language"]
+        F1["OpenAI Agents SDK,<br/>LangGraph, Claude Agent SDK,<br/>any MCP client"]
     end
-    GW[Gateway, optional:<br/>routes and filters calls]
-    subgraph pgm [pgmandate]
-        API[agent API]
-        UI[UI and people API]
-        DB[(Postgres:<br/>rules, mandates, log)]
+    GW["Gateway, optional:<br/>routes and filters calls"]
+    subgraph pgm ["pgmandate"]
+        API["agent API: MCP or HTTP"]
+        UI["UI and people API"]
+        DB[("Postgres:<br/>rules, mandates, log")]
     end
-    subgraph yours [Next to your systems]
-        R1[Receiver: refunds]
-        R2[Receiver: accounts]
+    subgraph yours ["Next to your systems"]
+        R1["Receiver: refunds"]
+        R2["Receiver: accounts"]
     end
     F1 --> GW --> API
     F1 --> API
