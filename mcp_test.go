@@ -85,7 +85,35 @@ func (s *McpSuite) propose(session *sdk.ClientSession, action, title string, pay
 	}
 	out, errText := s.call(session, "propose", args)
 	s.Require().Empty(errText)
+	return flat(out)
+}
+
+// flat is an answer's proposal with what the answer says beside it
+// (created, repeat, accountIgnored, history) merged in, so a test reads one
+// map. modules/agentapi tests hold the shape itself.
+func flat(answer map[string]any) map[string]any {
+	out := map[string]any{}
+	if p, ok := answer["proposal"].(map[string]any); ok {
+		for k, v := range p {
+			out[k] = v
+		}
+	}
+	for k, v := range answer {
+		if k != "proposal" {
+			out[k] = v
+		}
+	}
 	return out
+}
+
+// read runs get_proposal or withdraw_proposal and returns the answer flat.
+func (s *McpSuite) read(session *sdk.ClientSession, tool string, arguments map[string]any) (map[string]any, string) {
+	s.T().Helper()
+	out, errText := s.call(session, tool, arguments)
+	if errText != "" {
+		return nil, errText
+	}
+	return flat(out), ""
 }
 
 func (s *McpSuite) Test_TokensGateTheServer() {
@@ -181,7 +209,7 @@ func (s *McpSuite) Test_AnAgentProposesAndSeesTheOutcome() {
 	s.Require().Equal(proposals.StatusPending, third["status"])
 	s.Require().Equal(mandates.SkipBudgetSpent, third["skipped"])
 
-	one, errText := s.call(session, "get_proposal", map[string]any{"proposal_id": executed["proposalId"]})
+	one, errText := s.read(session, "get_proposal", map[string]any{"proposal_id": executed["proposalId"]})
 	s.Require().Empty(errText)
 	s.Require().Equal(proposals.StatusExecuted, one["status"])
 	var types []string
@@ -332,7 +360,7 @@ func (s *McpSuite) Test_TheAgentGetsTheConnectorsResult() {
 		_, _ = s.W.Kernel.Proposals.Reject(t.Owner, uuid.MustParse(waiting["proposalId"].(string)), "not today")
 	}()
 	started := time.Now()
-	decided, errText := s.call(session, "get_proposal", map[string]any{"proposal_id": waiting["proposalId"], "wait_seconds": 10})
+	decided, errText := s.read(session, "get_proposal", map[string]any{"proposal_id": waiting["proposalId"], "wait_seconds": 10})
 	s.Require().Empty(errText)
 	s.Require().Equal(proposals.StatusRejected, decided["status"])
 	s.Require().Equal("not today", decided["decisionNote"])
@@ -651,7 +679,7 @@ func (s *McpSuite) Test_TheAgentIsToldWhatItNeeds() {
 	s.Require().Equal(true, again["accountIgnored"])
 
 	// Taken back, it is done with.
-	withdrawn, errText := s.call(session, "withdraw_proposal", map[string]any{"proposal_id": waiting["proposalId"], "reason": "Proposed again as run-1:2."})
+	withdrawn, errText := s.read(session, "withdraw_proposal", map[string]any{"proposal_id": waiting["proposalId"], "reason": "Proposed again as run-1:2."})
 	s.Require().Empty(errText)
 	s.Require().Equal(proposals.StatusWithdrawn, withdrawn["status"])
 	s.Require().Contains(withdrawn["outcome"], "withdrawn")
@@ -675,7 +703,7 @@ func (s *McpSuite) Test_TheAgentIsToldWhatItNeeds() {
 	s.Require().NoError(err)
 	var answer map[string]any
 	s.Require().Eventually(func() bool {
-		answer, errText = s.call(session, "get_proposal", map[string]any{"proposal_id": refund["proposalId"]})
+		answer, errText = s.read(session, "get_proposal", map[string]any{"proposal_id": refund["proposalId"]})
 		return errText == "" && answer["refusal"] != nil
 	}, 15*time.Second, 100*time.Millisecond)
 	s.Require().Equal(map[string]any{"reason": "no such order"}, answer["refusal"])
@@ -744,7 +772,7 @@ func (s *McpSuite) Test_TheAgentIsToldAboutExpiry() {
 	// Before the sweep: it already reads as expired, and waiting for it
 	// returns at once.
 	start := time.Now()
-	got, errText := s.call(session, "get_proposal", map[string]any{"proposal_id": id, "wait_seconds": 10})
+	got, errText := s.read(session, "get_proposal", map[string]any{"proposal_id": id, "wait_seconds": 10})
 	s.Require().Empty(errText)
 	s.Require().Less(time.Since(start), 5*time.Second, "nothing will change, so it does not wait")
 	s.Require().Equal(proposals.StatusExpired, got["status"])

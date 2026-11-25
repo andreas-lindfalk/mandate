@@ -1,7 +1,11 @@
 -- name: InsertMandate :exec
+-- A grant holds at once. Its start is never later than the database's
+-- clock, which basis_holds reads, even when the server's clock runs ahead;
+-- its length is kept.
 INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, valid_from, valid_until, condition, condition_plan)
-VALUES (@id, @tenant_id, sqlc.narg('agent_id'), @actions::text[], @max_risk, @budget_count, @policy_ref, sqlc.narg('department'), @valid_from, @valid_until,
-    sqlc.narg('condition'), sqlc.narg('condition_plan'));
+SELECT @id, @tenant_id, sqlc.narg('agent_id'), @actions::text[], @max_risk, @budget_count, @policy_ref, sqlc.narg('department'),
+    starts.at, starts.at + @lasts::interval, sqlc.narg('condition'), sqlc.narg('condition_plan')
+FROM (SELECT LEAST(@starts_at::timestamptz, now()) AS at) AS starts;
 
 -- name: GetMandate :one
 SELECT * FROM mandate.mandates WHERE id = @id;

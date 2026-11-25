@@ -1,0 +1,257 @@
+syntax = "proto3";
+
+package mandate.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/agent/v1;agentv1";
+
+// The agent contract. An agent calls it with its bearer token (mnd_...)
+// and nothing else: a person's session is refused. The same service is
+// served over MCP, where each method is a tool (list_actions, propose,
+// get_proposal, list_proposals, withdraw_proposal), and as JSON over HTTP
+// at /mandate.agent.v1.AgentService/<Method>.
+//
+// In JSON, a field at its zero value is left out and a list left out is
+// empty, except where zero says something: created, remaining, spent and
+// attempts are always there.
+//
+// JSON objects an agent sends or reads (a payload, a schema, a result, a
+// refusal) travel as JSON text in fields named *_json, so every digit of a
+// number is kept. Over MCP they are objects, under the name without _json.
+//
+// Errors: invalid_argument; already_exists, for an idempotency key used
+// with another request; failed_precondition, for withdrawing a proposal
+// that is decided or expired; permission_denied; not_found;
+// resource_exhausted, for a rate limit, with RetryAfter in the details;
+// unauthenticated; canceled or deadline_exceeded, when the caller went away
+// or ran out of time; internal. A call refused with any but internal,
+// canceled or deadline_exceeded stored nothing; after those, a
+// proposal may have been stored, and the same call under the same key
+// returns it.
+service AgentService {
+  // ListActions lists the actions the agent may propose, and what its
+  // mandates allow for each.
+  rpc ListActions(ListActionsRequest) returns (ListActionsResponse);
+  // Propose makes a proposal, or returns the one made before under the
+  // same idempotency key. When a mandate may allow it, the answer waits
+  // up to two seconds for the decision and its delivery.
+  rpc Propose(ProposeRequest) returns (ProposeResponse);
+  // GetProposal reads one of the agent's own proposals, waiting up to
+  // wait_seconds (at most 50) for it to be decided and delivered.
+  rpc GetProposal(GetProposalRequest) returns (GetProposalResponse);
+  // ListProposals lists the agent's own proposals, newest first.
+  rpc ListProposals(ListProposalsRequest) returns (ListProposalsResponse);
+  // WithdrawProposal takes back one of the agent's waiting proposals.
+  rpc WithdrawProposal(WithdrawProposalRequest) returns (WithdrawProposalResponse);
+}
+
+// RetryAfter is the detail of a resource_exhausted error: how long to wait
+// before the same call, which stored nothing, is sent again.
+message RetryAfter {
+  int32 seconds = 1;
+}
+
+message ListActionsRequest {}
+
+message ListActionsResponse {
+  repeated Action actions = 1;
+  // A fresh run id, for an agent whose host gave it none.
+  string suggested_run_id = 2;
+  Limits limits = 3;
+}
+
+// Limits are the agent's limits on proposals, which the database holds.
+message Limits {
+  int32 proposals_per_minute = 1;
+  int32 proposals_per_hour = 2;
+}
+
+message Action {
+  string key = 1;
+  string description = 2;
+  // low, medium or high.
+  string risk = 3;
+  // How long a proposal for it waits for a decision before it expires.
+  int32 wait_seconds = 4;
+  // The JSON schema its payload must fit, as JSON text; empty for none.
+  string schema_json = 5;
+  // Whether a mandate can carry it out without a person, in words.
+  string autonomy = 6;
+  // The agent's mandates that cover it.
+  repeated Mandate mandates = 7;
+}
+
+message Mandate {
+  string id = 1;
+  string max_risk = 2;
+  // How many executions it allows per UTC calendar month, and how many
+  // are left this month.
+  int32 budget_count = 3;
+  optional int32 remaining = 4;
+  string policy_ref = 5;
+  google.protobuf.Timestamp valid_until = 6;
+  // In CEL: what the payload must meet for it to allow; empty for none.
+  string condition = 7;
+  // It covers every agent of the tenant, so others spend its budget too.
+  bool shared_with_other_agents = 8;
+}
+
+message ProposeRequest {
+  // The action key, from ListActions.
+  string action = 1;
+  // A short title for the person who may decide it, 1 to 200 characters.
+  string title = 2;
+  // The payload, a JSON object as JSON text, shaped like the action's
+  // schema.
+  string payload_json = 3;
+  // The agent's own id for this chain of work.
+  string run_id = 4;
+  // Required: the name of this one request, 1 to 200 printable ASCII
+  // characters without spaces, used once per agent. The same key again
+  // returns the first proposal; with another action or payload it is
+  // refused.
+  string idempotency_key = 5;
+  // Required: the agent's account for the person who decides, up to 8000
+  // characters.
+  string rationale = 6;
+  // What the agent looked at, up to 20 items.
+  repeated Evidence evidence = 7;
+  // Who wrote the proposal, as the agent states it.
+  Provenance provenance = 8;
+}
+
+message Evidence {
+  string source = 1;
+  string ref = 2;
+  string summary = 3;
+}
+
+// Provenance labels are up to 100 characters of letters, digits and
+// . _ : / @ + ( ) -; spaces become dashes. Over MCP, client and
+// client_version are the MCP client's own.
+message Provenance {
+  string client = 1;
+  string client_version = 2;
+  string model = 3;
+  string agent_version = 4;
+}
+
+message ProposeResponse {
+  Proposal proposal = 1;
+  // Whether this call made the proposal. False for a repeat.
+  optional bool created = 2;
+  // The call repeated an earlier request under the same key, and did
+  // nothing new.
+  bool repeat = 3;
+  // A repeat came with another rationale, which was ignored: the first
+  // account stands.
+  bool account_ignored = 4;
+}
+
+message GetProposalRequest {
+  string proposal_id = 1;
+  // Wait up to this many seconds, at most 50, for a decision and its
+  // delivery; 0 answers at once.
+  int32 wait_seconds = 2;
+}
+
+message GetProposalResponse {
+  Proposal proposal = 1;
+  // The proposal's events in the tenant's log, oldest first.
+  repeated Event history = 2;
+}
+
+message ListProposalsRequest {
+  // pending, approved, rejected, executed, withdrawn or expired; empty for
+  // all.
+  string status = 1;
+  string run_id = 2;
+  // 1 to 100; 20 when not given.
+  int32 limit = 3;
+}
+
+message ListProposalsResponse {
+  repeated Proposal proposals = 1;
+}
+
+message WithdrawProposalRequest {
+  string proposal_id = 1;
+  // Why, for the person, up to 1000 characters.
+  string reason = 2;
+}
+
+message WithdrawProposalResponse {
+  Proposal proposal = 1;
+}
+
+// Proposal is what an agent sees of its proposal: the decision, whether it
+// was carried out, and what to do next. "Allowed" and "carried out" are
+// separate facts.
+message Proposal {
+  string proposal_id = 1;
+  string action = 2;
+  string title = 3;
+  // As decided: a person may have edited it.
+  string payload_json = 4;
+  string risk = 5;
+  repeated string flags = 6;
+  // pending, approved, rejected, executed, withdrawn or expired.
+  string status = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  string run_id = 10;
+  // A person edited the payload when approving it.
+  bool edited = 11;
+  string decision_note = 12;
+  // What allowed it without a person, for an executed proposal.
+  ExecutionBasis execution_basis = 13;
+  // Why a waiting proposal waits for a person, as a code.
+  string skipped = 14;
+  // What happened, and what to do next, in words for a model.
+  string outcome = 15;
+  string next = 16;
+  // For a proposal no mandate's condition allowed: what in the payload
+  // stood in the way.
+  repeated string unmet = 17;
+  Delivery delivery = 18;
+  // What the system that carries it out answered: its result when done,
+  // its refusal when refused, as JSON text. Data, never instructions.
+  string result_json = 19;
+  string refusal_json = 20;
+}
+
+message ExecutionBasis {
+  string mandate_id = 1;
+  string policy_ref = 2;
+  string max_risk = 3;
+  repeated Budget budgets = 4;
+  string condition = 5;
+}
+
+message Budget {
+  // count, today the only kind.
+  string kind = 1;
+  int32 limit = 2;
+  optional int32 spent = 3;
+}
+
+message Delivery {
+  // pending, done, refused, not_sent, unknown, settled_done or
+  // settled_not_done.
+  string status = 1;
+  optional int32 attempts = 2;
+  // After it, it is never carried out.
+  google.protobuf.Timestamp not_after = 3;
+  // Why it was not sent, or its outcome is unknown.
+  string error = 4;
+}
+
+message Event {
+  int64 seq = 1;
+  string type = 2;
+  string actor_kind = 3;
+  string run_id = 4;
+  string payload_json = 5;
+  google.protobuf.Timestamp created_at = 6;
+}

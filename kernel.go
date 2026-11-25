@@ -36,6 +36,7 @@ import (
 
 	"github.com/andreas-lindfalk/pgmandate/mcp"
 	"github.com/andreas-lindfalk/pgmandate/modules/actions"
+	"github.com/andreas-lindfalk/pgmandate/modules/agentapi"
 	"github.com/andreas-lindfalk/pgmandate/modules/agents"
 	"github.com/andreas-lindfalk/pgmandate/modules/deliveries"
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
@@ -98,6 +99,9 @@ type Kernel struct {
 	Actions       *actions.Service
 	Deliveries    *deliveries.Service
 	Notifications *notifications.Service
+	// AgentApi is the agent contract, mandate.agent.v1, served over MCP
+	// (Handler) and over HTTP (AgentHandler).
+	AgentApi *agentapi.Service
 
 	mu       sync.RWMutex
 	builtin  map[string]Action
@@ -141,6 +145,7 @@ func New(pool *pgxpool.Pool, opts Options) *Kernel {
 			func() (river.JobArgs, *river.InsertOpts) { return SweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}))
 		k.Proposals.SetAfterStore(k.enqueueExecution)
 	}
+	k.AgentApi = agentapi.New(k)
 	return k
 }
 
@@ -316,17 +321,24 @@ func (k *Kernel) ListActions(ctx context.Context) ([]Action, error) {
 	return result, nil
 }
 
-// Handler serves MCP to agents. Mount it where agents connect, such as /mcp.
+// Handler serves the agent contract over MCP. Mount it where agents
+// connect, such as /mcp.
 func (k *Kernel) Handler() http.Handler {
-	return mcp.NewHandler(k)
+	return mcp.NewHandler(k.AgentApi)
 }
 
-// Unmet implements mcp.Host: what in a payload no mandate's condition took.
+// AgentHandler serves the agent contract as JSON over HTTP (Connect), at
+// the path it returns: /mandate.agent.v1.AgentService/.
+func (k *Kernel) AgentHandler() (string, http.Handler) {
+	return k.AgentApi.Handler()
+}
+
+// Unmet implements agentapi.Host: what in a payload no mandate's condition took.
 func (k *Kernel) Unmet(ctx context.Context, agentId uuid.UUID, action, risk string, payload json.RawMessage) ([]string, error) {
 	return k.Mandates.Unmet(ctx, agentId, action, risk, payload)
 }
 
-// LiveMandates implements mcp.Host: the mandates that hold now for an agent.
+// LiveMandates implements agentapi.Host: the mandates that hold now for an agent.
 func (k *Kernel) LiveMandates(ctx context.Context) ([]Mandate, error) {
 	a, ok := actor.From(ctx)
 	if !ok || a.Kind != actor.Agent {
@@ -346,7 +358,7 @@ func (k *Kernel) LiveMandates(ctx context.Context) ([]Mandate, error) {
 	return slices.Clip(live), nil
 }
 
-// SpentCount, DeliveryOf and DeliveriesOf implement mcp.Host.
+// SpentCount, DeliveryOf and DeliveriesOf implement agentapi.Host.
 func (k *Kernel) SpentCount(ctx context.Context, mandateIds []uuid.UUID) (map[uuid.UUID]int64, error) {
 	return k.Mandates.SpentFor(ctx, mandateIds)
 }
@@ -359,7 +371,7 @@ func (k *Kernel) DeliveriesOf(ctx context.Context, proposalIds []uuid.UUID) (map
 	return k.Deliveries.ByProposals(ctx, proposalIds)
 }
 
-// AgentsService, ProposalsService, ActionsOf and Executes implement mcp.Host.
+// AgentsService, ProposalsService, ActionsOf and Executes implement agentapi.Host.
 func (k *Kernel) AgentsService() *agents.Service                  { return k.Agents }
 func (k *Kernel) ProposalsService() *proposals.Service            { return k.Proposals }
 func (k *Kernel) ActionsOf(ctx context.Context) ([]Action, error) { return k.ListActions(ctx) }

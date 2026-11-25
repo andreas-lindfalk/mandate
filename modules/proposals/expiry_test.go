@@ -90,12 +90,12 @@ func (s *ExpirySuite) Test_AfterTheDeadlineNobodyDecides() {
 	s.pastDeadline(p.Id)
 
 	_, err = s.W.Kernel.Proposals.Approve(t.Owner, p.Id, proposals.Decision{})
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 	s.Require().Contains(err.Error(), "expired")
 	_, err = s.W.Kernel.Proposals.Reject(t.Owner, p.Id, "Too late.")
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 	_, err = s.W.Kernel.Proposals.Withdraw(t.Agent, p.Id, "Too late.")
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 
 	// The database refuses it too, whatever the service does.
 	s.refused(t.Owner, `UPDATE mandate.proposals SET status = 'approved' WHERE id = $1`, p.Id)
@@ -251,7 +251,7 @@ func (s *ExpirySuite) Test_ADecisionAndTheSweepHaveOneWinner() {
 		if final == proposals.StatusApproved {
 			s.Require().NoError(approveErr)
 		} else {
-			s.code(approveErr, fault.Conflict)
+			s.code(approveErr, fault.FailedPrecondition)
 		}
 		outcomes := 0
 		for _, e := range s.eventTypes(t.Owner, p.Id) {

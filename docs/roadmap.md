@@ -97,7 +97,7 @@ This is the critical path, so it starts at once.
    - **A person settles *unknown*** as done or not done, and only once the work can no longer happen. A delivery may be sent again only from *not sent*, and only before `notAfter`. Only after "not done", "refused" or a late "not sent" may the agent propose the same thing again.
    - **A result reported later** (an *accepted* answer) is left out of 0.1.0. It is purely additive, so it can come later without a new contract.
    - The details are in [design-0.1.md](design-0.1.md).
-9. **One agent contract.**
+9. **One agent contract.** Built (build step 3 of [design-0.1.md](design-0.1.md)).
    - The agent's operations are list actions, propose, get, list and withdraw. They move out of `mcp/` into one service defined as a Connect contract (`mandate.agent.v1`).
    - MCP becomes one way to call it, and JSON over HTTP comes with it. The clients in phase 2 are generated from it.
    - The call limit, the waiting and the guidance texts live there once.

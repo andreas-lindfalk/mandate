@@ -36,7 +36,7 @@ It consists of three things:
 
 1. **A Postgres schema** of tables, row level security, triggers and SQL functions. It holds the rules and checks them again on every path through the service. [threat-model.md](threat-model.md) lists which rules only the service holds.
 2. **A Go service** around the schema, with:
-   - an API for agents (MCP)
+   - an API for agents: one contract, over MCP and as JSON over HTTP
    - an API for people (Connect, JSON over HTTP)
    - a web UI built on that API
    - a notice to a Slack or Discord channel when something waits for a person
@@ -254,7 +254,7 @@ But those steps only pause a tool that then runs in the agent's process, with th
 
 With pgmandate the governed tool does something else: its body proposes and waits for the receiver's result, and the credential stays with the receiver. Standing mandates, budgets and one record then hold across every framework a team uses.
 
-*Today:* any MCP client can propose. `get_proposal` can wait for the decision and the result. Clients, a framework adapter and a callback are in the [roadmap](roadmap.md).
+*Today:* any MCP client can propose, and so can anything that posts JSON over HTTP. `get_proposal` can wait for the decision and the result. Clients, a framework adapter and a callback are in the [roadmap](roadmap.md).
 
 ### Hosted
 

@@ -12,7 +12,7 @@ An agent that has only a mandate token cannot change anything except by proposin
 
 - It can propose, withdraw its own waiting proposal, and read its own proposals and the actions. Nothing else.
 - It cannot approve, edit or reject, grant or define. The database refuses these too.
-- It cannot read another agent's proposals or the people: the MCP server withholds them, though a transaction scoped as an agent could read them. There are no connector secrets to read: deliveries are signed with a key that is never in the database, and an action's audience is not a secret.
+- It cannot read another agent's proposals or the people: the agent contract withholds them, over MCP and HTTP alike, though a transaction scoped as an agent could read them. Only an agent's token opens the contract; a person's session is refused there. There are no connector secrets to read: deliveries are signed with a key that is never in the database, and an action's audience is not a secret.
 - It cannot understate the risk of a defined action with a webhook connector, choose how long its proposal waits, propose a removed action, or propose after it is revoked.
 - Its arguments are bounded, and its title, payload, rationale and evidence stay on the proposal row, out of the permanent log, which holds their digests. Two things it chooses do reach the log as written: its run id, a label of up to 100 characters on every event of the run, and its provenance labels (client, model, agent version), names of up to 100 characters in a narrow alphabet. An agent could put a name in either that can then never be erased.
 - It cannot make more proposals than its limits per minute and per hour; the database refuses the rest, whichever server instance it calls.

@@ -351,9 +351,9 @@ func (s *ProposalsSuite) Test_PersonDecides() {
 	s.Require().Equal("Printer jams", tickets[0].Subject)
 
 	_, err = s.W.Kernel.Proposals.Approve(t.Reviewer, p.Id, proposals.Decision{})
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 	_, err = s.W.Kernel.Proposals.Reject(t.Reviewer, p.Id, "")
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 
 	rejected, err := s.W.Kernel.Proposals.Reject(t.Owner, s.propose(t.Agent, "test.low", map[string]any{}).Id, "No.")
 	s.Require().NoError(err)
@@ -501,9 +501,9 @@ func (s *ProposalsSuite) Test_ExecuteUnderABasis() {
 	s.Require().Equal(int64(1), spent)
 
 	_, _, err = s.W.Kernel.Proposals.Execute(t.System, p.Id, s.basis(t, m))
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 	_, err = s.W.Kernel.Proposals.Approve(t.Owner, p.Id, proposals.Decision{})
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 
 	// The system writes the host's row only inside the execution.
 	ticket := s.propose(t.Agent, "tickets.create", map[string]any{"subject": "Executed ticket", "body": ""})

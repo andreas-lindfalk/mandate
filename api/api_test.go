@@ -272,7 +272,7 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	s.Require().NoError(err)
 	s.Require().Equal("rejected", rejected.GetProposal().GetStatus())
 	_, err = s.props.RejectProposal(reviewer, &mandatev1.RejectProposalRequest{Id: second.Id.String()})
-	s.code(err, connect.CodeAlreadyExists)
+	s.code(err, connect.CodeFailedPrecondition)
 
 	one, err := s.props.GetProposal(owner, &mandatev1.GetProposalRequest{Id: first.Id.String()})
 	s.Require().NoError(err)

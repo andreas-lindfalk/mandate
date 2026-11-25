@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates/internal/repo"
@@ -192,7 +193,8 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 		}
 		if err := q.InsertMandate(ctx, repo.InsertMandateParams{
 			Id: id, TenantId: tenantId, AgentId: input.AgentId, Actions: input.Actions, MaxRisk: input.MaxRisk,
-			BudgetCount: input.BudgetCount, PolicyRef: input.PolicyRef, Department: department, ValidFrom: now, ValidUntil: now.AddDate(0, 0, input.Days),
+			BudgetCount: input.BudgetCount, PolicyRef: input.PolicyRef, Department: department, StartsAt: now,
+			Lasts:     pgtype.Interval{Microseconds: now.AddDate(0, 0, input.Days).Sub(now).Microseconds(), Valid: true},
 			Condition: condition, ConditionPlan: planJson,
 		}); err != nil {
 			return err

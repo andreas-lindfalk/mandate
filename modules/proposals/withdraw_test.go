@@ -41,9 +41,9 @@ func (s *WithdrawSuite) Test_AnAgentWithdrawsItsOwnWaitingProposal() {
 	s.Require().Equal([]string{"proposal.created", "proposal.withdrawn"}, s.eventTypes(t.Owner, p.Id))
 
 	_, err = s.W.Kernel.Proposals.Withdraw(t.Agent, p.Id, "")
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 	_, err = s.W.Kernel.Proposals.Approve(t.Reviewer, p.Id, proposals.Decision{})
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, p.Id), "nothing to execute, and no failure")
 	after, err := s.W.Kernel.Proposals.Get(t.Owner, p.Id)
 	s.Require().NoError(err)
@@ -64,14 +64,14 @@ func (s *WithdrawSuite) Test_AnAgentWithdrawsItsOwnWaitingProposal() {
 	_, err = s.W.Kernel.Proposals.Reject(t.Reviewer, q.Id, "no")
 	s.Require().NoError(err)
 	_, err = s.W.Kernel.Proposals.Withdraw(t.Agent, q.Id, "")
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 
 	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	r := s.propose(t.Agent, "test.low")
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, r.Id))
 	_, err = s.W.Kernel.Proposals.Withdraw(t.Agent, r.Id, "")
-	s.code(err, fault.Conflict)
+	s.code(err, fault.FailedPrecondition)
 }
 
 // The database holds the same rules, whatever the service does.
