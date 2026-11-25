@@ -43,7 +43,7 @@ func toProposal(p proposals.Proposal, agentName, skipReason string, delivery *de
 		Id: p.Id.String(), AgentId: p.AgentId.String(), AgentName: agentName, RunId: p.RunId, Action: p.Action, Risk: p.Risk, Title: p.Title,
 		PayloadJson: string(p.Payload), ExpiresAt: ts(p.ExpiresAt), Flags: p.Flags, Status: p.ShownStatus(), Edited: p.Edited, DecidedBy: idText(p.DecidedBy),
 		DecidedAt: tsText(p.DecidedAt), DecisionNote: p.DecisionNote, CreatedAt: tsText(&p.CreatedAt), ExecutionBasis: toBasis(p.ExecutionBasis),
-		SkipReason: skipReason, ProposedPayloadJson: string(p.ProposedPayload), Rationale: p.Rationale,
+		SkipReason: skipReason, ProposedPayloadJson: string(p.ProposedPayload), Rationale: p.Rationale, DryRun: p.DryRun,
 		Provenance: &mandatev1.Provenance{
 			Client: p.Provenance.Client, ClientVersion: p.Provenance.ClientVersion, Model: p.Provenance.Model, AgentVersion: p.Provenance.AgentVersion,
 		},
@@ -113,11 +113,11 @@ func (h *proposalHandler) enrich(ctx context.Context, list []proposals.Proposal)
 }
 
 func (h *proposalHandler) ListProposals(ctx context.Context, req *mandatev1.ListProposalsRequest) (*mandatev1.ListProposalsResponse, error) {
-	list, err := h.kernel.Proposals.List(ctx, proposals.Filter{Status: req.GetStatus(), OldestFirst: req.GetOldestFirst(), Limit: int(req.GetLimit())})
+	list, err := h.kernel.Proposals.List(ctx, proposals.Filter{Status: req.GetStatus(), OldestFirst: req.GetOldestFirst(), DryRun: req.DryRun, Limit: int(req.GetLimit())})
 	if err != nil {
 		return nil, fault.ToConnect(err)
 	}
-	total, err := h.kernel.Proposals.Count(ctx, req.GetStatus())
+	total, err := h.kernel.Proposals.Count(ctx, req.GetStatus(), req.DryRun)
 	if err != nil {
 		return nil, fault.ToConnect(err)
 	}
@@ -226,6 +226,22 @@ func (h *proposalHandler) SettleDelivery(ctx context.Context, req *mandatev1.Set
 		return nil, fault.ToConnect(err)
 	}
 	return &mandatev1.SettleDeliveryResponse{Proposal: out[0]}, nil
+}
+
+func (h *proposalHandler) DismissProposal(ctx context.Context, req *mandatev1.DismissProposalRequest) (*mandatev1.DismissProposalResponse, error) {
+	id, err := parseId(req.GetId(), "proposal id")
+	if err != nil {
+		return nil, err
+	}
+	p, err := h.kernel.Proposals.Dismiss(ctx, id, req.GetNote())
+	if err != nil {
+		return nil, fault.ToConnect(err)
+	}
+	out, err := h.enrich(ctx, []proposals.Proposal{p})
+	if err != nil {
+		return nil, fault.ToConnect(err)
+	}
+	return &mandatev1.DismissProposalResponse{Proposal: out[0]}, nil
 }
 
 func (h *proposalHandler) RejectProposal(ctx context.Context, req *mandatev1.RejectProposalRequest) (*mandatev1.RejectProposalResponse, error) {

@@ -677,3 +677,35 @@ func (s *DeliveriesSuite) Test_SendingAgainIsNeverDroppedAsADuplicate() {
 	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(), `SELECT count(*) FROM mandate_river.river_job WHERE args->>'deliveryId' = $1`, d.Id.String()).Scan(&count))
 	s.Require().Equal(2, count, "the resend has its own job")
 }
+
+// A dry run a mandate would allow gets no delivery: the execution records
+// nothing to send, and the table refuses one written by hand.
+func (s *DeliveriesSuite) Test_ADryRunIsNeverDelivered() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	h := s.defineWebhook(t, true)
+	dry := s.W.DryRunAgent(s.T(), t)
+	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &dry.Id, Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P", Days: 30})
+	s.Require().NoError(err)
+	p, _, err := s.W.Kernel.Proposals.Propose(dry.Agent, proposals.Input{Rationale: "Why.", IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: "Printer jams", Payload: json.RawMessage(`{"subject":"Printer jams"}`)})
+	s.Require().NoError(err)
+	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, p.Id))
+	after, err := s.W.Kernel.Proposals.Get(t.Owner, p.Id)
+	s.Require().NoError(err)
+	s.Require().Equal(proposals.StatusWouldAllow, after.Status)
+	_, found, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
+	s.Require().NoError(err)
+	s.Require().False(found, "nothing to deliver")
+	s.Require().Empty(h.receiver.Received())
+
+	var url, audience string
+	s.Require().NoError(db.InTx(t.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
+		return tx.QueryRow(t.Owner, `SELECT connector_url, connector_audience FROM mandate.actions WHERE key = 'tickets.create'`).Scan(&url, &audience)
+	}))
+	err = db.InTx(t.System, s.W.Pg.App, func(tx pgx.Tx) error {
+		_, err := tx.Exec(t.System, `INSERT INTO mandate.deliveries (id, tenant_id, proposal_id, action_key, url, audience, not_after)
+			VALUES (gen_random_uuid(), $1, $2, 'tickets.create', $3, $4, now())`, t.Id, p.Id, url, audience)
+		return err
+	})
+	s.Require().Error(err)
+	s.Require().Equal(fault.Name(fault.PermissionDenied), fault.Name(fault.CodeOf(fault.FromDb(err))), "the table refuses a delivery for a dry run")
+}

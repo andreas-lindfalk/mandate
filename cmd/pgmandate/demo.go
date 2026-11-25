@@ -21,6 +21,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate"
 	"github.com/andreas-lindfalk/pgmandate/examples/webhook"
 	"github.com/andreas-lindfalk/pgmandate/modules/actions"
+	"github.com/andreas-lindfalk/pgmandate/modules/agents"
 	"github.com/andreas-lindfalk/pgmandate/modules/deliveries"
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
@@ -115,7 +116,9 @@ func (d *demo) run(ctx context.Context, url string) error {
 		return err
 	}
 	d.owner = actor.AsPerson(ctx, tenant.Id, alice.Id)
-	agent, err := d.kernel.Agents.Create(d.owner, "support-bot", "")
+	// Created live, so that what the mandate allows is carried out. A new
+	// agent starts in dry run; step 9 shows one.
+	agent, err := d.kernel.Agents.Create(d.owner, "support-bot", "", agents.ModeLive)
 	if err != nil {
 		return err
 	}
@@ -126,7 +129,7 @@ func (d *demo) run(ctx context.Context, url string) error {
 	}
 	d.say("   tenant   %s  %s", tenant.Id, tenant.Name)
 	d.say("   owner    %s  Alice <alice@acme.example>", alice.Id)
-	d.say("   agent    %s  support-bot, token …%s", agent.Id, secret[len(secret)-4:])
+	d.say("   agent    %s  support-bot, token …%s, created live (a new agent starts in dry run: step 9)", agent.Id, secret[len(secret)-4:])
 	for _, input := range []actions.Input{
 		{Key: "tickets.create", Description: "Open a ticket in the helpdesk.", Risk: mandates.RiskLow, MayExecute: true,
 			Schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["subject","body"],"properties":{"subject":{"type":"string","maxLength":200},"body":{"type":"string","maxLength":5000},"priority":{"type":"string","enum":["low","normal","high"]}}}`)},
@@ -267,7 +270,11 @@ func (d *demo) run(ctx context.Context, url string) error {
 	d.say("   reject   %s  flagged ticket → %s (nothing is delivered)", rejected.Id, rejected.Status)
 	d.say("")
 
-	d.say("9. The database says no, to the same app role, outside the rules")
+	if err := d.dryRun(ctx, url); err != nil {
+		return err
+	}
+
+	d.say("10. The database says no, to the same app role, outside the rules")
 	d.refused(actor.AsSystem(ctx, tenant.Id), "the system marks a proposal executed outside an execution",
 		`UPDATE mandate.proposals SET status = 'executed', execution_basis = '{}' WHERE id = $1`, uuid.MustParse(asString(refund["proposalId"])))
 	d.refused(d.owner, "Alice marks a proposal as executed",
@@ -281,7 +288,7 @@ func (d *demo) run(ctx context.Context, url string) error {
 		`UPDATE mandate.events SET payload = '{}' WHERE seq = 1`)
 	d.say("")
 
-	d.say("10. The chain")
+	d.say("11. The chain")
 	var count int64
 	var tail []events.Stored
 	if err := db.InTx(d.owner, d.pool, func(tx pgx.Tx) error {
@@ -304,7 +311,7 @@ func (d *demo) run(ctx context.Context, url string) error {
 	if err != nil {
 		return err
 	}
-	d.say("11. %d decided proposals export as JSON lines: the seed of an eval set for the agent", len(decided))
+	d.say("12. %d decided proposals export as JSON lines: the seed of an eval set for the agent (dry runs are left out)", len(decided))
 	var first strings.Builder
 	if len(decided) > 0 {
 		if err := proposals.WriteDecisions(&first, decided[:1]); err != nil {
@@ -326,6 +333,70 @@ func (d *demo) run(ctx context.Context, url string) error {
 func (d *demo) propose(ctx context.Context, action, title string, payload map[string]any) (map[string]any, error) {
 	d.proposed++
 	return d.proposeAs(ctx, d.proposed, action, title, payload)
+}
+
+// dryRun shows a new agent in dry run: it keeps its own credential and
+// proposes what it is about to do. A mandate would allow one proposal and
+// nothing is delivered or spent; a person dismisses the other.
+func (d *demo) dryRun(ctx context.Context, url string) error {
+	d.say("9. A dry run: a new agent starts in it, keeps its own credential, and proposes what it does")
+	trial, err := d.kernel.Agents.Create(d.owner, "trial-bot", "", "")
+	if err != nil {
+		return err
+	}
+	_, token, err := d.kernel.Agents.IssueToken(d.owner, trial.Id, 1)
+	if err != nil {
+		return err
+	}
+	m, err := d.kernel.Mandates.Grant(d.owner, mandates.Input{AgentId: &trial.Id, Actions: []string{"tickets.create"}, MaxRisk: mandates.RiskLow, BudgetCount: 3, PolicyRef: "ACME-AI-POLICY-2026-01 §4", Days: 30})
+	if err != nil {
+		return err
+	}
+	d.say("   agent    %s  trial-bot, %s, with its own mandate for tickets.create", trial.Id, trial.Mode)
+	client := sdk.NewClient(&sdk.Implementation{Name: "trial-bot", Version: "1"}, nil)
+	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{
+		Endpoint: url, HTTPClient: &http.Client{Transport: bearer{token}}, MaxRetries: -1,
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("connect trial agent: %w", err)
+	}
+	defer session.Close() //nolint:errcheck
+	received := len(d.receiver.Received())
+	main := d.session
+	d.session = session
+	defer func() { d.session = main }()
+	var ids []string
+	for i, step := range []struct {
+		action, title string
+		payload       map[string]any
+	}{
+		{"tickets.create", "Printer on floor 5 jams too", map[string]any{"subject": "Printer on floor 5 jams too", "body": "Same model as floor 3."}},
+		{"tickets.close", "Close the floor 5 ticket", map[string]any{"ticket_id": "T-5", "resolution": "Rollers replaced."}},
+	} {
+		answer, err := d.call(ctx, "propose", map[string]any{
+			"action": step.action, "title": step.title, "payload": step.payload, "idempotency_key": fmt.Sprintf("trial-%d", i),
+			"rationale": "The trial agent proposes what it is about to do with its own credential.",
+		})
+		if err != nil {
+			return err
+		}
+		p, _ := answer["proposal"].(map[string]any)
+		ids = append(ids, asString(p["proposalId"]))
+		d.say("   %s  %-16s dryRun %v, %s", p["proposalId"], p["action"], p["dryRun"], p["status"])
+		d.say("   → %s", p["outcome"])
+	}
+	spent, err := d.kernel.Mandates.Spent(d.owner, m.Id)
+	if err != nil {
+		return err
+	}
+	d.say("   the helpdesk got %d new deliveries, and the trial mandate has %d of 3 executions used", len(d.receiver.Received())-received, spent)
+	dismissed, err := d.kernel.Proposals.Dismiss(d.owner, uuid.MustParse(ids[1]), "Seen; the agent closed it itself.")
+	if err != nil {
+		return err
+	}
+	d.say("   dismiss  %s  tickets.close → %s (a dry run is never approved)", dismissed.Id, dismissed.Status)
+	d.say("")
+	return nil
 }
 
 // proposeAs sends one request as the agent would: under this run's id,

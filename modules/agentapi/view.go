@@ -22,10 +22,13 @@ const pendingNext = "A person may take minutes or days. Do not propose it again 
 func proposalView(p proposals.Proposal, skipReason string, delivery *deliveries.Delivery) *agentv1.Proposal {
 	view := &agentv1.Proposal{
 		ProposalId: p.Id.String(), Action: p.Action, Title: p.Title, PayloadJson: string(p.Payload), Risk: p.Risk, Flags: p.Flags,
-		Status: p.Status, ExpiresAt: timestamppb.New(p.ExpiresAt), RunId: p.RunId, DecisionNote: p.DecisionNote,
+		Status: p.Status, ExpiresAt: timestamppb.New(p.ExpiresAt), RunId: p.RunId, DecisionNote: p.DecisionNote, DryRun: proto.Bool(p.DryRun),
 	}
 	if created, err := time.Parse(time.RFC3339Nano, p.CreatedAt); err == nil {
 		view.CreatedAt = timestamppb.New(created)
+	}
+	if p.DryRun {
+		return dryRunView(view, p, skipReason)
 	}
 	// Past its deadline by the database's clock, a proposal the sweep has
 	// not yet reached can no longer be decided: say so now.
@@ -93,6 +96,43 @@ func proposalView(p proposals.Proposal, skipReason string, delivery *deliveries.
 	default:
 		view.Outcome = decided + "; on its way to the system that carries it out"
 		view.Next = "The action has not happened yet. Read it again with get_proposal (wait_seconds up to 50, within your client's tool timeout) before you rely on it."
+	}
+	return view
+}
+
+// DryRunNext is what the agent is told in the one answer that made a dry
+// run: pgmandate carries nothing out, so the agent acts as it would have.
+// Only that answer says so; a repeat or a later read must never make it act
+// a second time.
+const DryRunNext = "This is a dry run: pgmandate carries nothing of it out, and nobody decides it. Do not wait for it. Do it yourself with your own credential, once, as you would have. Your proposals become real only when an owner makes you live, and then answers say dryRun false."
+
+// dryRunReadNext is what every other answer about a dry run says.
+const dryRunReadNext = "This was a dry run: pgmandate carried nothing of it out. What you did about it with your own credential when you proposed it stands; do not do it again because of this answer."
+
+// dryRunView is a dry run's outcome: what would have happened, never what
+// did.
+func dryRunView(view *agentv1.Proposal, p proposals.Proposal, skipReason string) *agentv1.Proposal {
+	if p.PastDeadline {
+		view.Status = proposals.StatusExpired
+	}
+	view.Next = dryRunReadNext
+	switch view.Status {
+	case proposals.StatusWouldAllow:
+		view.ExecutionBasis = basisView(p.ExecutionBasis)
+		view.Outcome = "dry run: a mandate would have allowed it without a person; nothing was carried out"
+	case proposals.StatusDismissed:
+		view.Outcome = "dry run: a person looked at it and set it aside; nothing was carried out"
+	case proposals.StatusWithdrawn:
+		view.Outcome = "dry run: withdrawn by you; nothing was carried out"
+		view.Next = "Nothing to do for this proposal."
+	case proposals.StatusExpired:
+		view.Outcome = "dry run: nobody looked at it before " + p.ExpiresAt.UTC().Format(time.RFC3339) + "; nothing was carried out"
+	case proposals.StatusPending:
+		view.Skipped = skipReason
+		view.Outcome = "dry run: a person would have decided it"
+		if skipReason != "" {
+			view.Outcome += ": " + explain(skipReason)
+		}
 	}
 	return view
 }

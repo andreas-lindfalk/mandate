@@ -137,7 +137,8 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   // Only the count: the total comes back whatever the limit.
   const pending = useQuery({
     queryKey: ["proposals", "pending", "count"],
-    queryFn: () => api.proposals.listProposals({ status: "pending", limit: 1 }),
+    // Waiting dry runs are not counted: nobody is to decide them.
+    queryFn: () => api.proposals.listProposals({ status: "pending", dryRun: false, limit: 1 }),
     refetchInterval: 10_000,
   });
   return (

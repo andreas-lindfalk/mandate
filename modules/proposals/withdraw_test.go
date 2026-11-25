@@ -50,7 +50,7 @@ func (s *WithdrawSuite) Test_AnAgentWithdrawsItsOwnWaitingProposal() {
 	s.Require().Equal(proposals.StatusWithdrawn, after.Status)
 
 	// Only its own, and only while it waits.
-	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "")
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "", "live")
 	s.Require().NoError(err)
 	_, secret, err := s.W.Kernel.Agents.IssueToken(t.Owner, other.Id, 30)
 	s.Require().NoError(err)

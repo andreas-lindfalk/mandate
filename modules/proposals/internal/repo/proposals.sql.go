@@ -14,10 +14,16 @@ import (
 const countProposals = `-- name: CountProposals :one
 SELECT count(*) FROM mandate.proposals
 WHERE ($1::text IS NULL OR status = $1::text)
+    AND ($2::boolean IS NULL OR dry_run = $2::boolean)
 `
 
-func (q *Queries) CountProposals(ctx context.Context, status *string) (int64, error) {
-	row := q.db.QueryRow(ctx, countProposals, status)
+type CountProposalsParams struct {
+	Status *string
+	DryRun *bool
+}
+
+func (q *Queries) CountProposals(ctx context.Context, arg CountProposalsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countProposals, arg.Status, arg.DryRun)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -62,8 +68,25 @@ func (q *Queries) DecideProposal(ctx context.Context, arg DecideProposalParams) 
 	return err
 }
 
+const dismissProposal = `-- name: DismissProposal :execrows
+UPDATE mandate.proposals SET status = 'dismissed', decision_note = $1 WHERE id = $2 AND status = 'pending' AND dry_run
+`
+
+type DismissProposalParams struct {
+	Note *string
+	Id   uuid.UUID
+}
+
+func (q *Queries) DismissProposal(ctx context.Context, arg DismissProposalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, dismissProposal, arg.Note, arg.Id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const executeProposal = `-- name: ExecuteProposal :exec
-UPDATE mandate.proposals SET status = 'executed', execution_basis = $1 WHERE id = $2
+UPDATE mandate.proposals SET status = CASE WHEN dry_run THEN 'would_allow' ELSE 'executed' END, execution_basis = $1 WHERE id = $2
 `
 
 type ExecuteProposalParams struct {
@@ -71,6 +94,8 @@ type ExecuteProposalParams struct {
 	Id    uuid.UUID
 }
 
+// executed for a live proposal, would_allow for a dry run: the same basis,
+// held to the same rules, and only executed counts against the budget.
 func (q *Queries) ExecuteProposal(ctx context.Context, arg ExecuteProposalParams) error {
 	_, err := q.db.Exec(ctx, executeProposal, arg.Basis, arg.Id)
 	return err
@@ -89,7 +114,7 @@ func (q *Queries) ExpireProposal(ctx context.Context, id uuid.UUID) (int64, erro
 }
 
 const getByIdempotencyKey = `-- name: GetByIdempotencyKey :one
-SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, expires_at, deliver_within, flags, idempotency_key, request_hash, proposed_payload, rationale, evidence, provenance, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE agent_id = $1 AND idempotency_key = $2
+SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, expires_at, deliver_within, flags, idempotency_key, request_hash, proposed_payload, rationale, evidence, provenance, dry_run, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE agent_id = $1 AND idempotency_key = $2
 `
 
 type GetByIdempotencyKeyParams struct {
@@ -118,6 +143,7 @@ func (q *Queries) GetByIdempotencyKey(ctx context.Context, arg GetByIdempotencyK
 		&i.Rationale,
 		&i.Evidence,
 		&i.Provenance,
+		&i.DryRun,
 		&i.Status,
 		&i.Edited,
 		&i.DecidedBy,
@@ -130,7 +156,7 @@ func (q *Queries) GetByIdempotencyKey(ctx context.Context, arg GetByIdempotencyK
 }
 
 const getProposal = `-- name: GetProposal :one
-SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, expires_at, deliver_within, flags, idempotency_key, request_hash, proposed_payload, rationale, evidence, provenance, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE id = $1
+SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, expires_at, deliver_within, flags, idempotency_key, request_hash, proposed_payload, rationale, evidence, provenance, dry_run, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE id = $1
 `
 
 func (q *Queries) GetProposal(ctx context.Context, id uuid.UUID) (MandateProposal, error) {
@@ -154,6 +180,7 @@ func (q *Queries) GetProposal(ctx context.Context, id uuid.UUID) (MandateProposa
 		&i.Rationale,
 		&i.Evidence,
 		&i.Provenance,
+		&i.DryRun,
 		&i.Status,
 		&i.Edited,
 		&i.DecidedBy,
@@ -166,7 +193,7 @@ func (q *Queries) GetProposal(ctx context.Context, id uuid.UUID) (MandateProposa
 }
 
 const getProposalForUpdate = `-- name: GetProposalForUpdate :one
-SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, expires_at, deliver_within, flags, idempotency_key, request_hash, proposed_payload, rationale, evidence, provenance, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE id = $1 FOR UPDATE
+SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, expires_at, deliver_within, flags, idempotency_key, request_hash, proposed_payload, rationale, evidence, provenance, dry_run, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetProposalForUpdate(ctx context.Context, id uuid.UUID) (MandateProposal, error) {
@@ -190,6 +217,7 @@ func (q *Queries) GetProposalForUpdate(ctx context.Context, id uuid.UUID) (Manda
 		&i.Rationale,
 		&i.Evidence,
 		&i.Provenance,
+		&i.DryRun,
 		&i.Status,
 		&i.Edited,
 		&i.DecidedBy,
@@ -281,7 +309,7 @@ func (q *Queries) LastSkips(ctx context.Context, subjectIds []uuid.UUID) ([]Last
 }
 
 const listDecided = `-- name: ListDecided :many
-SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, expires_at, deliver_within, flags, idempotency_key, request_hash, proposed_payload, rationale, evidence, provenance, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE status IN ('approved', 'rejected', 'executed') ORDER BY decided_at, id
+SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, expires_at, deliver_within, flags, idempotency_key, request_hash, proposed_payload, rationale, evidence, provenance, dry_run, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE status IN ('approved', 'rejected', 'executed') ORDER BY decided_at, id
 `
 
 // What people and mandates decided: not what was withdrawn or expired.
@@ -312,6 +340,7 @@ func (q *Queries) ListDecided(ctx context.Context) ([]MandateProposal, error) {
 			&i.Rationale,
 			&i.Evidence,
 			&i.Provenance,
+			&i.DryRun,
 			&i.Status,
 			&i.Edited,
 			&i.DecidedBy,
@@ -360,18 +389,20 @@ func (q *Queries) ListDueForExpiry(ctx context.Context, maxRows int32) ([]uuid.U
 }
 
 const listProposals = `-- name: ListProposals :many
-SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, expires_at, deliver_within, flags, idempotency_key, request_hash, proposed_payload, rationale, evidence, provenance, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals
+SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, expires_at, deliver_within, flags, idempotency_key, request_hash, proposed_payload, rationale, evidence, provenance, dry_run, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals
 WHERE ($1::text IS NULL OR status = $1::text)
     AND ($2::uuid IS NULL OR agent_id = $2::uuid)
     AND ($3::text IS NULL OR run_id = $3::text)
-ORDER BY (CASE WHEN $4::boolean THEN created_at END) ASC, created_at DESC, id
-LIMIT $5
+    AND ($4::boolean IS NULL OR dry_run = $4::boolean)
+ORDER BY (CASE WHEN $5::boolean THEN created_at END) ASC, created_at DESC, id
+LIMIT $6
 `
 
 type ListProposalsParams struct {
 	Status      *string
 	AgentId     *uuid.UUID
 	RunId       *string
+	DryRun      *bool
 	OldestFirst bool
 	MaxRows     int32
 }
@@ -381,6 +412,7 @@ func (q *Queries) ListProposals(ctx context.Context, arg ListProposalsParams) ([
 		arg.Status,
 		arg.AgentId,
 		arg.RunId,
+		arg.DryRun,
 		arg.OldestFirst,
 		arg.MaxRows,
 	)
@@ -409,6 +441,7 @@ func (q *Queries) ListProposals(ctx context.Context, arg ListProposalsParams) ([
 			&i.Rationale,
 			&i.Evidence,
 			&i.Provenance,
+			&i.DryRun,
 			&i.Status,
 			&i.Edited,
 			&i.DecidedBy,

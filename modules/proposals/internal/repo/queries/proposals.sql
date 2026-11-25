@@ -20,12 +20,14 @@ SELECT * FROM mandate.proposals
 WHERE (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text)
     AND (sqlc.narg('agent_id')::uuid IS NULL OR agent_id = sqlc.narg('agent_id')::uuid)
     AND (sqlc.narg('run_id')::text IS NULL OR run_id = sqlc.narg('run_id')::text)
+    AND (sqlc.narg('dry_run')::boolean IS NULL OR dry_run = sqlc.narg('dry_run')::boolean)
 ORDER BY (CASE WHEN @oldest_first::boolean THEN created_at END) ASC, created_at DESC, id
 LIMIT @max_rows;
 
 -- name: CountProposals :one
 SELECT count(*) FROM mandate.proposals
-WHERE (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text);
+WHERE (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text)
+    AND (sqlc.narg('dry_run')::boolean IS NULL OR dry_run = sqlc.narg('dry_run')::boolean);
 
 -- name: ListDecided :many
 -- What people and mandates decided: not what was withdrawn or expired.
@@ -37,7 +39,12 @@ SET status = @status, title = @title, payload = @payload, risk = @risk, decision
 WHERE id = @id;
 
 -- name: ExecuteProposal :exec
-UPDATE mandate.proposals SET status = 'executed', execution_basis = @basis WHERE id = @id;
+-- executed for a live proposal, would_allow for a dry run: the same basis,
+-- held to the same rules, and only executed counts against the budget.
+UPDATE mandate.proposals SET status = CASE WHEN dry_run THEN 'would_allow' ELSE 'executed' END, execution_basis = @basis WHERE id = @id;
+
+-- name: DismissProposal :execrows
+UPDATE mandate.proposals SET status = 'dismissed', decision_note = sqlc.narg('note') WHERE id = @id AND status = 'pending' AND dry_run;
 
 -- name: LastSkips :many
 -- The reason of the newest execution_skipped event per proposal.

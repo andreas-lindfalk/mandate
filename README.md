@@ -90,7 +90,7 @@ make demo    # the scripted demo, in the terminal               needs Go 1.27
 make run     # the UI, the API and MCP on http://127.0.0.1:8585  also needs Node 22 and pnpm 10 (corepack enable)
 ```
 
-`make demo` sets up a tenant, an owner, an agent, three webhook actions and a mandate, with a small receiver standing in for a helpdesk. The agent then proposes over MCP, exactly as any MCP client would. The demo prints eleven steps:
+`make demo` sets up a tenant, an owner, an agent, three webhook actions and a mandate, with a small receiver standing in for a helpdesk. The agent then proposes over MCP, exactly as any MCP client would. The demo prints twelve steps:
 
 1. The setup: tenant, owner, agent, three actions, one mandate for `tickets.*` up to low risk with a budget of three executions a month.
 2. The agent asks what it may do.
@@ -100,9 +100,10 @@ make run     # the UI, the API and MCP on http://127.0.0.1:8585  also needs Node
 6. A refund is high risk, and high risk is never delegated: it waits.
 7. Two more tickets use up the budget; the next one waits. One delivery is made to fail once, to show the retry.
 8. The owner approves one waiting proposal and rejects another.
-9. Five statements that no rule allows are sent straight to Postgres, as the system, the owner and the agent. Each is refused, with the database's own message.
-10. The log verifies.
-11. The first decided proposal is shown as it is exported.
+9. A second agent, new and so in dry run, proposes over MCP: a mandate would allow one proposal, and nothing is delivered or spent; the owner dismisses the other.
+10. Five statements that no rule allows are sent straight to Postgres, as the system, the owner and the agent. Each is refused, with the database's own message.
+11. The log verifies.
+12. The first decided proposal is shown as it is exported.
 
 It ends with the commands for what to do next. In short:
 
@@ -171,7 +172,7 @@ T=<the tenant id it printed>
 ./pgmandate action define -tenant $T -as alice@acme.example -key tickets.create -risk low -may-execute \
   -url http://127.0.0.1:8586/ -schema '{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}'
 
-./pgmandate agent create -tenant $T -as alice@acme.example -name helpdesk-bot      # prints the agent id and its token
+./pgmandate agent create -tenant $T -as alice@acme.example -name helpdesk-bot -mode live   # prints the agent id and its token
 ./pgmandate grant -tenant $T -as alice@acme.example -agent <agent id> -actions 'tickets.*' -max-risk low -budget 20 -policy "AI policy v1"
 
 make run                                   # then connect the agent as above
@@ -181,6 +182,13 @@ make run                                   # then connect the agent as above
 Locally the server makes its signing key once, in `.local/signing-key`, and the receiver fetches its public half from the running server.
 
 The agent's `tickets.create` proposals are now allowed and delivered, twenty a month; everything else waits in the inbox at http://127.0.0.1:8585. Without `-may-execute` a person always decides, and without `-agent` a mandate covers every agent of the tenant. `action define` sets the whole definition each time: a flag left out goes back to its default. Replace the receiver with your own (below).
+
+`-mode live` makes the agent live at once. Without it a new agent starts in a **dry run**, which is how a team starts before it takes the agent's credential away:
+
+- The agent keeps its own credential and goes on acting with it. It proposes what it is about to do, and every answer says `dryRun: true`. The answer that made the proposal tells it to do it itself, once; a repeat or a later read never asks it to act again.
+- pgmandate records what a mandate would have allowed (*would allow*, with the basis) and what would have waited for a person. Nothing of a dry run is ever carried out: the database refuses to approve, execute or deliver one, to count it in a budget, or to let it open an embedded host's table. A waiting dry run sends no chat notice, and a person may only dismiss it.
+- The inbox keeps waiting dry runs in a tab of their own, out of the queue a person works, and the log tags each of their events with `dryRun: true`. The decisions export leaves them out.
+- An owner makes the agent live (`pgmandate agent mode -mode live`, or *Make live* in the UI) once the record shows what the mandates would do. Proposals made before keep what they were.
 
 ## Running it
 

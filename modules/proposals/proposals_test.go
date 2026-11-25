@@ -179,7 +179,7 @@ func (s *ProposalsSuite) Test_IdempotencyKeyReturnsTheFirstProposal() {
 	input.Payload = json.RawMessage(`{"n":1}`)
 	s.Require().Equal([]string{"proposal.created"}, s.eventTypes(t.Owner, first.Id))
 
-	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "")
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "", "live")
 	s.Require().NoError(err)
 	theirs, created, err := s.W.Kernel.Proposals.Propose(actor.AsAgent(context.Background(), t.Id, other.Id), input)
 	s.Require().NoError(err)
@@ -465,7 +465,7 @@ func (s *ProposalsSuite) Test_DatabaseGuardsDecisions() {
 
 	// The agent id, the status and the decision fields come from the scope,
 	// never from the statement.
-	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "")
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "", "live")
 	s.Require().NoError(err)
 	id := uuid.New()
 	s.Require().NoError(s.exec(t.Agent, `INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, expires_at, status, decided_by, execution_basis, idempotency_key, request_hash, rationale)
@@ -664,7 +664,7 @@ func (s *ProposalsSuite) Test_RapidApprovalsAreWrittenToTheChain() {
 
 func (s *ProposalsSuite) Test_ListHistoryAndDecided() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "")
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "", "live")
 	s.Require().NoError(err)
 	a := s.propose(t.Agent, "test.low", map[string]any{"n": 1})
 	b := s.propose(actor.AsAgent(context.Background(), t.Id, other.Id), "test.low", map[string]any{"n": 2})

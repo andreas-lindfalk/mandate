@@ -34,6 +34,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/api"
 	"github.com/andreas-lindfalk/pgmandate/examples/webhook"
 	"github.com/andreas-lindfalk/pgmandate/modules/actions"
+	"github.com/andreas-lindfalk/pgmandate/modules/agents"
 	"github.com/andreas-lindfalk/pgmandate/modules/auth"
 	"github.com/andreas-lindfalk/pgmandate/modules/deliveries"
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
@@ -66,7 +67,10 @@ The commands below act on the database directly, as the person named with -as. R
   pgmandate people -tenant ID
   pgmandate person add -tenant ID -as EMAIL -email EMAIL -name NAME [-role owner|reviewer]
   pgmandate person remove -tenant ID -as EMAIL -person ID
-  pgmandate agent create -tenant ID -as EMAIL -name NAME [-department D] [-days 90]    prints the token once
+  pgmandate agent create -tenant ID -as EMAIL -name NAME [-mode dry_run|live] [-department D] [-days 90]
+                          prints the token once. A new agent is in dry run unless -mode live: what it
+                          proposes is recorded, never carried out, while it acts with its own credential.
+  pgmandate agent mode -tenant ID -as EMAIL -agent ID -mode live|dry_run
   pgmandate agent revoke -tenant ID -as EMAIL -agent ID
   pgmandate action define -tenant ID -as EMAIL -key a.b [-risk low|medium|high] [-may-execute]
                           [-connector webhook|builtin] [-url http(s)://...] [-schema '{...}' | -schema-file f.json]
@@ -91,9 +95,10 @@ The commands below act on the database directly, as the person named with -as. R
                   agent, why it waits and a link, nothing the agent wrote. notify remove turns it off.
   pgmandate revoke -tenant ID -as EMAIL -mandate ID
   pgmandate mandates -tenant ID [-all]
-  pgmandate proposals -tenant ID [-status pending|approved|rejected|executed|withdrawn] [-limit 50]
+  pgmandate proposals -tenant ID [-status pending|approved|rejected|executed|withdrawn|expired|would_allow|dismissed] [-limit 50]
   pgmandate approve -tenant ID -as EMAIL -proposal ID [-note TEXT] [-confirm]
   pgmandate reject -tenant ID -as EMAIL -proposal ID [-note TEXT]
+  pgmandate dismiss -tenant ID -as EMAIL -proposal ID [-note TEXT]   set a waiting dry run aside
   pgmandate redeliver -tenant ID -as EMAIL -proposal ID        send again a delivery that was never sent
   pgmandate settle -tenant ID -as EMAIL -proposal ID -done true|false
                                                                say whether a delivery whose outcome is unknown was done
@@ -236,7 +241,7 @@ func run(ctx context.Context, command string, args []string, out io.Writer) erro
 			return fmt.Errorf("%s needs a subcommand", command)
 		}
 		return admin(ctx, cfg, command+" "+args[0], args[1:], out)
-	case "grant", "revoke", "mandates", "proposals", "approve", "reject", "redeliver", "settle", "people", "events", "verify", "export", "export-chain", "actions":
+	case "grant", "revoke", "mandates", "proposals", "approve", "reject", "dismiss", "redeliver", "settle", "people", "events", "verify", "export", "export-chain", "actions":
 		return admin(ctx, cfg, command, args, out)
 	case "verify-export":
 		return verifyExport(args, out)
@@ -578,6 +583,14 @@ func receiverKeys(ctx context.Context, list, url string) (sign.KeySet, error) {
 	return keys, nil
 }
 
+// modeText says what an agent's mode means.
+func modeText(mode string) string {
+	if mode == agents.ModeLive {
+		return "live: what it proposes is carried out once allowed"
+	}
+	return "in dry run: what it proposes is recorded and never carried out, while it acts with its own credential"
+}
+
 // describeDelivery is what the receiver prints for a delivery: a line to
 // scan, and the body exactly as it arrived.
 func describeDelivery(received webhook.Received) string {
@@ -694,6 +707,7 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 	department := flags.String("department", "", "department label")
 	condition := flags.String("condition", "", "a CEL condition on the payload that narrows the mandate")
 	kind := flags.String("kind", "", "for notify: slack or discord")
+	mode := flags.String("mode", "", "for agent create and agent mode: live or dry_run")
 	perMinute := flags.Int("per-minute", 30, "for agent limits: proposals a minute")
 	perHour := flags.Int("per-hour", 300, "for agent limits: proposals an hour")
 	doneFlag := flags.String("done", "", "for settle: true if the receiver did it, false if not")
@@ -801,7 +815,7 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 		}
 		printDelivery(out, d)
 	case "agent create":
-		a, err := kernel.Agents.Create(scoped, *name, *department)
+		a, err := kernel.Agents.Create(scoped, *name, *department, *mode)
 		if err != nil {
 			return err
 		}
@@ -809,7 +823,17 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "agent %s (%s)\ntoken %s\n\nThe token is shown once. Give it to the agent as a bearer token for %s/mcp.\n", a.Id, a.Name, secret, strings.TrimSuffix(cfg.publicUrl, "/"))
+		fmt.Fprintf(out, "agent %s (%s), %s\ntoken %s\n\nThe token is shown once. Give it to the agent as a bearer token for %s/mcp.\n", a.Id, a.Name, modeText(a.Mode), secret, strings.TrimSuffix(cfg.publicUrl, "/"))
+	case "agent mode":
+		id, err := uuid.Parse(*agentId)
+		if err != nil {
+			return errors.New("-agent must be an agent id")
+		}
+		a, err := kernel.Agents.SetMode(scoped, id, *mode)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "agent %s, %s\n", a.Id, modeText(a.Mode))
 	case "agent revoke":
 		id, err := uuid.Parse(*agentId)
 		if err != nil {
@@ -945,16 +969,19 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 				printDelivery(out, d)
 			}
 		}
-	case "approve", "reject":
+	case "approve", "reject", "dismiss":
 		id, err := uuid.Parse(*proposalId)
 		if err != nil {
 			return errors.New("-proposal must be a proposal id")
 		}
 		var p proposals.Proposal
-		if command == "approve" {
+		switch command {
+		case "approve":
 			p, err = kernel.Proposals.Approve(scoped, id, proposals.Decision{Note: *note, Confirm: *confirm})
-		} else {
+		case "reject":
 			p, err = kernel.Proposals.Reject(scoped, id, *note)
+		default:
+			p, err = kernel.Proposals.Dismiss(scoped, id, *note)
 		}
 		if err != nil {
 			return err
@@ -1113,6 +1140,9 @@ func printProposal(out io.Writer, p proposals.Proposal) {
 		extra = fmt.Sprintf(" under mandate %s (%s)", p.ExecutionBasis.MandateId, p.ExecutionBasis.PolicyRef)
 	case len(p.Flags) > 0:
 		extra = " flags " + strings.Join(p.Flags, ",")
+	}
+	if p.DryRun {
+		extra += " (dry run: never carried out)"
 	}
 	fmt.Fprintf(out, "%s %-9s %-7s %-16s %s%s\n", p.Id, p.Status, p.Risk, p.Action, p.Title, extra)
 }

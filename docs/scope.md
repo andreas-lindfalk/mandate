@@ -133,7 +133,7 @@ The project was first called *mandate*, and that name stays in identifiers on th
 
 These hold in every version. A change that breaks one is a bug or a decision recorded in [decisions.md](decisions.md).
 
-1. **AI changes nothing a person has not approved**, either the proposal or the mandate that allows it. The one exception is a dry run, planned as the way in for a new team. In a dry run, the agent still holds its credential and acts with it, and pgmandate only records what it would have decided. Nothing is governed then, and the record says so.
+1. **AI changes nothing a person has not approved**, either the proposal or the mandate that allows it. The one exception is a dry run, the way in for a new team; a new agent starts in one. In a dry run, the agent still holds its credential and acts with it, and pgmandate only records what it would have decided. Nothing is governed then, and the record says so.
 2. **The database checks again.** Postgres checks the rules again with policies and triggers. The [threat model](threat-model.md) lists the few rules that only the service holds. Every transaction states its scope: the tenant, who is acting, and which proposal is being executed. As long as the service states that truthfully, a bug in it cannot record or allow what the database's rules refuse. The threat model also says what a service that misstates it could do.
 3. **Unknown never allows.** These all leave the decision to a person:
    - a condition that cannot be evaluated

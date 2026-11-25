@@ -20,6 +20,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/suite"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/andreas-lindfalk/pgmandate/api"
 	mandatev1 "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1"
@@ -171,6 +172,37 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	agent, err := s.agents.CreateAgent(owner, &mandatev1.CreateAgentRequest{Name: "support-bot", Department: "Support"})
 	s.Require().NoError(err)
 	s.Require().Equal("Support", agent.GetAgent().GetDepartment())
+	s.Require().Equal("dry_run", agent.GetAgent().GetMode(), "a new agent starts in dry run")
+	_, err = s.agents.SetAgentMode(reviewer, &mandatev1.SetAgentModeRequest{Id: agent.GetAgent().GetId(), Mode: "live"})
+	s.code(err, connect.CodePermissionDenied)
+	_, err = s.agents.SetAgentMode(owner, &mandatev1.SetAgentModeRequest{Id: agent.GetAgent().GetId(), Mode: "sometimes"})
+	s.code(err, connect.CodeInvalidArgument)
+	live, err := s.agents.SetAgentMode(owner, &mandatev1.SetAgentModeRequest{Id: agent.GetAgent().GetId(), Mode: "live"})
+	s.Require().NoError(err)
+	s.Require().Equal("live", live.GetAgent().GetMode())
+	created, err := s.agents.CreateAgent(owner, &mandatev1.CreateAgentRequest{Name: "live-bot", Mode: "live"})
+	s.Require().NoError(err)
+	s.Require().Equal("live", created.GetAgent().GetMode(), "an owner may create one live")
+
+	// Waiting dry runs are kept apart from the queue a person works.
+	dry := s.W.DryRunAgent(s.T(), t)
+	dryProposal, _, err := s.W.Kernel.Proposals.Propose(dry.Agent, proposals.Input{Action: "test.manual", Title: "Trial", Payload: json.RawMessage(`{}`), IdempotencyKey: "dry-1", Rationale: "Why."})
+	s.Require().NoError(err)
+	livePending, err := s.props.ListProposals(reviewer, &mandatev1.ListProposalsRequest{Status: "pending", DryRun: proto.Bool(false)})
+	s.Require().NoError(err)
+	for _, p := range livePending.GetProposals() {
+		s.Require().False(p.GetDryRun())
+	}
+	dryPending, err := s.props.ListProposals(reviewer, &mandatev1.ListProposalsRequest{Status: "pending", DryRun: proto.Bool(true)})
+	s.Require().NoError(err)
+	s.Require().Len(dryPending.GetProposals(), 1)
+	s.Require().Equal(int64(1), dryPending.GetTotal())
+	s.Require().True(dryPending.GetProposals()[0].GetDryRun())
+	_, err = s.props.ApproveProposal(owner, &mandatev1.ApproveProposalRequest{Id: dryProposal.Id.String()})
+	s.code(err, connect.CodeFailedPrecondition)
+	dismissed, err := s.props.DismissProposal(reviewer, &mandatev1.DismissProposalRequest{Id: dryProposal.Id.String(), Note: "seen"})
+	s.Require().NoError(err)
+	s.Require().Equal("dismissed", dismissed.GetProposal().GetStatus())
 	issued, err := s.agents.IssueToken(owner, &mandatev1.IssueTokenRequest{AgentId: agent.GetAgent().GetId(), Days: 30})
 	s.Require().NoError(err)
 	s.Require().True(strings.HasPrefix(issued.GetSecret(), "mnd_"))

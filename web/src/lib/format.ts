@@ -40,6 +40,8 @@ export const statusLabel: Record<string, string> = {
   executed: "Allowed by mandate",
   withdrawn: "Withdrawn",
   expired: "Expired",
+  would_allow: "A mandate would allow it",
+  dismissed: "Dismissed",
 };
 
 export const flagLabel: Record<string, string> = {
@@ -71,6 +73,9 @@ export const eventLabel: Record<string, string> = {
   "proposal.rapid_approvals": "Many approvals in a short time",
   "proposal.withdrawn": "Withdrawn by the agent",
   "proposal.expired": "Expired: nobody decided in time",
+  "proposal.would_allow": "Dry run: a mandate would allow it",
+  "proposal.dismissed": "Dry run dismissed by a person",
+  "agent.mode_changed": "Agent's mode changed",
   "proposal.notified": "Chat channel told",
   "agent.limits_set": "Agent's limits set",
   "notifier.set": "Notifications set",

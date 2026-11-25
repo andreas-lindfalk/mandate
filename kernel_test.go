@@ -264,7 +264,7 @@ func (s *KernelSuite) Test_ActionFailuresAreRecorded() {
 
 func (s *KernelSuite) Test_LiveMandatesAreTheAgentsOwn() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "")
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "", "live")
 	s.Require().NoError(err)
 	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &other.Id, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 1, PolicyRef: "P", Days: 1})
 	s.Require().NoError(err)

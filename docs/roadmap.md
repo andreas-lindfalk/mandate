@@ -65,7 +65,7 @@ This is the critical path, so it starts at once.
      - the worker stops retrying
      - the database refuses a person's resend
      - a receiver refuses the delivery
-6. **A dry run, as the way in.** No team removes an agent's credentials on day one.
+6. **A dry run, as the way in.** Built (build step 4 of [design-0.1.md](design-0.1.md)). No team removes an agent's credentials on day one.
    - **Setting it.** A new agent starts in dry run, and an owner makes it live, or creates it live. The switch is logged. Each proposal records whether it was made in a dry run. The database sets that, and it never changes, so turning dry run off later does not turn old proposals into real ones. Every answer to the agent says whether it is a dry run, so a key reused after the switch can never return a dry-run proposal as if it were real.
    - **The agent's side.** In a dry run the agent keeps its credential. It proposes what it is about to do, and carries on without waiting.
    - **pgmandate's side.** It records what a mandate would have allowed and what would have waited for a person.

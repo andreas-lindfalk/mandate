@@ -153,7 +153,7 @@ func (s *MandatesSuite) Test_ResolveFindsTheMandateThatAllowsIt() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow).Reason)
 
-	other, err := s.W.Kernel.Agents.Create(t.Owner, "other-bot", "")
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other-bot", "", "live")
 	s.Require().NoError(err)
 	s.grant(t.Owner, mandates.Input{AgentId: &other.Id, Actions: []string{"*"}, MaxRisk: mandates.RiskMedium})
 	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow).Reason, "another agent's mandate does not cover me")

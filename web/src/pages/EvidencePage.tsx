@@ -4,7 +4,7 @@ import * as React from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/AppShell";
 import { Button } from "@/components/ui/button";
-import { Card, EmptyState, ErrorState, Field, Input, Skeleton } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState, ErrorState, Field, Input, Skeleton } from "@/components/ui/primitives";
 import { api } from "@/lib/api";
 import { errorText } from "@/lib/errors";
 import { Link } from "react-router";
@@ -140,6 +140,11 @@ export function EvidencePage() {
                       ) : (
                         (eventLabel[e.type] ?? e.type)
                       )}
+                      {isDryRun(e.payloadJson) ? (
+                        <Badge tone="accent" className="ml-2">
+                          dry run
+                        </Badge>
+                      ) : null}
                     </td>
                     <td className="px-2 py-2 font-mono text-[12px] text-muted">
                       {e.subjectId ? (
@@ -166,4 +171,13 @@ export function EvidencePage() {
       </div>
     </div>
   );
+}
+
+/** Whether an event is about a dry run: its payload says so. Dry runs are in the log, marked, and never carried out. */
+function isDryRun(payloadJson: string) {
+  try {
+    return (JSON.parse(payloadJson) as { dryRun?: unknown }).dryRun === true;
+  } catch {
+    return false;
+  }
 }

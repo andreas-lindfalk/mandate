@@ -133,17 +133,40 @@ function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean
     },
     onError: (error) => toast.error("Could not set the limits", { description: errorText(error) }),
   });
+  const setMode = useMutation({
+    mutationFn: (mode: string) => api.agents.setAgentMode({ id: agent.id, mode }),
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      toast.success(response.agent?.mode === "live" ? `${agent.name} is live` : `${agent.name} is in dry run`);
+    },
+    onError: (error) => toast.error("Could not change the mode", { description: errorText(error) }),
+  });
   const live = !agent.revokedAt;
+  const dryRun = agent.mode === "dry_run";
   return (
     <Card className="p-5">
       <div className="flex flex-wrap items-center gap-2">
         <Bot className="size-4 text-accent" aria-hidden />
         <p className="font-medium">{agent.name}</p>
         {agent.department ? <Badge tone="neutral">{agent.department}</Badge> : null}
-        {!live ? <Badge tone="neutral">revoked</Badge> : null}
+        {!live ? <Badge tone="neutral">revoked</Badge> : dryRun ? <Badge tone="accent">dry run</Badge> : <Badge tone="success">live</Badge>}
         <span className="ml-auto text-[12px] text-muted">since {formatDateTime(agent.createdAt)}</span>
       </div>
       <p className="mt-1 font-mono text-[11px] text-muted">{agent.id}</p>
+      {live ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[12.5px] text-muted">
+          <span>
+            {dryRun
+              ? "In dry run: what it proposes is recorded and never carried out, while it acts with its own credential."
+              : "Live: what it proposes is carried out once a person or a mandate allows it."}
+          </span>
+          {isOwner ? (
+            <Button variant="ghost" size="sm" onClick={() => setMode.mutate(dryRun ? "live" : "dry_run")} loading={setMode.isPending}>
+              {dryRun ? "Make live" : "Back to dry run"}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {editingLimits ? (
         <form
           className="mt-3 flex flex-wrap items-end gap-2"
@@ -256,11 +279,13 @@ function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean
 function NewAgent({ onCreated }: { onCreated: () => void }) {
   const [name, setName] = React.useState("");
   const [department, setDepartment] = React.useState("");
+  const [live, setLive] = React.useState(false);
   const create = useMutation({
-    mutationFn: () => api.agents.createAgent({ name: name.trim(), department: department.trim() }),
+    mutationFn: () => api.agents.createAgent({ name: name.trim(), department: department.trim(), mode: live ? "live" : "dry_run" }),
     onSuccess: () => {
       setName("");
       setDepartment("");
+      setLive(false);
       onCreated();
     },
     onError: (error) => toast.error("Could not register", { description: errorText(error) }),
@@ -295,6 +320,13 @@ function NewAgent({ onCreated }: { onCreated: () => void }) {
         <p id="agent-department-hint" className="text-xs text-muted sm:col-span-3">
           The department is a label for finding things. It limits nothing yet.
         </p>
+        <label className="flex items-start gap-2 text-[13px] sm:col-span-3">
+          <input type="checkbox" className="mt-0.5" checked={live} onChange={(e) => setLive(e.target.checked)} />
+          <span>
+            Live from the start. Without it the agent starts in dry run: it keeps its own credential, and pgmandate only records what it proposes,
+            until you make it live.
+          </span>
+        </label>
       </form>
     </Card>
   );

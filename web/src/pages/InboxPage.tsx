@@ -29,14 +29,19 @@ import {
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
-const tabs = [
-  { key: "pending", label: "Waiting" },
-  { key: "executed", label: "Allowed by mandate" },
-  { key: "approved", label: "Approved" },
-  { key: "rejected", label: "Rejected" },
-  { key: "withdrawn", label: "Withdrawn" },
-  { key: "expired", label: "Expired" },
-] as const;
+// Waiting dry runs have a tab of their own: nobody decides them, so they
+// stay out of the queue a person works and out of its count.
+const tabs: readonly { key: string; label: string; status: string; dryRun?: boolean }[] = [
+  { key: "pending", label: "Waiting", status: "pending", dryRun: false },
+  { key: "executed", label: "Allowed by mandate", status: "executed" },
+  { key: "approved", label: "Approved", status: "approved" },
+  { key: "rejected", label: "Rejected", status: "rejected" },
+  { key: "withdrawn", label: "Withdrawn", status: "withdrawn" },
+  { key: "expired", label: "Expired", status: "expired" },
+  { key: "dry_run", label: "Dry runs", status: "pending", dryRun: true },
+  { key: "would_allow", label: "Dry runs allowed", status: "would_allow" },
+  { key: "dismissed", label: "Dry runs dismissed", status: "dismissed" },
+];
 
 function RiskBadge({ risk }: { risk: string }) {
   return <Badge tone={riskTone[risk] ?? "neutral"}>{riskLabel[risk] ?? risk} risk</Badge>;
@@ -108,6 +113,7 @@ function Row({ proposal, description, selected, onSelect }: { proposal: Proposal
         <span className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[12px] text-accent">{proposal.action}</span>
           <RiskBadge risk={proposal.risk} />
+          {proposal.dryRun ? <Badge tone="accent">dry run</Badge> : null}
           {proposal.flags.length ? (
             <Badge tone="danger">
               <ShieldAlert /> flagged
@@ -449,6 +455,15 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
     },
     onError: (error) => toast.error("Could not reject", { description: errorText(error) }),
   });
+  const dismiss = useMutation({
+    mutationFn: () => api.proposals.dismissProposal({ id, note }),
+    onSuccess: () => {
+      toast.success("Dismissed");
+      invalidate();
+      onDecided();
+    },
+    onError: (error) => toast.error("Could not dismiss", { description: errorText(error) }),
+  });
 
   if (one.isPending) return <Skeleton className="h-64" />;
   if (one.isError) return <ErrorState error={one.error} onRetry={() => one.refetch()} />;
@@ -461,7 +476,11 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
   const raisedToHigh = p.risk !== "high" && approvalRisk === "high";
   const needsConfirm = approvalRisk === "high" || confirmAsked;
   const actionGone = pending && !p.approvalRisk;
-  const decision = one.data.history.find((e) => e.type === "proposal.approved" || e.type === "proposal.rejected" || e.type === "proposal.withdrawn" || e.type === "proposal.expired");
+  const decision = one.data.history.find((e) =>
+    ["proposal.approved", "proposal.rejected", "proposal.withdrawn", "proposal.expired", "proposal.dismissed"].includes(e.type),
+  );
+  // A dry run is never carried out: a person only dismisses it.
+  const dry = p.dryRun;
   return (
     <div className="flex flex-col gap-5">
       <Link to="/inbox" className="-my-2 flex min-h-11 items-center gap-1 text-[13px] text-muted hover:text-foreground lg:hidden">
@@ -471,7 +490,10 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[12px] text-accent">{p.action}</span>
           <RiskBadge risk={p.risk} />
-          <Badge tone={p.status === "pending" ? "warning" : p.status === "rejected" || p.status === "withdrawn" || p.status === "expired" ? "neutral" : "success"}>{statusLabel[p.status] ?? p.status}</Badge>
+          <Badge tone={p.status === "pending" ? "warning" : ["rejected", "withdrawn", "expired", "dismissed"].includes(p.status) ? "neutral" : "success"}>
+            {statusLabel[p.status] ?? p.status}
+          </Badge>
+          {dry ? <Badge tone="accent">dry run</Badge> : null}
           {p.flags.map((flag) => (
             <Badge key={flag} tone="danger">
               {flagLabel[flag] ?? flag}
@@ -495,10 +517,19 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
         </p>
       </div>
 
+      {dry ? (
+        <Card className="border-accent/40 p-4 text-[13.5px]">
+          <p className="font-medium">A dry run: nothing here is carried out.</p>
+          <p className="mt-1 text-muted">
+            The agent is in dry run. It keeps its own credential and does this itself; pgmandate records what it would have decided. A dry run is never
+            approved or rejected; dismiss it once you have looked at it. An owner makes the agent live under Agents &amp; actions.
+          </p>
+        </Card>
+      ) : null}
       {p.delivery ? <DeliveryCard proposalId={p.id} delivery={p.delivery} onChanged={invalidate} /> : null}
       {pending && p.skipReason ? (
         <Card className="bg-warning-soft p-4 text-[13.5px] text-warning-ink">
-          Waits for a person: {skipLabel[p.skipReason] ?? p.skipReason}.
+          {dry ? "A person would have decided it" : "Waits for a person"}: {skipLabel[p.skipReason] ?? p.skipReason}.
           {p.unmetConditions.length > 0 ? (
             <ul className="mt-2 flex flex-col gap-1 font-mono text-[12px]">
               {p.unmetConditions.map((line) => (
@@ -510,7 +541,7 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
       ) : null}
       {p.executionBasis ? (
         <Card className="bg-success-soft p-4 text-[13.5px] text-success">
-          Allowed without a person under{" "}
+          {dry ? "Would have been allowed without a person under" : "Allowed without a person under"}{" "}
           <Link to="/mandates" className="underline underline-offset-2">
             mandate {shortId(p.executionBasis.mandateId)}
           </Link>{" "}
@@ -518,7 +549,7 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
           {p.executionBasis.budgets.map((b) => (
             <React.Fragment key={b.kind}>
               {" "}
-              {Number(b.spent)} of {executions(b.limit)} this month were used before this one.
+              {Number(b.spent ?? 0)} of {executions(b.limit)} this month were used before this one{dry ? "; a dry run uses none" : ""}.
             </React.Fragment>
           ))}
           {p.executionBasis.condition ? (
@@ -535,6 +566,8 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
             ? `Withdrawn by the agent, ${formatDateTime(p.decidedAt)}`
             : p.status === "expired"
             ? `Expired, ${formatDateTime(p.decidedAt)}: nobody decided it in time, and nothing was done`
+            : p.status === "dismissed"
+            ? `Dismissed by ${decision.actorName || "a person"}, ${formatDateTime(p.decidedAt)}`
             : `${statusLabel[p.status]} by ${decision.actorName || "a person"}, ${formatDateTime(p.decidedAt)}`}
           {p.decisionNote ? `: “${p.decisionNote}”` : "."}
         </Card>
@@ -543,7 +576,9 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
       <div>
         <p className="label-mono mb-2 text-[12px] text-muted">Where it goes</p>
         <p className="text-[14px]">
-          {actionGone
+          {dry
+            ? "Nowhere: a dry run is never carried out by pgmandate."
+            : actionGone
             ? "The action has been removed, so this can only be rejected."
             : action?.connector === "webhook" && action.connectorUrl
               ? `An approval is sent to ${hostOf(action.connectorUrl)}, which carries it out.`
@@ -554,7 +589,7 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
       <div>
         <div className="mb-2 flex items-center justify-between">
           <p className="label-mono text-[12px] text-muted">Payload</p>
-          {pending ? (
+          {pending && !dry ? (
             <Button
               variant="ghost"
               size="sm"
@@ -599,7 +634,19 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
       <Checks proposal={p} hasSchema={!!action?.schemaJson} />
       <Account proposal={p} />
 
-      {pending ? (
+      {pending && dry ? (
+        <div className="flex flex-col gap-3 border-t border-border pt-5">
+          <Field label="Note" htmlFor="note" hint="Kept in the audit trail with the dismissal. Optional.">
+            <Textarea id="note" value={note} onChange={(e) => setNote(e.target.value)} rows={2} />
+          </Field>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => dismiss.mutate()} loading={dismiss.isPending}>
+              <X /> Dismiss
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {pending && !dry ? (
         <div className="flex flex-col gap-3 border-t border-border pt-5">
           <Field label="Note" htmlFor="note" hint="Kept in the audit trail with the decision. Required to reject: the agent and the auditor will read it.">
             <Textarea id="note" value={note} onChange={(e) => setNote(e.target.value)} rows={2} />
@@ -651,11 +698,12 @@ export function InboxPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const session = useSession();
-  const [tab, setTab] = React.useState<(typeof tabs)[number]["key"]>("pending");
+  const [tab, setTab] = React.useState("pending");
+  const current = tabs.find((t) => t.key === tab) ?? tabs[0];
   const list = useQuery({
     queryKey: ["proposals", tab],
     // What waits is a queue, worked oldest first; the rest reads newest first.
-    queryFn: () => api.proposals.listProposals({ status: tab, limit: 200, oldestFirst: tab === "pending" }),
+    queryFn: () => api.proposals.listProposals({ status: current.status, dryRun: current.dryRun, limit: 200, oldestFirst: current.status === "pending" }),
     refetchInterval: 10_000,
   });
   const proposals = list.data?.proposals ?? [];
@@ -665,7 +713,7 @@ export function InboxPage() {
   // The panel takes focus when the last waiting proposal is decided, so a
   // keyboard user is not left on the page itself.
   const focusPanel = () => window.setTimeout(() => document.getElementById("inbox-panel")?.focus(), 0);
-  const chooseTab = (key: (typeof tabs)[number]["key"]) => {
+  const chooseTab = (key: string) => {
     setTab(key);
     // An open proposal hides the list on a narrow screen: close it, so the
     // tab shows what it says.
@@ -676,7 +724,7 @@ export function InboxPage() {
   const next = () => {
     const at = proposals.findIndex((p) => p.id === id);
     const after = [...proposals.slice(at + 1), ...proposals.slice(0, Math.max(at, 0))].filter((p) => p.id !== id && p.status === "pending");
-    if (tab === "pending" && after.length) {
+    if (current.status === "pending" && after.length) {
       navigate(`/inbox/${after[0].id}`);
     } else {
       navigate("/inbox");

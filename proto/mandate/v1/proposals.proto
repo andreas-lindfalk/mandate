@@ -16,6 +16,9 @@ service ProposalService {
   rpc GetProposal(GetProposalRequest) returns (GetProposalResponse);
   rpc ApproveProposal(ApproveProposalRequest) returns (ApproveProposalResponse);
   rpc RejectProposal(RejectProposalRequest) returns (RejectProposalResponse);
+  // DismissProposal sets a waiting dry run aside. A dry run is never
+  // approved or rejected.
+  rpc DismissProposal(DismissProposalRequest) returns (DismissProposalResponse);
   // RedeliverProposal sends again a delivery that was never sent, before
   // its deadline.
   rpc RedeliverProposal(RedeliverProposalRequest) returns (RedeliverProposalResponse);
@@ -127,6 +130,9 @@ message Proposal {
   // mandate's condition held: what in the payload stood in the way, per
   // mandate, as the mandates are now.
   repeated string unmet_conditions = 25;
+  // Made while its agent was in dry run: never carried out. It ends
+  // would_allow, dismissed, withdrawn or expired.
+  bool dry_run = 26;
 }
 
 // One thing the agent says it looked at. A claim for a person to check.
@@ -150,6 +156,9 @@ message ListProposalsRequest {
   int32 limit = 2;
   // Oldest first, as a queue is worked; newest first otherwise.
   bool oldest_first = 3;
+  // Only dry runs (true) or only live proposals (false); both when unset.
+  // The inbox keeps waiting dry runs apart, since nobody decides them.
+  optional bool dry_run = 4;
 }
 
 message ListProposalsResponse {
@@ -186,5 +195,14 @@ message RejectProposalRequest {
 }
 
 message RejectProposalResponse {
+  Proposal proposal = 1;
+}
+
+message DismissProposalRequest {
+  string id = 1;
+  string note = 2;
+}
+
+message DismissProposalResponse {
   Proposal proposal = 1;
 }

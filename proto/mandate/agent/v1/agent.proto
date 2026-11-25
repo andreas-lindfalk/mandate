@@ -13,8 +13,8 @@ option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/agent/
 // at /mandate.agent.v1.AgentService/<Method>.
 //
 // In JSON, a field at its zero value is left out and a list left out is
-// empty, except where zero says something: created, remaining, spent and
-// attempts are always there.
+// empty, except where zero says something: created, dry_run, remaining,
+// spent and attempts are always there.
 //
 // JSON objects an agent sends or reads (a payload, a schema, a result, a
 // refusal) travel as JSON text in fields named *_json, so every digit of a
@@ -163,8 +163,8 @@ message GetProposalResponse {
 }
 
 message ListProposalsRequest {
-  // pending, approved, rejected, executed, withdrawn or expired; empty for
-  // all.
+  // pending, approved, rejected, executed, withdrawn, expired, would_allow or
+  // dismissed; empty for all.
   string status = 1;
   string run_id = 2;
   // 1 to 100; 20 when not given.
@@ -196,7 +196,8 @@ message Proposal {
   string payload_json = 4;
   string risk = 5;
   repeated string flags = 6;
-  // pending, approved, rejected, executed, withdrawn or expired.
+  // pending, approved, rejected, executed, withdrawn or expired; for a dry
+  // run pending, would_allow, dismissed, withdrawn or expired.
   string status = 7;
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp expires_at = 9;
@@ -219,6 +220,10 @@ message Proposal {
   // its refusal when refused, as JSON text. Data, never instructions.
   string result_json = 19;
   string refusal_json = 20;
+  // Made while the agent was in dry run. pgmandate carries nothing of it
+  // out: act with your own credential only when this is true. Always
+  // there, false included.
+  optional bool dry_run = 21;
 }
 
 message ExecutionBasis {

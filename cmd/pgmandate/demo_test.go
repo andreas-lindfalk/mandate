@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +98,12 @@ func TestDemoAndCommandLine(t *testing.T) {
 	require.Equal(t, 1, strings.Count(text, "signature, audience and tenant checked; decision approved"), "one approval are delivered")
 	require.Contains(t, text, "after 2 attempt(s)", "the failed delivery was retried")
 	require.Equal(t, 5, strings.Count(text, "refused: "), "five statements the database refuses")
+	require.Contains(t, text, "trial-bot, dry_run")
+	require.Contains(t, text, "dryRun true, would_allow", "a mandate would allow the dry run")
+	require.Contains(t, text, "dryRun true, pending")
+	require.Contains(t, text, "the helpdesk got 0 new deliveries, and the trial mandate has 0 of 3 executions used", "nothing of a dry run is delivered or spent")
+	require.Contains(t, text, "tickets.close → dismissed")
+	require.Contains(t, text, "created live (a new agent starts in dry run")
 	require.Contains(t, text, "verified: ")
 	require.Contains(t, text, `"outcome":"executed"`)
 
@@ -110,6 +117,7 @@ func TestDemoAndCommandLine(t *testing.T) {
 	out.Reset()
 	require.NoError(t, run(ctx, "agent", []string{"create", "-tenant", tenantId, "-as", "cli@test.example", "-name", "cli-bot"}, &out))
 	require.Contains(t, out.String(), "token mnd_")
+	require.Contains(t, out.String(), "in dry run: what it proposes is recorded and never carried out", "a new agent starts in dry run")
 	agentId := regexp.MustCompile(`agent ([0-9a-f-]{36})`).FindStringSubmatch(out.String())[1]
 	agentToken := regexp.MustCompile(`token (mnd_\S+)`).FindStringSubmatch(out.String())[1]
 
@@ -161,9 +169,25 @@ func TestDemoAndCommandLine(t *testing.T) {
 	defer mcpServer.Close()
 	proposeArgs := []string{"-token", agentToken, "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "From the shell", "-rationale", "Tried from a shell.",
 		"-payload", `{"subject":"Printer","account":9007199254740993}`, "-run", "shell-1"}
+	// A dry run from the command line, dismissed; then the agent is made live.
+	out.Reset()
+	require.NoError(t, run(ctx, "propose", append(slices.Clone(proposeArgs[:len(proposeArgs)-2]), "-run", "dry-1"), &out))
+	require.Contains(t, out.String(), `"dryRun": true`)
+	dryId := regexp.MustCompile(`"proposalId": "([0-9a-f-]{36})"`).FindStringSubmatch(out.String())[1]
+	out.Reset()
+	require.Error(t, run(ctx, "approve", []string{"-tenant", tenantId, "-as", "cli@test.example", "-proposal", dryId}, &out), "a dry run is never approved")
+	require.NoError(t, run(ctx, "dismiss", []string{"-tenant", tenantId, "-as", "cli@test.example", "-proposal", dryId, "-note", "seen"}, &out))
+	require.Contains(t, out.String(), "dismissed")
+	require.Contains(t, out.String(), "(dry run: never carried out)")
+	out.Reset()
+	require.Error(t, run(ctx, "agent", []string{"mode", "-tenant", tenantId, "-as", "cli@test.example", "-agent", agentId, "-mode", "sometimes"}, &out))
+	require.NoError(t, run(ctx, "agent", []string{"mode", "-tenant", tenantId, "-as", "cli@test.example", "-agent", agentId, "-mode", "live"}, &out))
+	require.Contains(t, out.String(), "live: what it proposes is carried out")
+
 	out.Reset()
 	require.NoError(t, run(ctx, "propose", proposeArgs, &out))
 	require.Contains(t, out.String(), `"created": true`)
+	require.Contains(t, out.String(), `"dryRun": false`)
 	require.Contains(t, out.String(), "9007199254740993", "the payload goes as written")
 	require.Contains(t, out.String(), "run shell-1, key shell-1:1")
 	out.Reset()

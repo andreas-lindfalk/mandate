@@ -23,7 +23,7 @@ func TestAgentsSuite(t *testing.T) {
 
 func (s *AgentsSuite) Test_OwnerRegistersAgentsAndIssuesTokens() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	agent, err := s.W.Kernel.Agents.Create(t.Owner, "triage-bot", "")
+	agent, err := s.W.Kernel.Agents.Create(t.Owner, "triage-bot", "", "live")
 	s.Require().NoError(err)
 	s.Require().Equal(&t.OwnerId, agent.CreatedBy)
 	s.Require().Equal([]string{"agent.created"}, s.eventTypes(t.Owner, agent.Id))
@@ -50,15 +50,15 @@ func (s *AgentsSuite) Test_OwnerRegistersAgentsAndIssuesTokens() {
 
 	_, _, err = s.W.Kernel.Agents.IssueToken(t.Owner, agent.Id, 400)
 	s.code(err, fault.InvalidArgument)
-	_, err = s.W.Kernel.Agents.Create(t.Owner, "", "")
+	_, err = s.W.Kernel.Agents.Create(t.Owner, "", "", "live")
 	s.code(err, fault.InvalidArgument)
 }
 
 func (s *AgentsSuite) Test_OnlyOwners() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	_, err := s.W.Kernel.Agents.Create(t.Reviewer, "bot", "")
+	_, err := s.W.Kernel.Agents.Create(t.Reviewer, "bot", "", "live")
 	s.code(err, fault.PermissionDenied)
-	_, err = s.W.Kernel.Agents.Create(t.Agent, "bot", "")
+	_, err = s.W.Kernel.Agents.Create(t.Agent, "bot", "", "live")
 	s.code(err, fault.PermissionDenied)
 	_, _, err = s.W.Kernel.Agents.IssueToken(t.Reviewer, t.AgentId, 10)
 	s.code(err, fault.PermissionDenied)
@@ -146,4 +146,31 @@ func (s *AgentsSuite) Test_CalledWritesTheChainAsTheAgent() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	s.Require().NoError(s.W.Kernel.Agents.Called(t.Grant.Context(context.Background()), t.Grant, "propose", map[string]any{"action": "tickets.create"}, false))
 	s.Require().Equal([]string{"agent.created", "agent.token_issued", "agent.tool_called"}, s.eventTypes(t.Owner, t.AgentId))
+}
+
+// A new agent starts in dry run, and only an owner changes the mode of an
+// agent that is not revoked, whatever SQL anyone runs.
+func (s *AgentsSuite) Test_TheModeIsAnOwnersToSet() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	fresh, err := s.W.Kernel.Agents.Create(t.Owner, "new-bot", "", "")
+	s.Require().NoError(err)
+	s.Require().Equal(agents.ModeDryRun, fresh.Mode, "a new agent starts in dry run")
+	_, err = s.W.Kernel.Agents.Create(t.Owner, "odd-bot", "", "sometimes")
+	s.code(err, fault.InvalidArgument)
+
+	s.refused(t.Reviewer, `UPDATE mandate.agents SET mode = 'live' WHERE id = $1`, fresh.Id)
+	s.refused(t.Agent, `UPDATE mandate.agents SET mode = 'live' WHERE id = $1`, fresh.Id)
+	s.Require().NoError(s.exec(t.Owner, `UPDATE mandate.agents SET mode = 'live' WHERE id = $1`, fresh.Id))
+	s.Require().Error(s.exec(t.Owner, `UPDATE mandate.agents SET mode = 'sometimes' WHERE id = $1`, fresh.Id), "the table holds the modes")
+
+	other := s.W.NewTenant(s.T(), "Other")
+	s.Require().NoError(s.exec(other.Owner, `UPDATE mandate.agents SET mode = 'dry_run' WHERE id = $1`, fresh.Id), "another tenant's agent is out of sight")
+	still, err := s.W.Kernel.Agents.Get(t.Owner, fresh.Id)
+	s.Require().NoError(err)
+	s.Require().Equal(agents.ModeLive, still.Mode)
+
+	s.Require().NoError(s.W.Kernel.Agents.Revoke(t.Owner, fresh.Id))
+	s.refused(t.Owner, `UPDATE mandate.agents SET mode = 'dry_run' WHERE id = $1`, fresh.Id)
+	_, err = s.W.Kernel.Agents.SetMode(t.Owner, fresh.Id, agents.ModeDryRun)
+	s.code(err, fault.NotFound)
 }
