@@ -1,0 +1,20 @@
+# Local infrastructure for pgmandate: Postgres, for `make up`, `make demo` and
+# `make run`. compose.server.yaml adds the server as it would run for real.
+name: mandate
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: mandate
+      POSTGRES_USER: mandate_owner
+      # Reachable only from this machine (see ports). Set your own beyond it.
+      POSTGRES_PASSWORD: ${MANDATE_OWNER_PASSWORD:-owner}
+    ports: ["127.0.0.1:5433:5432"]
+    volumes: [postgres:/var/lib/postgresql]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mandate_owner -d mandate"]
+      interval: 2s
+      retries: 30
+
+volumes:
+  postgres:

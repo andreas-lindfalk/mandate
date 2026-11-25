@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package mandate.v1;
+
+option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1;mandatev1";
+
+// AuthService handles sessions. A session token is sent as
+// "Authorization: Bearer", or as the cookie the OIDC callback sets.
+service AuthService {
+  // DevLogin signs in with only an email. Available only when dev login is
+  // enabled, which the server allows only on localhost.
+  // SignInMethods says how a person can sign in here. It needs no session.
+  rpc SignInMethods(SignInMethodsRequest) returns (SignInMethodsResponse);
+  rpc DevLogin(DevLoginRequest) returns (DevLoginResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  // Me returns who is signed in and the tenants where they are a person.
+  rpc Me(MeRequest) returns (MeResponse);
+}
+
+message SignInMethodsRequest {}
+
+message SignInMethodsResponse {
+  bool dev_login = 1;
+  bool oidc = 2;
+}
+
+message DevLoginRequest {
+  string email = 1;
+  string name = 2;
+}
+
+message DevLoginResponse {
+  string token = 1;
+}
+
+message LogoutRequest {}
+
+message LogoutResponse {}
+
+message MeRequest {}
+
+message MeResponse {
+  string email = 1;
+  string name = 2;
+  repeated TenantMembership tenants = 3;
+  // Whether dev login and OIDC are available, for the sign-in page.
+  bool dev_login = 4;
+  bool oidc = 5;
+}
+
+message TenantMembership {
+  string tenant_id = 1;
+  string tenant_name = 2;
+  string person_id = 3;
+  string role = 4;
+}

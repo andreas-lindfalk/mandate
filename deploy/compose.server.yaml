@@ -1,0 +1,56 @@
+# The server as it would run for real, on top of compose.yaml:
+#
+#   export MANDATE_APP_PASSWORD=$(openssl rand -hex 16) MANDATE_OWNER_PASSWORD=$(openssl rand -hex 16)
+#   docker compose -f deploy/compose.yaml -f deploy/compose.server.yaml up -d --build
+#
+# It keeps its own database volume, apart from the one `make up` uses for
+# trying things out. The owner password applies when that volume is first
+# created; keep both passwords, since each start of migrate sets the app
+# role's password again.
+#
+# A one-off "migrate" container holds the database owner's credentials and
+# sets up the schema; the server connects only as the application role,
+# which never bypasses row level security.
+services:
+  postgres:
+    volumes: [server-data:/var/lib/postgresql]
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MANDATE_DATABASE_URL: postgres://mandate_owner:${MANDATE_OWNER_PASSWORD:-owner}@postgres:5432/mandate?sslmode=disable
+      MANDATE_APP_PASSWORD: ${MANDATE_APP_PASSWORD:?set MANDATE_APP_PASSWORD, for example to $(openssl rand -hex 16)}
+
+  pgmandate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      # Only the application role: the server never holds the owner's
+      # credentials. sslmode=disable is for this local network only.
+      MANDATE_APP_DATABASE_URL: postgres://mandate_app:${MANDATE_APP_PASSWORD:?set MANDATE_APP_PASSWORD}@postgres:5432/mandate?sslmode=disable
+      MANDATE_HTTP_ADDR: 0.0.0.0:8585
+      MANDATE_PUBLIC_URL: ${MANDATE_PUBLIC_URL:-http://127.0.0.1:8585}
+      # Sign-in through your provider. Dev login is refused here, because
+      # the server does not listen on loopback.
+      MANDATE_OIDC_ISSUER: ${MANDATE_OIDC_ISSUER:-}
+      MANDATE_OIDC_CLIENT_ID: ${MANDATE_OIDC_CLIENT_ID:-}
+      MANDATE_OIDC_CLIENT_SECRET: ${MANDATE_OIDC_CLIENT_SECRET:-}
+      # A receiver on this machine is host.docker.internal:<port> from
+      # inside the container, which is a private address: allow it only
+      # for trying things out.
+      MANDATE_ALLOW_PRIVATE_CONNECTORS: ${MANDATE_ALLOW_PRIVATE_CONNECTORS:-false}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["127.0.0.1:8585:8585"]
+
+volumes:
+  server-data:

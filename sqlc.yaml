@@ -1,0 +1,139 @@
+version: "2"
+sql:
+  - engine: postgresql
+    schema: schema
+    queries: modules/tenants/internal/repo/queries
+    gen:
+      go: &go
+        package: repo
+        out: modules/tenants/internal/repo
+        output_db_file_name: sqlc_db.go
+        output_models_file_name: sqlc_models.go
+        output_querier_file_name: sqlc_querier.go
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        initialisms: []
+        overrides:
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true
+  - engine: postgresql
+    schema: schema
+    queries: modules/agents/internal/repo/queries
+    gen:
+      go:
+        <<: *go
+        out: modules/agents/internal/repo
+  - engine: postgresql
+    schema: schema
+    queries: modules/mandates/internal/repo/queries
+    gen:
+      go:
+        <<: *go
+        out: modules/mandates/internal/repo
+  - engine: postgresql
+    schema: schema
+    queries: modules/proposals/internal/repo/queries
+    gen:
+      go:
+        <<: *go
+        out: modules/proposals/internal/repo
+  - engine: postgresql
+    schema: schema
+    queries: modules/actions/internal/repo/queries
+    gen:
+      go: &go
+        package: repo
+        out: modules/actions/internal/repo
+        output_db_file_name: sqlc_db.go
+        output_models_file_name: sqlc_models.go
+        output_querier_file_name: sqlc_querier.go
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        initialisms: []
+        overrides:
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true
+  - engine: postgresql
+    schema: schema
+    queries: modules/deliveries/internal/repo/queries
+    gen:
+      go: &go
+        package: repo
+        out: modules/deliveries/internal/repo
+        output_db_file_name: sqlc_db.go
+        output_models_file_name: sqlc_models.go
+        output_querier_file_name: sqlc_querier.go
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        initialisms: []
+        overrides:
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true
+  - engine: postgresql
+    schema: schema
+    queries: modules/auth/internal/repo/queries
+    gen:
+      go: &go
+        package: repo
+        out: modules/auth/internal/repo
+        output_db_file_name: sqlc_db.go
+        output_models_file_name: sqlc_models.go
+        output_querier_file_name: sqlc_querier.go
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        initialisms: []
+        overrides:
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true

@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package mandate.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1;mandatev1";
+
+// The tenant a call acts in is chosen with the Mandate-Tenant header. The
+// caller must be a person of that tenant; owners grant and define,
+// reviewers decide.
+
+service MandateService {
+  rpc ListMandates(ListMandatesRequest) returns (ListMandatesResponse);
+  rpc GrantMandate(GrantMandateRequest) returns (GrantMandateResponse);
+  rpc RevokeMandate(RevokeMandateRequest) returns (RevokeMandateResponse);
+}
+
+message Mandate {
+  string id = 1;
+  // Empty means every agent of the tenant.
+  string agent_id = 2;
+  repeated string actions = 3;
+  string max_risk = 4;
+  int64 budget_units = 5;
+  // What this month's executions under the mandate have cost.
+  int64 spent_units = 6;
+  string policy_ref = 7;
+  string department = 8;
+  string granted_by = 9;
+  google.protobuf.Timestamp valid_from = 10;
+  google.protobuf.Timestamp valid_until = 11;
+  google.protobuf.Timestamp revoked_at = 12;
+  string revoked_by = 13;
+}
+
+message ListMandatesRequest {
+  bool include_ended = 1;
+}
+
+message ListMandatesResponse {
+  repeated Mandate mandates = 1;
+}
+
+message GrantMandateRequest {
+  string agent_id = 1;
+  repeated string actions = 2;
+  string max_risk = 3;
+  int64 budget_units = 4;
+  string policy_ref = 5;
+  int32 days = 6;
+  string department = 7;
+}
+
+message GrantMandateResponse {
+  Mandate mandate = 1;
+}
+
+message RevokeMandateRequest {
+  string id = 1;
+}
+
+message RevokeMandateResponse {}

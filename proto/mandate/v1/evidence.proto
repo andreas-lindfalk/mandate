@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package mandate.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1;mandatev1";
+
+// The tenant a call acts in is chosen with the Mandate-Tenant header. The
+// caller must be a person of that tenant; owners grant and define,
+// reviewers decide.
+
+service EvidenceService {
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+  rpc VerifyChain(VerifyChainRequest) returns (VerifyChainResponse);
+  // ExportChain returns the whole chain as JSON lines with hashes, which
+  // verifies without the database.
+  rpc ExportChain(ExportChainRequest) returns (ExportChainResponse);
+  // ExportDecisions returns the decided proposals as JSON lines.
+  rpc ExportDecisions(ExportDecisionsRequest) returns (ExportDecisionsResponse);
+}
+
+message Event {
+  int64 seq = 1;
+  string type = 2;
+  string actor_kind = 3;
+  string actor_id = 4;
+  string actor_name = 5;
+  string subject_id = 6;
+  string run_id = 7;
+  string payload_json = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message ListEventsRequest {
+  string subject_id = 1;
+  int32 limit = 2;
+}
+
+message ListEventsResponse {
+  repeated Event events = 1;
+}
+
+message VerifyChainRequest {}
+
+message VerifyChainResponse {
+  bool ok = 1;
+  int64 events = 2;
+  string error = 3;
+}
+
+message ExportChainRequest {}
+
+message ExportChainResponse {
+  string jsonl = 1;
+}
+
+message ExportDecisionsRequest {}
+
+message ExportDecisionsResponse {
+  string jsonl = 1;
+}

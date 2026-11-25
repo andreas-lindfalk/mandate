@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package mandate.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1;mandatev1";
+
+// The tenant a call acts in is chosen with the Mandate-Tenant header. The
+// caller must be a person of that tenant; owners grant and define,
+// reviewers decide.
+
+service AgentService {
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+  rpc RevokeAgent(RevokeAgentRequest) returns (RevokeAgentResponse);
+  // IssueToken returns the secret once; only its hash is stored.
+  rpc IssueToken(IssueTokenRequest) returns (IssueTokenResponse);
+  rpc ListTokens(ListTokensRequest) returns (ListTokensResponse);
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+}
+
+message Agent {
+  string id = 1;
+  string name = 2;
+  string department = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp revoked_at = 5;
+}
+
+message Token {
+  string id = 1;
+  string agent_id = 2;
+  string hint = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  google.protobuf.Timestamp last_used_at = 6;
+  google.protobuf.Timestamp revoked_at = 7;
+}
+
+message ListAgentsRequest {}
+
+message ListAgentsResponse {
+  repeated Agent agents = 1;
+}
+
+message CreateAgentRequest {
+  string name = 1;
+  string department = 2;
+}
+
+message CreateAgentResponse {
+  Agent agent = 1;
+}
+
+message RevokeAgentRequest {
+  string id = 1;
+}
+
+message RevokeAgentResponse {}
+
+message IssueTokenRequest {
+  string agent_id = 1;
+  int32 days = 2;
+}
+
+message IssueTokenResponse {
+  Token token = 1;
+  string secret = 2;
+}
+
+message ListTokensRequest {
+  string agent_id = 1;
+}
+
+message ListTokensResponse {
+  repeated Token tokens = 1;
+}
+
+message RevokeTokenRequest {
+  string id = 1;
+}
+
+message RevokeTokenResponse {}

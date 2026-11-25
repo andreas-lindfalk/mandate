@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package mandate.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1;mandatev1";
+
+// The tenant a call acts in is chosen with the Mandate-Tenant header. The
+// caller must be a person of that tenant; owners grant and define,
+// reviewers decide.
+
+service PersonService {
+  rpc ListPersons(ListPersonsRequest) returns (ListPersonsResponse);
+  rpc AddPerson(AddPersonRequest) returns (AddPersonResponse);
+  // RemovePerson takes a person's role away for good and ends their
+  // sessions. The last owner cannot be removed.
+  rpc RemovePerson(RemovePersonRequest) returns (RemovePersonResponse);
+}
+
+message Person {
+  string id = 1;
+  string email = 2;
+  string name = 3;
+  string role = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp removed_at = 6;
+}
+
+message RemovePersonRequest {
+  string id = 1;
+}
+
+message RemovePersonResponse {}
+
+message ListPersonsRequest {}
+
+message ListPersonsResponse {
+  repeated Person persons = 1;
+}
+
+message AddPersonRequest {
+  string email = 1;
+  string name = 2;
+  string role = 3;
+}
+
+message AddPersonResponse {
+  Person person = 1;
+}

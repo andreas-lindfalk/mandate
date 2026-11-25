@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package mandate.v1;
+
+import "google/protobuf/timestamp.proto";
+import "mandate/v1/evidence.proto";
+
+option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1;mandatev1";
+
+// The tenant a call acts in is chosen with the Mandate-Tenant header. The
+// caller must be a person of that tenant; owners grant and define,
+// reviewers decide.
+
+service ProposalService {
+  rpc ListProposals(ListProposalsRequest) returns (ListProposalsResponse);
+  rpc GetProposal(GetProposalRequest) returns (GetProposalResponse);
+  rpc ApproveProposal(ApproveProposalRequest) returns (ApproveProposalResponse);
+  rpc RejectProposal(RejectProposalRequest) returns (RejectProposalResponse);
+  // RedeliverProposal sends a failed delivery again.
+  rpc RedeliverProposal(RedeliverProposalRequest) returns (RedeliverProposalResponse);
+}
+
+message ExecutionBasis {
+  string mandate_id = 1;
+  string policy_ref = 2;
+  string max_risk = 3;
+  int64 budget_units = 4;
+  int64 spent_units = 5;
+  int64 cost_units = 6;
+}
+
+message Delivery {
+  string id = 1;
+  string status = 2;
+  int32 attempts = 3;
+  string url = 4;
+  string last_error = 5;
+  google.protobuf.Timestamp delivered_at = 6;
+  google.protobuf.Timestamp failed_at = 7;
+  // What the connector answered, as JSON text; empty for none.
+  string result_json = 8;
+  // How many attempts are made before the delivery is marked failed.
+  int32 max_attempts = 9;
+}
+
+message RedeliverProposalRequest {
+  string id = 1;
+}
+
+message RedeliverProposalResponse {
+  Proposal proposal = 1;
+}
+
+message Proposal {
+  string id = 1;
+  string agent_id = 2;
+  string agent_name = 3;
+  string run_id = 4;
+  string action = 5;
+  string risk = 6;
+  string title = 7;
+  string payload_json = 8;
+  int64 cost_units = 9;
+  repeated string flags = 10;
+  string status = 11;
+  bool edited = 12;
+  string decided_by = 13;
+  google.protobuf.Timestamp decided_at = 14;
+  string decision_note = 15;
+  google.protobuf.Timestamp created_at = 16;
+  ExecutionBasis execution_basis = 17;
+  // Why the last execution attempt left it for a person, if it did.
+  string skip_reason = 18;
+  Delivery delivery = 19;
+  // The payload as the agent proposed it. It differs from payload_json
+  // when a person edited it on approval.
+  string proposed_payload_json = 20;
+  // For a waiting proposal read on its own: the risk an approval of it
+  // would run at, under the action as it is now. Empty when the action is
+  // gone and it can only be rejected.
+  string approval_risk = 21;
+}
+
+message ListProposalsRequest {
+  string status = 1;
+  int32 limit = 2;
+  // Oldest first, as a queue is worked; newest first otherwise.
+  bool oldest_first = 3;
+}
+
+message ListProposalsResponse {
+  repeated Proposal proposals = 1;
+  // How many proposals have the status asked for, beyond the limit too.
+  int64 total = 2;
+}
+
+message GetProposalRequest {
+  string id = 1;
+}
+
+message GetProposalResponse {
+  Proposal proposal = 1;
+  repeated Event history = 2;
+}
+
+message ApproveProposalRequest {
+  string id = 1;
+  string title = 2;
+  // An edited payload as JSON text, empty to keep the agent's.
+  string payload_json = 3;
+  bool confirm = 4;
+  string note = 5;
+}
+
+message ApproveProposalResponse {
+  Proposal proposal = 1;
+}
+
+message RejectProposalRequest {
+  string id = 1;
+  string note = 2;
+}
+
+message RejectProposalResponse {
+  Proposal proposal = 1;
+}

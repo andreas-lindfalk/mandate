@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mandate delivery, version 1",
+  "description": "The body mandate posts to a webhook action's URL when a proposal has been approved by a person or executed under a mandate. The body is the same on every attempt of a delivery; the time of an attempt is in the Mandate-Timestamp header. Fields may be added within a version, so a receiver ignores fields it does not know. A removed field or a changed meaning is a new version, which a receiver refuses.",
+  "type": "object",
+  "required": ["version", "deliveryId", "correlationId", "tenantId", "createdAt", "proposal", "decision"],
+  "properties": {
+    "version": {
+      "description": "The version of this body.",
+      "const": 1
+    },
+    "deliveryId": {
+      "description": "The id of this delivery, the same on every attempt and equal to the Mandate-Delivery-Id header. Use it to do the work once.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "correlationId": {
+      "description": "One value to join logs on across every system: the run id the agent gave when it proposed, otherwise the proposal's id. The agent knows it either way, and several deliveries of one run share it. A run id is chosen by the agent, so this is a label, not an identity: the proposal's id and the agent's id are what identify the work.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,100}$"
+    },
+    "tenantId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "createdAt": {
+      "description": "When the delivery was recorded, in the transaction of the decision. RFC 3339, UTC.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "proposal": {
+      "type": "object",
+      "required": ["id", "action", "title", "payload", "risk", "agentId", "proposedAt"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "action": {
+          "description": "The key of the action, such as tickets.create.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+          "maxLength": 100
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "payload": {
+          "description": "What the agent proposed, or what a person edited it to. It fits the action's own payload schema as that schema was when the decision was made.",
+          "type": "object"
+        },
+        "risk": { "enum": ["low", "medium", "high"] },
+        "agentId": { "type": "string", "format": "uuid" },
+        "runId": {
+          "description": "The agent's own id for a chain of work, when it gave one. Left out otherwise.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,100}$"
+        },
+        "proposedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["status", "decidedAt", "edited"],
+      "properties": {
+        "status": {
+          "description": "approved: a person decided. executed: a mandate allowed it without a person.",
+          "enum": ["approved", "executed"]
+        },
+        "decidedAt": { "type": "string", "format": "date-time" },
+        "decidedBy": {
+          "description": "The person who approved. Left out for an execution.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "note": { "type": "string", "maxLength": 1000 },
+        "edited": {
+          "description": "Whether a person changed the title or the payload on approval.",
+          "type": "boolean"
+        },
+        "executionBasis": {
+          "description": "What allowed an execution without a person. Left out for an approval.",
+          "type": "object",
+          "required": ["mandateId", "policyRef", "maxRisk", "budgetUnits", "spentUnits", "costUnits"],
+          "properties": {
+            "mandateId": { "type": "string", "format": "uuid" },
+            "policyRef": { "type": "string" },
+            "maxRisk": { "enum": ["low", "medium"] },
+            "budgetUnits": { "type": "integer", "minimum": 0 },
+            "spentUnits": {
+              "description": "Units spent under the mandate this month before this proposal.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "costUnits": { "type": "integer", "minimum": 0 }
+          }
+        }
+      },
+      "if": { "properties": { "status": { "const": "approved" } } },
+      "then": { "required": ["decidedBy"] },
+      "else": { "required": ["executionBasis"] }
+    }
+  }
+}

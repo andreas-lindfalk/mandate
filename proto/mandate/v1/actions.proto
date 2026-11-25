@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package mandate.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1;mandatev1";
+
+// The tenant a call acts in is chosen with the Mandate-Tenant header. The
+// caller must be a person of that tenant; owners grant and define,
+// reviewers decide.
+
+service ActionService {
+  rpc ListActions(ListActionsRequest) returns (ListActionsResponse);
+  // DefineAction creates or updates the action with the key. A new webhook,
+  // or a rotation, returns the signing secret once.
+  rpc DefineAction(DefineActionRequest) returns (DefineActionResponse);
+  rpc RemoveAction(RemoveActionRequest) returns (RemoveActionResponse);
+}
+
+message Action {
+  string id = 1;
+  string key = 2;
+  string description = 3;
+  string risk = 4;
+  int64 cost_units = 5;
+  bool may_execute = 6;
+  // The payload schema as JSON text, empty for none. A webhook action
+  // always has one.
+  string schema_json = 7;
+  string connector = 8;
+  string connector_url = 9;
+  bool has_secret = 10;
+  string department = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  google.protobuf.Timestamp removed_at = 14;
+  // Builtin actions registered in code and not defined by the tenant.
+  bool builtin_only = 15;
+}
+
+message ListActionsRequest {
+  bool include_removed = 1;
+}
+
+message ListActionsResponse {
+  repeated Action actions = 1;
+}
+
+message DefineActionRequest {
+  string key = 1;
+  string description = 2;
+  string risk = 3;
+  int64 cost_units = 4;
+  bool may_execute = 5;
+  // Required when the connector is webhook.
+  string schema_json = 6;
+  string connector = 7;
+  string connector_url = 8;
+  bool rotate_secret = 9;
+  string department = 10;
+}
+
+message DefineActionResponse {
+  Action action = 1;
+  string secret = 2;
+}
+
+message RemoveActionRequest {
+  string key = 1;
+}
+
+message RemoveActionResponse {}
