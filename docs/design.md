@@ -97,7 +97,9 @@ The API is Connect: Auth, Persons, Agents, Actions, Mandates, Proposals, Notifie
 
 One image, built in two stages so the web app is embedded in the binary. Configuration is by environment; see the README. `pgmandate migrate` runs as the owner, as a step of its own, and needs no superuser: on a managed Postgres the admin runs it. It creates the application role with safe attributes, or uses one a DBA made, and refuses one that could get past the rules (`db.CheckAppRole`). `serve` runs with the application role only, checks that role again at start, and refuses the repository's default password when it listens beyond loopback. `deploy/compose.server.yaml` shows the split.
 
-River's tables live in a schema of their own, `mandate_river`, which `migrate` creates. The application role is given rights there and on nothing of River's in `public`, so a host that runs River itself, in `public`, never shares a queue with pgmandate.
+River's tables live in a schema of their own, `mandate_river`, which `migrate` creates. The application role is given rights there and on nothing of River's in `public`, so a host that runs River itself, in `public`, never shares a queue with pgmandate. In one binary, a host and pgmandate use the same River version, as Go's modules allow only one: a host that upgrades River upgrades pgmandate's, and runs pgmandate's migrations (`jobs.Migrate`) after. A test runs a host's River beside pgmandate's and holds them apart.
+
+Several server instances may share one database. Decisions, budgets, the per-agent proposal limits and the log are held by the database across all of them; the per-second call limit and the limit on failed sign-ins are kept in each instance's memory. A test runs two instances at once against one database. Every check of time, deadlines and mandates' validity included, reads the database's clock, so instances whose clocks differ still agree.
 
 ## Not built
 

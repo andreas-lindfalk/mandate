@@ -236,12 +236,7 @@ A Go service imports pgmandate and shares its Postgres.
 - The service's own tables can be guarded with `mandate.may_write_for`. Only a person of the tenant, or the execution of a decided proposal, may then change them, and an agent never can.
 - `examples/helpdesk` shows it.
 
-*Today:* this works, with friction a host will hit:
-- pgmandate's job queue (River, a job queue kept in Postgres) shares River's defaults with a host that also uses River.
-- Setting up the database role assumes a superuser.
-- The server's wiring sits in `main`.
-
-Phase 1 of the roadmap removes the first two.
+*Today:* this works, and CI holds it: a host runs River itself beside pgmandate's own queue, and setup needs no superuser. What a host will still meet is that the server's wiring sits in `main`, so a host wires the kernel and the API itself, as `examples/helpdesk` and `cmd/pgmandate` show.
 
 ### Behind a gateway or a framework you already have
 

@@ -7,7 +7,6 @@ package repo
 
 import (
 	"context"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -89,9 +88,8 @@ func (q *Queries) GetMandate(ctx context.Context, id uuid.UUID) (MandateMandate,
 
 const insertMandate = `-- name: InsertMandate :exec
 INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, valid_from, valid_until, condition, condition_plan)
-SELECT $1, $2, $3, $4::text[], $5, $6, $7, $8,
-    starts.at, starts.at + $9::interval, $10, $11
-FROM (SELECT LEAST($12::timestamptz, now()) AS at) AS starts
+VALUES ($1, $2, $3, $4::text[], $5, $6, $7, $8,
+    now(), now() + $9::interval, $10, $11)
 `
 
 type InsertMandateParams struct {
@@ -106,12 +104,11 @@ type InsertMandateParams struct {
 	Lasts         pgtype.Interval
 	Condition     *string
 	ConditionPlan []byte
-	StartsAt      time.Time
 }
 
-// A grant holds at once. Its start is never later than the database's
-// clock, which basis_holds reads, even when the server's clock runs ahead;
-// its length is kept.
+// A grant holds at once, by the clock of the database, which every check of
+// it reads. Its days are counted in hours, so a daylight saving change in
+// the time zone of the session never makes them an hour longer or shorter.
 func (q *Queries) InsertMandate(ctx context.Context, arg InsertMandateParams) error {
 	_, err := q.db.Exec(ctx, insertMandate,
 		arg.Id,
@@ -125,7 +122,6 @@ func (q *Queries) InsertMandate(ctx context.Context, arg InsertMandateParams) er
 		arg.Lasts,
 		arg.Condition,
 		arg.ConditionPlan,
-		arg.StartsAt,
 	)
 	return err
 }
@@ -133,20 +129,16 @@ func (q *Queries) InsertMandate(ctx context.Context, arg InsertMandateParams) er
 const listLiveForAgent = `-- name: ListLiveForAgent :many
 SELECT id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, condition, condition_plan, created_at FROM mandate.mandates
 WHERE (agent_id IS NULL OR agent_id = $1::uuid)
-    AND revoked_at IS NULL AND valid_from <= $2 AND valid_until > $2
+    AND revoked_at IS NULL AND valid_from <= now() AND valid_until > now()
 ORDER BY max_risk DESC, created_at, id
 FOR UPDATE
 `
 
-type ListLiveForAgentParams struct {
-	AgentId uuid.UUID
-	At      time.Time
-}
-
-// Mandates that hold at the instant given, for the agent, locked so that two
-// executions under the same mandate count the budget one after the other.
-func (q *Queries) ListLiveForAgent(ctx context.Context, arg ListLiveForAgentParams) ([]MandateMandate, error) {
-	rows, err := q.db.Query(ctx, listLiveForAgent, arg.AgentId, arg.At)
+// Mandates that hold now, by the database's clock, for the agent, locked so
+// that two executions under the same mandate count the budget one after the
+// other.
+func (q *Queries) ListLiveForAgent(ctx context.Context, agentID uuid.UUID) ([]MandateMandate, error) {
+	rows, err := q.db.Query(ctx, listLiveForAgent, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -185,18 +177,13 @@ func (q *Queries) ListLiveForAgent(ctx context.Context, arg ListLiveForAgentPara
 const listLiveForAgentToRead = `-- name: ListLiveForAgentToRead :many
 SELECT id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, condition, condition_plan, created_at FROM mandate.mandates
 WHERE (agent_id IS NULL OR agent_id = $1::uuid)
-    AND revoked_at IS NULL AND valid_from <= $2 AND valid_until > $2
+    AND revoked_at IS NULL AND valid_from <= now() AND valid_until > now()
 ORDER BY max_risk DESC, created_at, id
 `
 
-type ListLiveForAgentToReadParams struct {
-	AgentId uuid.UUID
-	At      time.Time
-}
-
 // As ListLiveForAgent, without the lock: for explaining, not deciding.
-func (q *Queries) ListLiveForAgentToRead(ctx context.Context, arg ListLiveForAgentToReadParams) ([]MandateMandate, error) {
-	rows, err := q.db.Query(ctx, listLiveForAgentToRead, arg.AgentId, arg.At)
+func (q *Queries) ListLiveForAgentToRead(ctx context.Context, agentID uuid.UUID) ([]MandateMandate, error) {
+	rows, err := q.db.Query(ctx, listLiveForAgentToRead, agentID)
 	if err != nil {
 		return nil, err
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/modules/agents"
 	"github.com/andreas-lindfalk/pgmandate/modules/tenants"
 	"github.com/andreas-lindfalk/pgmandate/pkg/actor"
+	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
 	"github.com/andreas-lindfalk/pgmandate/pkg/jobs"
 	"github.com/andreas-lindfalk/pgmandate/pkg/testkit"
@@ -71,6 +72,39 @@ func Start(ctx context.Context, withJobs bool) (*World, error) {
 		}
 	}
 	return w, nil
+}
+
+// Instance is a second server on the world's database: its own pool, its
+// own kernel with the same actions, and its own running queue, as two
+// replicas behind a load balancer are. stop closes it.
+func (w *World) Instance(ctx context.Context) (*pgmandate.Kernel, func(), error) {
+	pool, err := db.Open(ctx, w.Pg.AppUrl)
+	if err != nil {
+		return nil, nil, err
+	}
+	queue := jobs.NewQueue(pool)
+	kernel := pgmandate.New(pool, pgmandate.Options{Now: w.Now, AllowPrivateConnectors: true, PublicUrl: PublicUrl, NotifyClient: w.Chat.Client(), Signer: Signer, Queue: queue})
+	for _, action := range append(helpdesk.Actions(), w.actions()...) {
+		if err := kernel.Register(action); err != nil {
+			pool.Close()
+			return nil, nil, err
+		}
+	}
+	if err := queue.Init(2); err != nil {
+		pool.Close()
+		return nil, nil, err
+	}
+	if err := queue.Start(ctx); err != nil {
+		pool.Close()
+		return nil, nil, err
+	}
+	stop := func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = queue.Stop(stopCtx)
+		pool.Close()
+	}
+	return kernel, stop, nil
 }
 
 func (w *World) Close() {

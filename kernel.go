@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -135,7 +134,6 @@ func New(pool *pgxpool.Pool, opts Options) *Kernel {
 	k.Proposals.SetOnWaiting(k.Notifications.Enqueue)
 	if opts.Now != nil {
 		k.Agents.SetNow(opts.Now)
-		k.Mandates.SetNow(opts.Now)
 	}
 	if opts.Queue != nil {
 		river.AddWorker(opts.Queue.Workers(), &executeWorker{kernel: k})
@@ -344,18 +342,7 @@ func (k *Kernel) LiveMandates(ctx context.Context) ([]Mandate, error) {
 	if !ok || a.Kind != actor.Agent {
 		return nil, errors.New("live mandates: not an agent")
 	}
-	all, err := k.Mandates.List(ctx, false)
-	if err != nil {
-		return nil, err
-	}
-	now := k.Mandates.Now()
-	live := all[:0]
-	for _, m := range all {
-		if (m.AgentId == nil || *m.AgentId == a.Id) && !now.Before(m.ValidFrom) && now.Before(m.ValidUntil) {
-			live = append(live, m)
-		}
-	}
-	return slices.Clip(live), nil
+	return k.Mandates.Live(ctx, a.Id)
 }
 
 // SpentCount, DeliveryOf and DeliveriesOf implement agentapi.Host.

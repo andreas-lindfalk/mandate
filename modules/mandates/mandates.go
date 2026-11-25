@@ -94,30 +94,19 @@ type Input struct {
 
 type Service struct {
 	pool *pgxpool.Pool
-	now  func() time.Time
 	// builtin lists the actions an embedded host registered in code, by key,
 	// with their payload schema or nil.
 	builtin func() map[string]json.RawMessage
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{pool: pool, now: time.Now}
+	return &Service{pool: pool}
 }
 
 // SetBuiltin tells the service which actions exist only as code, so a
 // condition is checked against their schemas too. The kernel wires it.
 func (s *Service) SetBuiltin(builtin func() map[string]json.RawMessage) {
 	s.builtin = builtin
-}
-
-// SetNow replaces the clock, for tests of validity and the month boundary.
-func (s *Service) SetNow(now func() time.Time) {
-	s.now = now
-}
-
-// Now is the clock the service uses.
-func (s *Service) Now() time.Time {
-	return s.now()
 }
 
 // Grant creates a mandate in the tenant in scope. Only an owner may, which
@@ -159,9 +148,6 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 		}
 		condition = &input.Condition
 	}
-	// Validity is counted in UTC days, so a daylight saving change never
-	// makes 366 days one hour too long for the database's check.
-	now := s.now().UTC()
 	id := uuid.New()
 	var result Mandate
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
@@ -193,8 +179,10 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 		}
 		if err := q.InsertMandate(ctx, repo.InsertMandateParams{
 			Id: id, TenantId: tenantId, AgentId: input.AgentId, Actions: input.Actions, MaxRisk: input.MaxRisk,
-			BudgetCount: input.BudgetCount, PolicyRef: input.PolicyRef, Department: department, StartsAt: now,
-			Lasts:     pgtype.Interval{Microseconds: now.AddDate(0, 0, input.Days).Sub(now).Microseconds(), Valid: true},
+			BudgetCount: input.BudgetCount, PolicyRef: input.PolicyRef, Department: department,
+			// Days of 24 hours: a daylight saving change never makes 366
+			// days an hour longer than the database's check allows.
+			Lasts:     pgtype.Interval{Microseconds: (time.Duration(input.Days) * 24 * time.Hour).Microseconds(), Valid: true},
 			Condition: condition, ConditionPlan: planJson,
 		}); err != nil {
 			return err
@@ -392,7 +380,7 @@ const (
 // room is chosen. The spend is what the database counts, so the basis
 // recorded here is exactly what the execution trigger will check.
 func (s *Service) Resolve(ctx context.Context, tx pgx.Tx, agentId uuid.UUID, action, risk string, payload json.RawMessage) (Resolution, error) {
-	rows, err := repo.New(tx).ListLiveForAgent(ctx, repo.ListLiveForAgentParams{AgentId: agentId, At: s.now()})
+	rows, err := repo.New(tx).ListLiveForAgent(ctx, agentId)
 	if err != nil {
 		return Resolution{}, err
 	}
@@ -432,16 +420,32 @@ func (s *Service) Resolve(ctx context.Context, tx pgx.Tx, agentId uuid.UUID, act
 	return Resolution{Reason: SkipBudgetSpent}, nil
 }
 
+// Live lists the mandates that hold now for the agent, by the database's
+// clock: its own and those for every agent of the tenant.
+func (s *Service) Live(ctx context.Context, agentId uuid.UUID) ([]Mandate, error) {
+	var out []Mandate
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		rows, err := repo.New(tx).ListLiveForAgentToRead(ctx, agentId)
+		for _, row := range rows {
+			out = append(out, toMandate(row))
+		}
+		return err
+	})
+	// Newest first, as the list of mandates shows them.
+	slices.SortStableFunc(out, func(a, b Mandate) int { return b.CreatedAt.Compare(a.CreatedAt) })
+	return out, err
+}
+
 // Unmet explains a proposal left for a person because no mandate's
 // condition held: for each live mandate with a condition that covers the
 // agent, the action and the risk, what in the payload stood in the way.
-// It reads the mandates live now by the service's clock, as Resolve does,
+// It reads the mandates live now by the database's clock, as Resolve does,
 // which may differ from when the proposal was tried.
 func (s *Service) Unmet(ctx context.Context, agentId uuid.UUID, action, risk string, payload json.RawMessage) ([]string, error) {
 	var rows []repo.MandateMandate
 	if err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		var err error
-		rows, err = repo.New(tx).ListLiveForAgentToRead(ctx, repo.ListLiveForAgentToReadParams{AgentId: agentId, At: s.now()})
+		rows, err = repo.New(tx).ListLiveForAgentToRead(ctx, agentId)
 		return err
 	}); err != nil {
 		return nil, err

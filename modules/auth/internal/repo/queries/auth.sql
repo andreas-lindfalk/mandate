@@ -1,6 +1,7 @@
 -- name: InsertSession :exec
+-- Its lifetime is counted on the database's clock, which every check reads.
 INSERT INTO mandate.sessions (token_hash, email, name, issuer, subject, person_id, expires_at)
-VALUES (@token_hash, @email, @name, sqlc.narg('issuer'), sqlc.narg('subject'), sqlc.narg('person_id'), @expires_at);
+VALUES (@token_hash, @email, @name, sqlc.narg('issuer'), sqlc.narg('subject'), sqlc.narg('person_id'), now() + @ttl::interval);
 
 -- name: GetSession :one
 SELECT email, name, issuer, subject, person_id FROM mandate.sessions WHERE token_hash = @token_hash AND expires_at > now();

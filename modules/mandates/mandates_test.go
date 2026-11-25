@@ -177,12 +177,14 @@ func (s *MandatesSuite) Test_ValidityAndRevocation() {
 	m := s.grant(t.Owner, mandates.Input{Actions: []string{"*"}, Days: 10})
 	s.Require().Empty(s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow).Reason)
 
-	s.W.SetNow(time.Now().AddDate(0, 0, 11))
+	// Eleven days on, by the database's clock: the mandate's window moved
+	// back, past the guard.
+	s.shift(m.Id, "-11 days")
 	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow).Reason, "expired")
 	live, err := s.W.Kernel.Mandates.List(t.Owner, false)
 	s.Require().NoError(err)
-	s.Require().Len(live, 1, "the list is the database's clock; the mandate is still in its window there")
-	s.W.SetNow(time.Time{})
+	s.Require().Empty(live, "the list reads the same clock")
+	s.shift(m.Id, "11 days")
 
 	s.Require().NoError(s.W.Kernel.Mandates.Revoke(t.Owner, m.Id))
 	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow).Reason, "revoked")
@@ -198,16 +200,37 @@ func (s *MandatesSuite) Test_GrantNamesAnAgentOfTheTenant() {
 	s.code(err, fault.InvalidArgument)
 }
 
-func (s *MandatesSuite) Test_ValidityCountsUtcDays() {
+// A mandate's days are 24 hours each: the grant's length is exact. The
+// second half shows, in Postgres itself, why the grant adds hours and not
+// days: across a daylight saving change, days in a local time zone are an
+// hour short or long, which the database's check of the length refuses.
+func (s *MandatesSuite) Test_ValidityCountsDaysOf24Hours() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	stockholm, err := time.LoadLocation("Europe/Stockholm")
-	s.Require().NoError(err)
-	// Across the daylight saving change, 366 local days are one hour more
-	// than 366 UTC days; the database checks the exact difference.
-	s.W.SetNow(time.Date(2026, 3, 1, 12, 0, 0, 0, stockholm))
-	defer s.W.SetNow(time.Time{})
 	m := s.grant(t.Owner, mandates.Input{Actions: []string{"*"}, Days: 366})
 	s.Require().Equal(366*24*time.Hour, m.ValidUntil.Sub(m.ValidFrom))
+	// The same addition in a session in Stockholm, across the change.
+	ctx := context.Background()
+	tx, err := s.W.Pg.Owner.Begin(ctx)
+	s.Require().NoError(err)
+	defer tx.Rollback(ctx) //nolint:errcheck
+	_, err = tx.Exec(ctx, `SET LOCAL TIME ZONE 'Europe/Stockholm'`)
+	s.Require().NoError(err)
+	// Thirty days from mid March cross the spring change and only that one.
+	var hours, days int64
+	s.Require().NoError(tx.QueryRow(ctx, `SELECT
+		extract(epoch FROM (timestamptz '2026-03-15 12:00+01' + 30 * interval '24 hours') - timestamptz '2026-03-15 12:00+01')::bigint,
+		extract(epoch FROM (timestamptz '2026-03-15 12:00+01' + interval '30 days') - timestamptz '2026-03-15 12:00+01')::bigint`).Scan(&hours, &days))
+	s.Require().Equal(int64(30*24*3600), hours, "hours do not stretch over the change")
+	s.Require().Equal(int64(30*24*3600-3600), days, "days would: why the grant counts hours")
+}
+
+// shift moves a mandate's window by an interval, past the guard, as the
+// passing of time would.
+func (s *MandatesSuite) shift(id uuid.UUID, by string) {
+	s.T().Helper()
+	_, err := s.W.Pg.Owner.Exec(context.Background(), `BEGIN; SET LOCAL session_replication_role = replica;
+		UPDATE mandate.mandates SET valid_from = valid_from + interval '`+by+`', valid_until = valid_until + interval '`+by+`' WHERE id = '`+id.String()+`'; COMMIT;`)
+	s.Require().NoError(err)
 }
 
 func (s *MandatesSuite) Test_AnotherTenantSeesNoMandates() {
