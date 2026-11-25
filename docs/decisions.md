@@ -2,6 +2,19 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
+## 2026-11-26: the design of what 0.1.0 freezes
+
+[design-0.1.md](design-0.1.md) designs proposal expiry, the dry run, delivery contract v2 and the agent contract together. Two reviews (protocol and security, and fit with the code) shaped it. The choices that matter:
+
+- **Only an explicit answer from a receiver is final.** `done`, `refused` and `unknown` must be said. A proxy's 404, a redirect or a timeout is never read as "nothing was done".
+- **The worker writes ahead.** It records that an attempt started before calling. A crash then ends as *unknown*, never *not sent*.
+- **Retries stop before `notAfter`.** An unknown delivery is settled by a person only once the work can no longer happen. A delivery is sent again only from *not sent*.
+- **An audience has a random part,** drawn again on every definition or move, so it never repeats.
+- **A result reported later is left out of 0.1.0.** It brought a token that is hard to keep both stable and secret, an extra endpoint and races. It is additive, so it can come later.
+- **One periodic sweep on River's leader** expires proposals and finishes deliveries, tenant by tenant. An embedded host without a queue calls it itself.
+- **Payloads in the agent contract are JSON text,** so numbers keep every digit.
+- **A new agent starts in dry run.** It changes nothing until an owner makes it live, and an owner may create it live. A waiting dry run can only be dismissed, never marked as "would approve".
+
 ## 2026-11-25: the roadmap follows a first team
 
 Three critical readings of the scope and the roadmap each came back "go, with changes". These are the changes. They revise the roadmap order in the entry below.
@@ -16,7 +29,7 @@ Three critical readings of the scope and the roadmap each came back "go, with ch
   - a budget block with a kind, so that money is an addition
   - `notAfter`, so an expired decision is not carried out late
   - the *outcome unknown* status
-  - a result reported later, authenticated by a single-use token per delivery
+  - a result reported later, authenticated by a single-use token per delivery (revised 2026-11-26: left out of 0.1.0, see above)
 
   The agent's operations become one Connect contract that MCP, HTTP and the clients share.
 - **River in a schema of its own.** Queue names alone would not separate pgmandate's jobs from a host's, and its tables live in the host's `public` schema today.
