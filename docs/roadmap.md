@@ -47,7 +47,7 @@ This is the critical path, so it starts at once.
    - Dev login stays limited to a server that listens only on the machine itself. A container listens on every address, so the quickstart needs another way in: the server prints a single-use sign-in link for the first owner. The link works only while the tenant has no owner, expires quickly, and is stored hashed, since container logs are an admin path.
    - Seeing the UI then needs neither Go, Node nor an OpenID provider.
 2. **The README as a front door.** It opens with what the scope says, and has a drawn diagram and a recorded demo of the whole loop. The long reference sections move into `docs/`.
-3. **Database setup that works without a superuser.** On managed Postgres (RDS, Cloud SQL, Azure, Supabase, Neon) the admin role is not a superuser, and setting a role's attributes fails. Setup therefore:
+3. **Database setup that works without a superuser.** Built. On managed Postgres (RDS, Cloud SQL, Azure, Supabase, Neon) the admin role is not a superuser, and setting a role's attributes fails. Setup therefore:
    - checks the application role's attributes and refuses to go on if they are wrong, including when the role owns pgmandate's tables, or has SUPERUSER, BYPASSRLS or CREATEROLE, or can switch through membership to a role that does, such as a managed service's admin role (`rds_superuser`, `cloudsqlsuperuser`). Each of these gets past row level security or the append-only guard
    - can skip creating the role when a DBA created it beforehand
    - revokes `CREATE` on `public` only when asked to

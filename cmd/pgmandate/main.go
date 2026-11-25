@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -133,7 +134,14 @@ Environment:
 type config struct {
 	ownerUrl    string
 	appPassword string
-	httpAddr    string
+	// appPasswordGiven says MANDATE_APP_PASSWORD was set, rather than the
+	// local default.
+	appPasswordGiven bool
+	// createAppRole lets setup create the app role; off, a DBA made it.
+	createAppRole bool
+	// revokePublicCreate revokes CREATE on the schema public from PUBLIC.
+	revokePublicCreate bool
+	httpAddr           string
 	// appUrl, when set, is how the server connects as the app role; the
 	// owner connection is then not needed to serve.
 	appUrl     string
@@ -157,6 +165,15 @@ func loadConfig() (config, error) {
 		ownerGiven:   os.Getenv("MANDATE_DATABASE_URL") != "",
 		allowPrivate: env("MANDATE_ALLOW_PRIVATE_CONNECTORS", "false") == "true",
 		receiverAddr: env("MANDATE_RECEIVER_ADDR", "127.0.0.1:8586"),
+
+		appPasswordGiven: os.Getenv("MANDATE_APP_PASSWORD") != "",
+	}
+	var err error
+	if cfg.createAppRole, err = strconv.ParseBool(env("MANDATE_CREATE_APP_ROLE", "true")); err != nil {
+		return cfg, errors.New("MANDATE_CREATE_APP_ROLE is true or false")
+	}
+	if cfg.revokePublicCreate, err = strconv.ParseBool(env("MANDATE_REVOKE_PUBLIC_CREATE", "false")); err != nil {
+		return cfg, errors.New("MANDATE_REVOKE_PUBLIC_CREATE is true or false")
 	}
 	cfg.publicUrl = env("MANDATE_PUBLIC_URL", "http://"+cfg.httpAddr)
 	ttl, err := time.ParseDuration(env("MANDATE_SESSION_TTL", "168h"))
@@ -262,14 +279,33 @@ func run(ctx context.Context, command string, args []string, out io.Writer) erro
 }
 
 func migrate(ctx context.Context, cfg config) error {
-	if err := db.Bootstrap(ctx, cfg.ownerUrl, cfg.appPassword); err != nil {
+	// A role setup creates gets the password, the local default included;
+	// one that is already there keeps its own unless one is given.
+	setup := db.Setup{CreateRole: cfg.createAppRole, NewRolePassword: cfg.appPassword, RevokePublicCreate: cfg.revokePublicCreate, Schemas: appSchemas}
+	if cfg.appPasswordGiven {
+		setup.Password = cfg.appPassword
+	}
+	if err := db.Bootstrap(ctx, cfg.ownerUrl, setup); err != nil {
 		return err
 	}
 	if err := db.Migrate(cfg.ownerUrl, schema.Migrations); err != nil {
 		return err
 	}
-	return jobs.Migrate(ctx, cfg.ownerUrl)
+	if err := jobs.Migrate(ctx, cfg.ownerUrl); err != nil {
+		return err
+	}
+	// Again now that the tables exist, so a role that owns them, or can
+	// act as their owner, is refused.
+	pool, err := db.Open(ctx, cfg.ownerUrl)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	return db.CheckAppRole(ctx, pool, db.AppRole, appSchemas)
 }
+
+// appSchemas are pgmandate's schemas, which the app role must not own.
+var appSchemas = []string{db.Schema, jobs.Schema}
 
 // usesDefaultAppPassword says whether the app role would connect with the
 // password everyone can read in this repository.
@@ -285,6 +321,20 @@ func usesDefaultAppPassword(cfg config) bool {
 		return true
 	}
 	return parsed.Password == "app"
+}
+
+// openServingApp is the app role's pool the server serves with, once the
+// role has checked itself: a DBA may have changed it since setup.
+func openServingApp(ctx context.Context, cfg config) (*pgxpool.Pool, error) {
+	pool, err := openApp(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.CheckAppRole(ctx, pool, "", appSchemas); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
 }
 
 func openApp(ctx context.Context, cfg config) (*pgxpool.Pool, error) {
@@ -396,7 +446,7 @@ func serve(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	pool, err := openApp(ctx, cfg)
+	pool, err := openServingApp(ctx, cfg)
 	if err != nil {
 		return err
 	}

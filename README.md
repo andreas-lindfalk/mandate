@@ -215,7 +215,9 @@ From there the owner works in the UI. Locally the same command is `go run ./cmd/
 | variable | meaning |
 |---|---|
 | `MANDATE_DATABASE_URL` | the owner connection, for `migrate`; defaults to the local Postgres |
-| `MANDATE_APP_PASSWORD` | the password `migrate` sets for the `mandate_app` role. The default, `app`, is refused when the server listens beyond loopback |
+| `MANDATE_APP_PASSWORD` | the password of the `mandate_app` role: given to the role `migrate` creates, and set on an existing one only when given. The default, `app`, is refused when the server listens beyond loopback |
+| `MANDATE_CREATE_APP_ROLE` | default `true`: `migrate` creates `mandate_app` when it is missing. `false`: a DBA created it, and `migrate` only checks it. On Postgres 16 and later only whoever made a role may set its password, so leave `MANDATE_APP_PASSWORD` unset for a DBA's role |
+| `MANDATE_REVOKE_PUBLIC_CREATE` | `true` revokes `CREATE` on the schema `public` from everyone. Off by default: Postgres 15 and later grant none, and a shared database may need it left alone |
 | `MANDATE_OWNER_PASSWORD` | compose only: the database owner's password when its volume is first created, default `owner` |
 | `MANDATE_AGENT_TOKEN` | the token `pgmandate propose` uses when `-token` is not given |
 | `MANDATE_APP_DATABASE_URL` | connect as the app role directly. With it, and without the owner connection, `serve` does not migrate and never holds the owner's credentials. This is how to run it for real: `pgmandate migrate` as a separate step |
@@ -230,6 +232,12 @@ From there the owner works in the UI. Locally the same command is `go run ./cmd/
 | `MANDATE_SIGNING_KEY_FILE` | the same, read from a file |
 | `MANDATE_SIGNING_KEYS_PREVIOUS` | comma separated public keys, in standard base64, that are still published but no longer sign: how a key is rotated |
 | `MANDATE_RECEIVER_ADDR` | where `pgmandate receiver` and the demo's receiver listen, default `127.0.0.1:8586` |
+
+### On a managed Postgres
+
+RDS, Aurora, Cloud SQL, AlloyDB, Azure, Supabase and Neon give you an admin role that is no superuser. Point `MANDATE_DATABASE_URL` at that admin, in a database it owns or may create in, and run `pgmandate migrate`. It creates `mandate_app` without the attributes only a superuser may set, or uses one a DBA made beforehand (`MANDATE_CREATE_APP_ROLE=false`). The admin owns the tables; the server connects as `mandate_app` only (`MANDATE_APP_DATABASE_URL`).
+
+`migrate`, and `serve` when it starts, refuse to go on when `mandate_app` could get past the rules: when it may set `session_replication_role`, or is, or through membership can act as, a role that is a superuser, bypasses row level security, creates roles, replicates, is the service's admin (`rds_superuser`, `cloudsqlsuperuser`, `azure_pg_admin` and the like), is one of Postgres's own roles with the server's files or every table (`pg_execute_server_program`, `pg_read_all_data` and the like), or owns pgmandate's schemas or tables. The error says which. Each of these gets past row level security or the append-only guard, and a role a DBA set up for convenience often has one. `migrate` also warns when the role may create objects in the schema `public`.
 
 ## Writing a receiver
 

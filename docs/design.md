@@ -95,7 +95,7 @@ The API is Connect: Auth, Persons, Agents, Actions, Mandates, Proposals, Notifie
 
 ## Deployment
 
-One image, built in two stages so the web app is embedded in the binary. Configuration is by environment; see the README. `pgmandate migrate` runs as the owner, as a step of its own; `serve` runs with the application role only, and refuses the repository's default password when it listens beyond loopback. `deploy/compose.server.yaml` shows the split.
+One image, built in two stages so the web app is embedded in the binary. Configuration is by environment; see the README. `pgmandate migrate` runs as the owner, as a step of its own, and needs no superuser: on a managed Postgres the admin runs it. It creates the application role with safe attributes, or uses one a DBA made, and refuses one that could get past the rules (`db.CheckAppRole`). `serve` runs with the application role only, checks that role again at start, and refuses the repository's default password when it listens beyond loopback. `deploy/compose.server.yaml` shows the split.
 
 River's tables live in a schema of their own, `mandate_river`, which `migrate` creates. The application role is given rights there and on nothing of River's in `public`, so a host that runs River itself, in `public`, never shares a queue with pgmandate.
 

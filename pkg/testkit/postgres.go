@@ -58,7 +58,7 @@ func StartPostgres(ctx context.Context, sets ...db.Migrations) (*Postgres, error
 	if err != nil {
 		return nil, pg.fail(err)
 	}
-	if err := db.Bootstrap(ctx, pg.OwnerUrl, appPassword); err != nil {
+	if err := db.Bootstrap(ctx, pg.OwnerUrl, db.Setup{CreateRole: true, NewRolePassword: appPassword, Password: appPassword, Schemas: []string{db.Schema, jobs.Schema}}); err != nil {
 		return nil, pg.fail(err)
 	}
 	if err := db.Migrate(pg.OwnerUrl, append([]db.Migrations{schema.Migrations}, sets...)...); err != nil {
@@ -74,6 +74,26 @@ func StartPostgres(ctx context.Context, sets ...db.Migrations) (*Postgres, error
 		return nil, pg.fail(err)
 	}
 	return pg, nil
+}
+
+// StartBarePostgres starts Postgres with nothing set up, and returns it with
+// a superuser's connection, for tests of the setup itself.
+func StartBarePostgres(ctx context.Context) (*Postgres, string, error) {
+	container, err := postgres.Run(ctx, PostgresImage,
+		postgres.WithDatabase(databaseName),
+		postgres.WithUsername(ownerUser),
+		postgres.WithPassword(ownerPassword),
+		postgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("start postgres: %w", err)
+	}
+	pg := &Postgres{Container: container}
+	url, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		return nil, "", pg.fail(err)
+	}
+	return pg, url, nil
 }
 
 func (p *Postgres) Close() {
