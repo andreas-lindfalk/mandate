@@ -2,6 +2,19 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
+## 2026-11-26: build step 3, the agent contract
+
+Built as [design-0.1.md](design-0.1.md) section 5 sets out.
+
+- **One service, two doors.** `modules/agentapi` implements `mandate.agent.v1` as a Connect handler. `mcp/` calls it in process, so the rate limit per token (shared by both doors), the waits, the guidance texts and the record of each call in the log exist once. The log records the door, `via: mcp` or `via: http`.
+- **The answer is the contract's message.** Over MCP, each answer is the message's JSON with every `*Json` text field turned into the object it holds, under the name without `Json` (`mcp.Structured`). So `propose` answers `{"created", "repeat", "accountIgnored", "proposal": {…}}` rather than one flat object, and a test holds the two doors to the same answer.
+- **Zero is said where it means something.** `created`, a mandate's `remaining`, a budget's `spent` and a delivery's `attempts` are `optional`, so they are in the JSON at zero; other empty fields and lists are left out, as protojson does. Counts are `int32`, so they are JSON numbers, not strings; only an event's `seq` stays `int64`.
+- **A caller that leaves is still recorded.** The call goes into the log with a context that is not cancelled, and the caller is told `canceled` or `deadline_exceeded` (MCP: `canceled`), which, like `internal`, may have stored a proposal.
+- **The fix the review found:** the kernel's execution job read `Conflict` as "decided meanwhile". With the new code it reads `FailedPrecondition`, so a proposal decided or expired under it gets no false `execution_skipped` and no notification.
+- **Provenance over HTTP** is what the agent sends; over MCP the client's own introduction replaces it.
+- **A new code, `FailedPrecondition`,** for a change to a proposal that no longer waits: decided, withdrawn or expired. It replaces `Conflict` there for people too (`failed_precondition` in the people's API, where `already_exists` was). MCP keeps its readable name, `conflict`, for both that and a reused key.
+- **Found on the way: a grant could start in the database's future.** A mandate's `valid_from` was the server's clock, and `basis_holds` checks it against the database's. With the database's clock behind, an execution right after a grant was refused; on Docker for Mac this made `Test_ApplyFailureLeavesItPending` fail now and then, on `main` too. A grant now starts at the earlier of the two clocks, with its length kept. The rest of the mandates' reads still use the server's clock, which tests fake; moving them onto the database's clock is a change of its own.
+
 ## 2026-11-26: build step 2, delivery contract v2
 
 Built as [design-0.1.md](design-0.1.md) sections 3 and 4 set out. v1 and its shared secrets are gone, with nothing kept compatible.

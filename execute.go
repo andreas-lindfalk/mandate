@@ -91,9 +91,10 @@ func (k *Kernel) ExecuteProposal(ctx context.Context, tenantId, proposalId uuid.
 		// A database or action failure: the job retries. The proposal is
 		// still pending either way.
 		return fmt.Errorf("execute proposal %s: %w", proposalId, err)
-	case fault.Conflict, fault.NotFound:
-		// A person decided it meanwhile: nothing to explain.
-		slog.InfoContext(ctx, "proposal was decided before its execution", "proposal", proposalId)
+	case fault.FailedPrecondition, fault.NotFound:
+		// A person decided it meanwhile, or its deadline passed: nothing to
+		// explain, and nobody to tell that it waits.
+		slog.InfoContext(ctx, "proposal was decided or expired before its execution", "proposal", proposalId)
 		return nil
 	default:
 		// The database refused on its own rules. Not a job failure, and the

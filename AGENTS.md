@@ -45,7 +45,9 @@ pkg/                    Shared packages without domain logic: actor (request sco
                         injection, jobs (River), testkit (Postgres for tests)
 schema/                 The migrations, one set for all modules (NNNN_name.up.sql / .down.sql)
 api/                    The Connect handlers for people
-mcp/                    The MCP server for agents
+modules/agentapi/       The agent contract (mandate.agent.v1), served as JSON over HTTP; the one place for
+                        what an agent may do, its rate limit, waits and guidance texts
+mcp/                    The same contract over MCP: a thin layer that calls modules/agentapi in process
 proto/ gen/             The Connect contract and its generated Go and TypeScript
 web/                    The UI (React, Vite, Tailwind); embed.go serves the build
 internal/testfix/       The shared fixture of the integration tests

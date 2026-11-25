@@ -68,7 +68,7 @@ systems ◀──signed webhook── delivery ──result──▶ back to the
 people ◀──web UI / API──▶ inbox, mandates, agents and actions, people, evidence
 ```
 
-- **Agents** connect over MCP with a token. Five tools: `list_actions`, `propose`, `get_proposal`, `list_proposals`, `withdraw_proposal`. Any MCP client works: Claude Code, an SDK, a script.
+- **Agents** connect with a token, over MCP or as JSON over HTTP: one contract, `mandate.agent.v1`, with five calls: `list_actions`, `propose`, `get_proposal`, `list_proposals`, `withdraw_proposal`. Any MCP client works: Claude Code, an SDK, a script; so does anything that can POST JSON.
 - **Systems** receive decided proposals at the webhook URL of each action, signed with the server's Ed25519 key and addressed to the action's audience. A receiver answers *done*, *refused* or *unknown*; anything else is retried until the delivery's deadline. One that never reached the receiver can be sent again, and one whose outcome is unknown is settled by a person.
 - **People** sign in (OpenID Connect, or dev login on localhost). Reviewers decide in the inbox; owners also run the tenant: the inbox, the mandates with their budget, the agents and their tokens, the actions and their connectors, the people, and the evidence with exports.
 
@@ -127,13 +127,22 @@ Any other MCP client takes the same in its configuration:
     "headers": { "Authorization": "Bearer mnd_..." } } } }
 ```
 
-The server tells the agent how to work with it. In short: call `list_actions`, then `propose` with an `idempotency_key` made from its run and step and a `rationale`, its account for the person who decides of what it found and why this action follows, with `evidence` the person can check (where it looked, an id to find it again, what it showed); the answer says whether it was allowed, delivered, or waits for a person and why. This justification is kept with the proposal as written, shown in the inbox as the agent's claim, and named in the log by digest. A mandate never reads it. Each answer is both text for a model and structured content for code, and an error carries a code (`invalid_argument`, `conflict`, `permission_denied`, `not_found`, `rate_limited`, `unauthenticated`, `internal`).
+The server tells the agent how to work with it. In short: call `list_actions`, then `propose` with an `idempotency_key` made from its run and step and a `rationale`, its account for the person who decides of what it found and why this action follows, with `evidence` the person can check (where it looked, an id to find it again, what it showed). The answer is `{"created", "repeat"?, "proposal": {…}}`, and the proposal's `outcome` and `next` say whether it was allowed, carried out, or waits for a person and why. This justification is kept with the proposal as written, shown in the inbox as the agent's claim, and named in the log by digest. A mandate never reads it. Each answer is both text for a model and structured content for code, and an error carries a code (`invalid_argument`, `conflict`, `permission_denied`, `not_found`, `rate_limited`, `unauthenticated`, `canceled`, `internal`). After `internal` or `canceled` a proposal may have been stored: the same call under the same key returns it.
+
+The same contract is served as JSON over HTTP, for an agent or a script that does not speak MCP. It is defined in [proto/mandate/agent/v1/agent.proto](proto/mandate/agent/v1/agent.proto). Payloads, results and refusals travel as JSON text (`payloadJson`), so every digit of a number is kept; over MCP they are objects. Errors use the Connect codes, with `already_exists` for a key used for another request, `failed_precondition` for withdrawing what no longer waits, and `resource_exhausted` with the seconds to wait. Only an agent's token opens it: a person's session is refused.
+
+```sh
+curl -s http://127.0.0.1:8585/mandate.agent.v1.AgentService/Propose \
+  -H "Authorization: Bearer mnd_..." -H "Content-Type: application/json" \
+  -d '{"action":"tickets.create","title":"Printer jams","idempotencyKey":"run-7:1","runId":"run-7",
+       "rationale":"Three reports from floor 3.","payloadJson":"{\"subject\":\"Printer jams\"}"}'
+```
 
 For whoever runs the agent:
 
 - **Give each run a run id**, in the prompt or the task. Keys are made from it, and a run that reuses one gets the earlier run's answers. An agent given none takes `suggestedRunId` from `list_actions`.
 - **Allow tool calls at least five seconds.** `propose` waits up to two seconds for a mandate's decision, and `get_proposal` can wait longer when asked; some clients give up sooner by default.
-- An agent's calls are limited to five a second per token, with bursts of thirty, in each server instance; its proposals to 30 a minute and 300 an hour unless an owner sets other limits, which the database holds across instances. An agent sees its limits in `list_actions`, and a refusal says when to try again.
+- An agent's calls are limited to five a second per token, over MCP and HTTP together, with bursts of thirty, in each server instance; its proposals to 30 a minute and 300 an hour unless an owner sets other limits, which the database holds across instances. An agent sees its limits in `list_actions`, and a refusal says when to try again.
 - **Withdrawing.** An agent can take back its own waiting proposal with `withdraw_proposal`, as when it proposes a corrected version; a person then never approves both.
 - **Notifications.** An owner can have a Slack or Discord channel told when a proposal waits for a person (in the UI under *People*, or `pgmandate notify set`). The message names the action, its risk, the agent and why it waits, and links to the inbox; nothing the agent wrote goes to the channel.
 
@@ -333,7 +342,7 @@ Most of these decide on a call's arguments too, several with richer languages th
 
 ## Layout
 
-`modules/` holds the domain, `pkg/` the shared plumbing, `schema/` the migrations, `api/` and `mcp/` the two interfaces, `web/` the UI, `examples/` a receiver, a refunds receiver that checks the claims it is given, and an embedded host. [AGENTS.md](AGENTS.md) has the conventions; [docs/decisions.md](docs/decisions.md) has the reasoning.
+`modules/` holds the domain, `pkg/` the shared plumbing, `schema/` the migrations, `api/` the people's API, `modules/agentapi` the agent contract and `mcp/` its MCP door, `web/` the UI, `examples/` a receiver, a refunds receiver that checks the claims it is given, and an embedded host. [AGENTS.md](AGENTS.md) has the conventions; [docs/decisions.md](docs/decisions.md) has the reasoning.
 
 ## Author
 

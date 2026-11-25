@@ -336,13 +336,13 @@ func (s *HardeningSuite) Test_ApproveAndExecuteRaceHasOneWinner() {
 			wins++
 			s.Require().Equal(proposals.StatusApproved, after.Status)
 		} else {
-			s.code(approveErr, fault.Conflict)
+			s.code(approveErr, fault.FailedPrecondition)
 		}
 		if rejectErr == nil {
 			wins++
 			s.Require().Equal(proposals.StatusRejected, after.Status)
 		} else {
-			s.code(rejectErr, fault.Conflict)
+			s.code(rejectErr, fault.FailedPrecondition)
 		}
 		if after.Status == proposals.StatusExecuted {
 			wins++

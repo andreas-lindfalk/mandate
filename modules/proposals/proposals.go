@@ -716,7 +716,8 @@ func (s *Service) Approve(ctx context.Context, id uuid.UUID, decision Decision) 
 
 // Withdraw takes back a waiting proposal, as the agent that made it: one
 // it proposes again with a correction, or no longer wants. The reason is
-// kept as the proposal's note. A proposal already decided is a Conflict.
+// kept as the proposal's note. A proposal already decided, or past its
+// deadline, is a FailedPrecondition.
 func (s *Service) Withdraw(ctx context.Context, id uuid.UUID, reason string) (Proposal, error) {
 	a, ok := actor.From(ctx)
 	if !ok || a.Kind != actor.Agent {
@@ -741,7 +742,7 @@ func (s *Service) Withdraw(ctx context.Context, id uuid.UUID, reason string) (Pr
 			return err
 		}
 		if row.Status != StatusPending {
-			return fault.New(fault.Conflict, "the proposal is already "+row.Status+": only a waiting proposal can be withdrawn")
+			return fault.New(fault.FailedPrecondition, "the proposal is already "+row.Status+": only a waiting proposal can be withdrawn")
 		}
 		if err := pastDeadline(ctx, q, id); err != nil {
 			return err
@@ -795,7 +796,7 @@ func (s *Service) decide(ctx context.Context, id uuid.UUID, status string, decis
 			return err
 		}
 		if row.Status != StatusPending {
-			return fault.New(fault.Conflict, "proposal is already decided")
+			return fault.New(fault.FailedPrecondition, "proposal is already decided")
 		}
 		if err := pastDeadline(ctx, q, id); err != nil {
 			return err
@@ -970,7 +971,7 @@ func (s *Service) Execute(ctx context.Context, id uuid.UUID, basisFor BasisFor) 
 			return err
 		}
 		if row.Status != StatusPending {
-			return fault.New(fault.Conflict, "proposal is already decided")
+			return fault.New(fault.FailedPrecondition, "proposal is already decided")
 		}
 		if err := pastDeadline(ctx, q, id); err != nil {
 			return err
@@ -1300,7 +1301,7 @@ func pastDeadline(ctx context.Context, q *repo.Queries, id uuid.UUID) error {
 		return err
 	}
 	if past {
-		return fault.New(fault.Conflict, "the proposal has expired: nobody decided it in time, and nothing was done")
+		return fault.New(fault.FailedPrecondition, "the proposal has expired: nobody decided it in time, and nothing was done")
 	}
 	return nil
 }

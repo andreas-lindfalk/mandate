@@ -335,12 +335,23 @@ func (d *demo) proposeAs(ctx context.Context, step int, action, title string, pa
 	if d.runId == "" {
 		d.runId = "demo-" + uuid.NewString()[:8]
 	}
-	return d.call(ctx, "propose", map[string]any{
+	answer, err := d.call(ctx, "propose", map[string]any{
 		"action": action, "title": title, "payload": payload, "run_id": d.runId, "idempotency_key": fmt.Sprintf("%s:%d", d.runId, step),
 		"rationale": "The demo's helpdesk agent read the request and proposes this step: " + title + ".",
 		"evidence":  []map[string]string{{"source": "demo script", "ref": fmt.Sprintf("%s:%d", d.runId, step), "summary": "A scripted step of the demo, not an investigation."}},
 		"model":     "scripted", "agent_version": "demo-1",
 	})
+	if err != nil {
+		return nil, err
+	}
+	// The proposal, with whether this call made it or repeated an earlier
+	// one beside it.
+	p, ok := answer["proposal"].(map[string]any)
+	if !ok {
+		return nil, errors.New("propose: the answer has no proposal")
+	}
+	p["created"], p["repeat"] = answer["created"], answer["repeat"]
+	return p, nil
 }
 
 // delivered waits for the helpdesk to receive the decision on a proposal

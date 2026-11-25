@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const agentState = `-- name: AgentState :one
@@ -88,8 +89,9 @@ func (q *Queries) GetMandate(ctx context.Context, id uuid.UUID) (MandateMandate,
 
 const insertMandate = `-- name: InsertMandate :exec
 INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, valid_from, valid_until, condition, condition_plan)
-VALUES ($1, $2, $3, $4::text[], $5, $6, $7, $8, $9, $10,
-    $11, $12)
+SELECT $1, $2, $3, $4::text[], $5, $6, $7, $8,
+    starts.at, starts.at + $9::interval, $10, $11
+FROM (SELECT LEAST($12::timestamptz, now()) AS at) AS starts
 `
 
 type InsertMandateParams struct {
@@ -101,12 +103,15 @@ type InsertMandateParams struct {
 	BudgetCount   int64
 	PolicyRef     string
 	Department    *string
-	ValidFrom     time.Time
-	ValidUntil    time.Time
+	Lasts         pgtype.Interval
 	Condition     *string
 	ConditionPlan []byte
+	StartsAt      time.Time
 }
 
+// A grant holds at once. Its start is never later than the database's
+// clock, which basis_holds reads, even when the server's clock runs ahead;
+// its length is kept.
 func (q *Queries) InsertMandate(ctx context.Context, arg InsertMandateParams) error {
 	_, err := q.db.Exec(ctx, insertMandate,
 		arg.Id,
@@ -117,10 +122,10 @@ func (q *Queries) InsertMandate(ctx context.Context, arg InsertMandateParams) er
 		arg.BudgetCount,
 		arg.PolicyRef,
 		arg.Department,
-		arg.ValidFrom,
-		arg.ValidUntil,
+		arg.Lasts,
 		arg.Condition,
 		arg.ConditionPlan,
+		arg.StartsAt,
 	)
 	return err
 }

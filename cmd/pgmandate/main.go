@@ -404,6 +404,10 @@ func serve(ctx context.Context, cfg config) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", http.MaxBytesHandler(kernel.Handler(), maxMcpBytes))
+	// The same agent contract as JSON over HTTP, for an agent that does not
+	// speak MCP.
+	agentPath, agentHandler := kernel.AgentHandler()
+	mux.Handle(agentPath, http.MaxBytesHandler(agentHandler, maxMcpBytes))
 	mux.Handle("GET /.well-known/pgmandate-keys", keysHandler(signer, previous))
 	api.New(kernel, authService).Mount(mux)
 	mux.Handle("/", web.Handler())

@@ -23,6 +23,9 @@ const (
 	Conflict
 	// RateLimited is a limit on how often reached: try again later.
 	RateLimited
+	// FailedPrecondition is a change the thing is no longer in a state
+	// for, such as withdrawing a proposal that was decided or expired.
+	FailedPrecondition
 )
 
 type Error struct {
@@ -73,6 +76,8 @@ func Name(code Code) string {
 		return "conflict"
 	case RateLimited:
 		return "rate_limited"
+	case FailedPrecondition:
+		return "failed_precondition"
 	}
 	return "internal"
 }
@@ -149,6 +154,8 @@ func connectCode(code Code) connect.Code {
 		return connect.CodeAlreadyExists
 	case RateLimited:
 		return connect.CodeResourceExhausted
+	case FailedPrecondition:
+		return connect.CodeFailedPrecondition
 	default:
 		return connect.CodeInternal
 	}
