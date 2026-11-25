@@ -38,6 +38,10 @@ const (
 	AuthServiceSignInMethodsProcedure = "/mandate.v1.AuthService/SignInMethods"
 	// AuthServiceDevLoginProcedure is the fully-qualified name of the AuthService's DevLogin RPC.
 	AuthServiceDevLoginProcedure = "/mandate.v1.AuthService/DevLogin"
+	// AuthServiceSetUpProcedure is the fully-qualified name of the AuthService's SetUp RPC.
+	AuthServiceSetUpProcedure = "/mandate.v1.AuthService/SetUp"
+	// AuthServiceRedeemLinkProcedure is the fully-qualified name of the AuthService's RedeemLink RPC.
+	AuthServiceRedeemLinkProcedure = "/mandate.v1.AuthService/RedeemLink"
 	// AuthServiceLogoutProcedure is the fully-qualified name of the AuthService's Logout RPC.
 	AuthServiceLogoutProcedure = "/mandate.v1.AuthService/Logout"
 	// AuthServiceMeProcedure is the fully-qualified name of the AuthService's Me RPC.
@@ -51,6 +55,13 @@ type AuthServiceClient interface {
 	// SignInMethods says how a person can sign in here. It needs no session.
 	SignInMethods(context.Context, *v1.SignInMethodsRequest) (*v1.SignInMethodsResponse, error)
 	DevLogin(context.Context, *v1.DevLoginRequest) (*v1.DevLoginResponse, error)
+	// SetUp uses the setup link the server writes to its log while there is
+	// no tenant: it makes the first tenant and its owner, and signs the owner
+	// in. Every link that does not work is refused alike.
+	SetUp(context.Context, *v1.SetUpRequest) (*v1.SetUpResponse, error)
+	// RedeemLink uses a person's single-use sign-in link, made with
+	// `pgmandate sign-in-link`, and signs them in.
+	RedeemLink(context.Context, *v1.RedeemLinkRequest) (*v1.RedeemLinkResponse, error)
 	Logout(context.Context, *v1.LogoutRequest) (*v1.LogoutResponse, error)
 	// Me returns who is signed in and the tenants where they are a person.
 	Me(context.Context, *v1.MeRequest) (*v1.MeResponse, error)
@@ -79,6 +90,18 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("DevLogin")),
 			connect.WithClientOptions(opts...),
 		),
+		setUp: connect.NewClient[v1.SetUpRequest, v1.SetUpResponse](
+			httpClient,
+			baseURL+AuthServiceSetUpProcedure,
+			connect.WithSchema(authServiceMethods.ByName("SetUp")),
+			connect.WithClientOptions(opts...),
+		),
+		redeemLink: connect.NewClient[v1.RedeemLinkRequest, v1.RedeemLinkResponse](
+			httpClient,
+			baseURL+AuthServiceRedeemLinkProcedure,
+			connect.WithSchema(authServiceMethods.ByName("RedeemLink")),
+			connect.WithClientOptions(opts...),
+		),
 		logout: connect.NewClient[v1.LogoutRequest, v1.LogoutResponse](
 			httpClient,
 			baseURL+AuthServiceLogoutProcedure,
@@ -98,6 +121,8 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 type authServiceClient struct {
 	signInMethods *connect.Client[v1.SignInMethodsRequest, v1.SignInMethodsResponse]
 	devLogin      *connect.Client[v1.DevLoginRequest, v1.DevLoginResponse]
+	setUp         *connect.Client[v1.SetUpRequest, v1.SetUpResponse]
+	redeemLink    *connect.Client[v1.RedeemLinkRequest, v1.RedeemLinkResponse]
 	logout        *connect.Client[v1.LogoutRequest, v1.LogoutResponse]
 	me            *connect.Client[v1.MeRequest, v1.MeResponse]
 }
@@ -114,6 +139,24 @@ func (c *authServiceClient) SignInMethods(ctx context.Context, req *v1.SignInMet
 // DevLogin calls mandate.v1.AuthService.DevLogin.
 func (c *authServiceClient) DevLogin(ctx context.Context, req *v1.DevLoginRequest) (*v1.DevLoginResponse, error) {
 	response, err := c.devLogin.CallUnary(ctx, connect.NewRequest(req))
+	if response != nil {
+		return response.Msg, err
+	}
+	return nil, err
+}
+
+// SetUp calls mandate.v1.AuthService.SetUp.
+func (c *authServiceClient) SetUp(ctx context.Context, req *v1.SetUpRequest) (*v1.SetUpResponse, error) {
+	response, err := c.setUp.CallUnary(ctx, connect.NewRequest(req))
+	if response != nil {
+		return response.Msg, err
+	}
+	return nil, err
+}
+
+// RedeemLink calls mandate.v1.AuthService.RedeemLink.
+func (c *authServiceClient) RedeemLink(ctx context.Context, req *v1.RedeemLinkRequest) (*v1.RedeemLinkResponse, error) {
+	response, err := c.redeemLink.CallUnary(ctx, connect.NewRequest(req))
 	if response != nil {
 		return response.Msg, err
 	}
@@ -145,6 +188,13 @@ type AuthServiceHandler interface {
 	// SignInMethods says how a person can sign in here. It needs no session.
 	SignInMethods(context.Context, *v1.SignInMethodsRequest) (*v1.SignInMethodsResponse, error)
 	DevLogin(context.Context, *v1.DevLoginRequest) (*v1.DevLoginResponse, error)
+	// SetUp uses the setup link the server writes to its log while there is
+	// no tenant: it makes the first tenant and its owner, and signs the owner
+	// in. Every link that does not work is refused alike.
+	SetUp(context.Context, *v1.SetUpRequest) (*v1.SetUpResponse, error)
+	// RedeemLink uses a person's single-use sign-in link, made with
+	// `pgmandate sign-in-link`, and signs them in.
+	RedeemLink(context.Context, *v1.RedeemLinkRequest) (*v1.RedeemLinkResponse, error)
 	Logout(context.Context, *v1.LogoutRequest) (*v1.LogoutResponse, error)
 	// Me returns who is signed in and the tenants where they are a person.
 	Me(context.Context, *v1.MeRequest) (*v1.MeResponse, error)
@@ -169,6 +219,18 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("DevLogin")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceSetUpHandler := connect.NewUnaryHandlerSimple(
+		AuthServiceSetUpProcedure,
+		svc.SetUp,
+		connect.WithSchema(authServiceMethods.ByName("SetUp")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceRedeemLinkHandler := connect.NewUnaryHandlerSimple(
+		AuthServiceRedeemLinkProcedure,
+		svc.RedeemLink,
+		connect.WithSchema(authServiceMethods.ByName("RedeemLink")),
+		connect.WithHandlerOptions(opts...),
+	)
 	authServiceLogoutHandler := connect.NewUnaryHandlerSimple(
 		AuthServiceLogoutProcedure,
 		svc.Logout,
@@ -187,6 +249,10 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceSignInMethodsHandler.ServeHTTP(w, r)
 		case AuthServiceDevLoginProcedure:
 			authServiceDevLoginHandler.ServeHTTP(w, r)
+		case AuthServiceSetUpProcedure:
+			authServiceSetUpHandler.ServeHTTP(w, r)
+		case AuthServiceRedeemLinkProcedure:
+			authServiceRedeemLinkHandler.ServeHTTP(w, r)
 		case AuthServiceLogoutProcedure:
 			authServiceLogoutHandler.ServeHTTP(w, r)
 		case AuthServiceMeProcedure:
@@ -206,6 +272,14 @@ func (UnimplementedAuthServiceHandler) SignInMethods(context.Context, *v1.SignIn
 
 func (UnimplementedAuthServiceHandler) DevLogin(context.Context, *v1.DevLoginRequest) (*v1.DevLoginResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mandate.v1.AuthService.DevLogin is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) SetUp(context.Context, *v1.SetUpRequest) (*v1.SetUpResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mandate.v1.AuthService.SetUp is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) RedeemLink(context.Context, *v1.RedeemLinkRequest) (*v1.RedeemLinkResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mandate.v1.AuthService.RedeemLink is not implemented"))
 }
 
 func (UnimplementedAuthServiceHandler) Logout(context.Context, *v1.LogoutRequest) (*v1.LogoutResponse, error) {

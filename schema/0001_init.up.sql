@@ -1442,16 +1442,99 @@ CREATE TABLE mandate.sessions (
     -- empty for dev login, which has no provider.
     issuer        text CHECK (issuer IS NULL OR length(issuer) BETWEEN 1 AND 500),
     subject       text CHECK (subject IS NULL OR length(subject) BETWEEN 1 AND 255),
+    -- A session from a sign-in link is pinned to one person, and reaches
+    -- their tenant and no other.
+    person_id     uuid REFERENCES mandate.persons (id) ON DELETE CASCADE,
     created_at    timestamptz NOT NULL DEFAULT now(),
     expires_at    timestamptz NOT NULL,
     last_seen_at  timestamptz,
-    CHECK ((issuer IS NULL) = (subject IS NULL))
+    CHECK ((issuer IS NULL) = (subject IS NULL)),
+    CHECK (person_id IS NULL OR issuer IS NULL)
 );
 
 CREATE INDEX sessions_email_idx ON mandate.sessions (email);
 
 GRANT SELECT, INSERT, DELETE ON mandate.sessions TO mandate_app;
 GRANT UPDATE (last_seen_at) ON mandate.sessions TO mandate_app;
+
+-- Single-use sign-in links, for when there is no sign-in provider. A setup
+-- link exists only while there is no tenant, and sets up the first one and
+-- its owner. A person's link signs one person in, pinned to them. Only the
+-- token's hash is kept, and a link is used once.
+CREATE TABLE mandate.sign_in_links (
+    token_hash  bytea PRIMARY KEY CHECK (length(token_hash) = 32),
+    purpose     text NOT NULL CHECK (purpose IN ('setup', 'person')),
+    tenant_id   uuid REFERENCES mandate.tenants (id) ON DELETE CASCADE,
+    person_id   uuid REFERENCES mandate.persons (id) ON DELETE CASCADE,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    expires_at  timestamptz NOT NULL,
+    used_at     timestamptz,
+    CHECK ((purpose = 'setup') = (person_id IS NULL)),
+    CHECK ((tenant_id IS NULL) = (person_id IS NULL)),
+    CHECK (expires_at > created_at AND expires_at <= created_at + interval '1 hour')
+);
+
+-- Global, like sessions: a link is found by its hash before anyone is in
+-- scope, and the app role reads it as it reads sessions.
+GRANT SELECT, INSERT, DELETE ON mandate.sign_in_links TO mandate_app;
+GRANT UPDATE (used_at) ON mandate.sign_in_links TO mandate_app;
+
+CREATE FUNCTION mandate.sign_in_links_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.created_at := now();
+        NEW.used_at := NULL;
+        IF NEW.purpose = 'setup' THEN
+            -- Only while nobody has set pgmandate up, and only the system.
+            IF mandate.current_actor_kind() IS DISTINCT FROM 'system' OR EXISTS (SELECT 1 FROM mandate.all_tenant_ids()) THEN
+                RAISE EXCEPTION 'a setup link is made by the system, and only while there is no tenant' USING ERRCODE = 'insufficient_privilege';
+            END IF;
+        ELSIF mandate.current_actor_kind() IS DISTINCT FROM 'system' OR NEW.tenant_id IS DISTINCT FROM mandate.current_tenant()
+            OR NOT EXISTS (SELECT 1 FROM mandate.persons p
+                WHERE p.id = NEW.person_id AND p.tenant_id = NEW.tenant_id AND p.removed_at IS NULL) THEN
+            RAISE EXCEPTION 'a person''s link is made by the system, in the person''s tenant, for a person who is not removed' USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        -- A link leaves when it has expired, an unused setup link when a new
+        -- one is made, and every link with its tenant when the owner purges
+        -- it.
+        IF OLD.expires_at <= now() OR (OLD.purpose = 'setup' AND OLD.used_at IS NULL)
+            OR (current_setting('mandate.allow_purge', true) = 'on'
+                AND current_user = (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = TG_RELID)) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'a sign-in link leaves only once it has expired' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF OLD.used_at IS NOT NULL OR NEW.used_at IS NULL OR OLD.expires_at <= now()
+        OR (to_jsonb(NEW) - 'used_at') <> (to_jsonb(OLD) - 'used_at') THEN
+        RAISE EXCEPTION 'a sign-in link is used once, before it expires' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    -- A setup link works only while there is no tenant: it makes the first.
+    IF OLD.purpose = 'setup' AND EXISTS (SELECT 1 FROM mandate.all_tenant_ids()) THEN
+        RAISE EXCEPTION 'pgmandate is set up: a setup link no longer works' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    NEW.used_at := now();
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER sign_in_links_guard BEFORE INSERT OR UPDATE OR DELETE ON mandate.sign_in_links
+    FOR EACH ROW EXECUTE FUNCTION mandate.sign_in_links_guard();
+
+-- The person a pinned session is, when they are still a person.
+CREATE FUNCTION mandate.person_for_session(p_person uuid)
+RETURNS TABLE (tenant_id uuid, tenant_name text, person_id uuid, role text, email text, name text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = mandate, pg_temp AS $$
+    SELECT t.id, t.name, p.id, p.role, p.email, p.name
+    FROM mandate.persons p
+    JOIN mandate.tenants t ON t.id = p.tenant_id
+    WHERE p.id = p_person AND p.removed_at IS NULL
+$$;
+REVOKE ALL ON FUNCTION mandate.person_for_session(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mandate.person_for_session(uuid) TO mandate_app;
 
 -- The persons a sign-in may be, across tenants, for the tenant picker and
 -- for each call. Runs as the owner because no tenant is in scope yet; it

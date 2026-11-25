@@ -13,10 +13,14 @@ type Session = {
   name: string;
   devLogin: boolean;
   oidc: boolean;
+  /** Nobody has set pgmandate up yet: the setup link is in the server's log. */
+  setupPending: boolean;
   tenants: TenantMembership[];
   tenant: TenantMembership | null;
   isOwner: boolean;
   login: (email: string, name: string) => Promise<void>;
+  /** Picks up a session the server just set as a cookie, as after a link. */
+  signedInByCookie: () => void;
   logout: () => Promise<void>;
   selectTenant: (id: string) => void;
 };
@@ -57,6 +61,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     name: me.data?.name ?? "",
     devLogin: methods.data?.devLogin ?? false,
     oidc: methods.data?.oidc ?? false,
+    setupPending: methods.data?.setupPending ?? false,
     tenants,
     tenant,
     isOwner: tenant?.role === "owner",
@@ -64,6 +69,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const response = await api.auth.devLogin({ email, name });
       queryClient.clear();
       sessionStore.setToken(response.token);
+      sessionStore.setTenant(null);
+      setTenantId(null);
+      setGeneration((g) => g + 1);
+    },
+    signedInByCookie() {
+      queryClient.clear();
+      sessionStore.setToken(null);
       sessionStore.setTenant(null);
       setTenantId(null);
       setGeneration((g) => g + 1);

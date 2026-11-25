@@ -36,7 +36,10 @@ func New(kernel *pgmandate.Kernel, authService *auth.Service) *Handler {
 
 // Mount adds every service to the mux, behind the session interceptor.
 func (h *Handler) Mount(mux *http.ServeMux) {
-	public := map[string]bool{mandatev1connect.AuthServiceDevLoginProcedure: true, mandatev1connect.AuthServiceSignInMethodsProcedure: true}
+	public := map[string]bool{
+		mandatev1connect.AuthServiceDevLoginProcedure: true, mandatev1connect.AuthServiceSignInMethodsProcedure: true,
+		mandatev1connect.AuthServiceSetUpProcedure: true, mandatev1connect.AuthServiceRedeemLinkProcedure: true,
+	}
 	tenantFree := map[string]bool{mandatev1connect.AuthServiceLogoutProcedure: true, mandatev1connect.AuthServiceMeProcedure: true}
 	options := []connect.HandlerOption{
 		connect.WithInterceptors(auth.NewInterceptor(h.auth, public, tenantFree)),
@@ -110,8 +113,38 @@ type authHandler struct{ *Handler }
 
 var _ mandatev1connect.AuthServiceHandler = (*authHandler)(nil)
 
-func (h *authHandler) SignInMethods(context.Context, *mandatev1.SignInMethodsRequest) (*mandatev1.SignInMethodsResponse, error) {
-	return &mandatev1.SignInMethodsResponse{DevLogin: h.auth.Config().DevLogin, Oidc: h.auth.HasOidc()}, nil
+func (h *authHandler) SignInMethods(ctx context.Context, _ *mandatev1.SignInMethodsRequest) (*mandatev1.SignInMethodsResponse, error) {
+	pending, err := h.auth.SetupPending(ctx)
+	if err != nil {
+		return nil, fault.ToConnect(err)
+	}
+	return &mandatev1.SignInMethodsResponse{DevLogin: h.auth.Config().DevLogin, Oidc: h.auth.HasOidc(), SetupPending: pending}, nil
+}
+
+func (h *authHandler) SetUp(ctx context.Context, req *mandatev1.SetUpRequest) (*mandatev1.SetUpResponse, error) {
+	token, err := h.auth.SetUp(ctx, req.GetToken(), req.GetOrganisation(), req.GetName(), req.GetEmail())
+	if err != nil {
+		return nil, fault.ToConnect(err)
+	}
+	h.setSessionCookie(ctx, token)
+	return &mandatev1.SetUpResponse{Token: token}, nil
+}
+
+func (h *authHandler) RedeemLink(ctx context.Context, req *mandatev1.RedeemLinkRequest) (*mandatev1.RedeemLinkResponse, error) {
+	token, err := h.auth.RedeemLink(ctx, req.GetToken())
+	if err != nil {
+		return nil, fault.ToConnect(err)
+	}
+	h.setSessionCookie(ctx, token)
+	return &mandatev1.RedeemLinkResponse{Token: token}, nil
+}
+
+// setSessionCookie signs the browser in with an HttpOnly cookie, so the
+// page never has to keep the token.
+func (h *authHandler) setSessionCookie(ctx context.Context, token string) {
+	if info, ok := connect.CallInfoForHandlerContext(ctx); ok {
+		info.ResponseHeader().Add("Set-Cookie", auth.SessionCookie(token, h.auth.Config().SessionTtl, h.secure()).String())
+	}
 }
 
 func (h *authHandler) DevLogin(ctx context.Context, req *mandatev1.DevLoginRequest) (*mandatev1.DevLoginResponse, error) {

@@ -42,7 +42,7 @@ This is the critical path, so it starts at once.
 
 ### Easy to try
 
-1. **One image and a ten-minute quickstart.**
+1. **One image and a ten-minute quickstart.** Built ([design-quickstart.md](design-quickstart.md)).
    - Publish an image with the UI built in, plus a quickstart that needs only Docker.
    - Dev login stays limited to a server that listens only on the machine itself. A container listens on every address, so the quickstart needs another way in: the server prints a single-use sign-in link for the first owner. The link works only while the tenant has no owner, expires quickly, and is stored hashed, since container logs are an admin path.
    - Seeing the UI then needs neither Go, Node nor an OpenID provider.

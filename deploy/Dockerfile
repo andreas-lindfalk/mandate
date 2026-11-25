@@ -21,10 +21,14 @@ RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
 RUN if ! printf '%s\n' "$VERSION" | grep -Eq '^[A-Za-z0-9._:/@+()-]{0,100}$'; then echo "VERSION must be a label: letters, digits and . _ : / @ + ( ) -" >&2; exit 1; fi \
+    && mkdir -p /data \
     && CGO_ENABLED=0 go build -ldflags "-X 'github.com/andreas-lindfalk/pgmandate/pkg/version.Version=${VERSION}'" -o /pgmandate ./cmd/pgmandate
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /pgmandate /pgmandate
+# A place the server may write, such as a signing key it makes once. A named
+# volume mounted here starts with this ownership.
+COPY --from=build --chown=65532:65532 /data /data
 EXPOSE 8585
 ENTRYPOINT ["/pgmandate"]
 CMD ["serve"]

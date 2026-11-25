@@ -74,6 +74,23 @@ func (s *Service) Create(ctx context.Context, name string) (Tenant, error) {
 // CreateWithOwner makes a tenant and its first owner in one transaction,
 // as the system, so a tenant never exists with nobody in it.
 func (s *Service) CreateWithOwner(ctx context.Context, name, ownerEmail, ownerName string) (Tenant, Person, error) {
+	tenantId := uuid.New()
+	ctx = actor.AsSystem(ctx, tenantId)
+	var tenant Tenant
+	var owner Person
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		var err error
+		tenant, owner, err = CreateWithOwnerIn(ctx, tx, tenantId, name, ownerEmail, ownerName)
+		return err
+	})
+	return tenant, owner, fault.FromDb(err)
+}
+
+// CreateWithOwnerIn makes a tenant and its first owner in the caller's
+// transaction, which must be scoped as the system to tenantId: as when the
+// first tenant is set up by a setup link, with the link used in the same
+// transaction.
+func CreateWithOwnerIn(ctx context.Context, tx pgx.Tx, tenantId uuid.UUID, name, ownerEmail, ownerName string) (Tenant, Person, error) {
 	name = strings.TrimSpace(name)
 	ownerEmail = strings.ToLower(strings.TrimSpace(ownerEmail))
 	ownerName = strings.TrimSpace(ownerName)
@@ -85,33 +102,29 @@ func (s *Service) CreateWithOwner(ctx context.Context, name, ownerEmail, ownerNa
 	case ownerName == "" || utf8.RuneCountInString(ownerName) > 200:
 		return Tenant{}, Person{}, fault.New(fault.InvalidArgument, "the owner's name must be 1 to 200 characters")
 	}
-	tenant := Tenant{Id: uuid.New(), Name: name}
+	tenant := Tenant{Id: tenantId, Name: name}
 	owner := Person{Id: uuid.New(), Email: ownerEmail, Name: ownerName, Role: RoleOwner}
-	ctx = actor.AsSystem(ctx, tenant.Id)
-	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
-		q := repo.New(tx)
-		if err := q.InsertTenant(ctx, repo.InsertTenantParams{Id: tenant.Id, Name: name}); err != nil {
-			return err
-		}
-		if err := q.InsertPerson(ctx, repo.InsertPersonParams{Id: owner.Id, TenantId: tenant.Id, Email: ownerEmail, Name: ownerName, Role: RoleOwner}); err != nil {
-			return err
-		}
-		t, err := q.GetTenant(ctx, tenant.Id)
-		if err != nil {
-			return err
-		}
-		p, err := q.GetPerson(ctx, owner.Id)
-		if err != nil {
-			return err
-		}
-		tenant.CreatedAt, owner.CreatedAt = t.CreatedAt, p.CreatedAt
-		_, err = events.AppendMany(ctx, tx, []events.Event{
-			{Type: "tenant.created", SubjectId: tenant.Id, Payload: map[string]any{"name": name}},
-			{Type: "person.added", SubjectId: owner.Id, Payload: map[string]any{"name": ownerName, "role": RoleOwner}},
-		})
-		return err
+	q := repo.New(tx)
+	if err := q.InsertTenant(ctx, repo.InsertTenantParams{Id: tenant.Id, Name: name}); err != nil {
+		return Tenant{}, Person{}, err
+	}
+	if err := q.InsertPerson(ctx, repo.InsertPersonParams{Id: owner.Id, TenantId: tenant.Id, Email: ownerEmail, Name: ownerName, Role: RoleOwner}); err != nil {
+		return Tenant{}, Person{}, err
+	}
+	t, err := q.GetTenant(ctx, tenant.Id)
+	if err != nil {
+		return Tenant{}, Person{}, err
+	}
+	p, err := q.GetPerson(ctx, owner.Id)
+	if err != nil {
+		return Tenant{}, Person{}, err
+	}
+	tenant.CreatedAt, owner.CreatedAt = t.CreatedAt, p.CreatedAt
+	_, err = events.AppendMany(ctx, tx, []events.Event{
+		{Type: "tenant.created", SubjectId: tenant.Id, Payload: map[string]any{"name": name}},
+		{Type: "person.added", SubjectId: owner.Id, Payload: map[string]any{"name": ownerName, "role": RoleOwner}},
 	})
-	return tenant, owner, fault.FromDb(err)
+	return tenant, owner, err
 }
 
 func (s *Service) Get(ctx context.Context) (Tenant, error) {

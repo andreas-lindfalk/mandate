@@ -32,6 +32,18 @@ func (q *Queries) BindPerson(ctx context.Context, arg BindPersonParams) (int64, 
 	return result.RowsAffected(), nil
 }
 
+const deleteExpiredLinks = `-- name: DeleteExpiredLinks :execrows
+DELETE FROM mandate.sign_in_links WHERE expires_at <= now()
+`
+
+func (q *Queries) DeleteExpiredLinks(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredLinks)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteExpiredSessions = `-- name: DeleteExpiredSessions :execrows
 DELETE FROM mandate.sessions WHERE expires_at < now()
 `
@@ -53,15 +65,41 @@ func (q *Queries) DeleteSession(ctx context.Context, tokenHash []byte) error {
 	return err
 }
 
+const getLinkForUpdate = `-- name: GetLinkForUpdate :one
+SELECT purpose, tenant_id, person_id, expires_at, used_at FROM mandate.sign_in_links WHERE token_hash = $1 FOR UPDATE
+`
+
+type GetLinkForUpdateRow struct {
+	Purpose   string
+	TenantId  *uuid.UUID
+	PersonId  *uuid.UUID
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+}
+
+func (q *Queries) GetLinkForUpdate(ctx context.Context, tokenHash []byte) (GetLinkForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getLinkForUpdate, tokenHash)
+	var i GetLinkForUpdateRow
+	err := row.Scan(
+		&i.Purpose,
+		&i.TenantId,
+		&i.PersonId,
+		&i.ExpiresAt,
+		&i.UsedAt,
+	)
+	return i, err
+}
+
 const getSession = `-- name: GetSession :one
-SELECT email, name, issuer, subject FROM mandate.sessions WHERE token_hash = $1 AND expires_at > now()
+SELECT email, name, issuer, subject, person_id FROM mandate.sessions WHERE token_hash = $1 AND expires_at > now()
 `
 
 type GetSessionRow struct {
-	Email   string
-	Name    string
-	Issuer  *string
-	Subject *string
+	Email    string
+	Name     string
+	Issuer   *string
+	Subject  *string
+	PersonId *uuid.UUID
 }
 
 func (q *Queries) GetSession(ctx context.Context, tokenHash []byte) (GetSessionRow, error) {
@@ -72,13 +110,50 @@ func (q *Queries) GetSession(ctx context.Context, tokenHash []byte) (GetSessionR
 		&i.Name,
 		&i.Issuer,
 		&i.Subject,
+		&i.PersonId,
 	)
 	return i, err
 }
 
+const hasTenants = `-- name: HasTenants :one
+SELECT EXISTS (SELECT 1 FROM mandate.all_tenant_ids())::boolean
+`
+
+func (q *Queries) HasTenants(ctx context.Context) (bool, error) {
+	row := q.db.QueryRow(ctx, hasTenants)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const insertLink = `-- name: InsertLink :exec
+INSERT INTO mandate.sign_in_links (token_hash, purpose, tenant_id, person_id, expires_at)
+VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5::int))
+`
+
+type InsertLinkParams struct {
+	TokenHash       []byte
+	Purpose         string
+	TenantId        *uuid.UUID
+	PersonId        *uuid.UUID
+	LifetimeSeconds int32
+}
+
+// Its lifetime is counted on the database's clock, which the guard checks.
+func (q *Queries) InsertLink(ctx context.Context, arg InsertLinkParams) error {
+	_, err := q.db.Exec(ctx, insertLink,
+		arg.TokenHash,
+		arg.Purpose,
+		arg.TenantId,
+		arg.PersonId,
+		arg.LifetimeSeconds,
+	)
+	return err
+}
+
 const insertSession = `-- name: InsertSession :exec
-INSERT INTO mandate.sessions (token_hash, email, name, issuer, subject, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO mandate.sessions (token_hash, email, name, issuer, subject, person_id, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertSessionParams struct {
@@ -87,6 +162,7 @@ type InsertSessionParams struct {
 	Name      string
 	Issuer    *string
 	Subject   *string
+	PersonId  *uuid.UUID
 	ExpiresAt time.Time
 }
 
@@ -97,8 +173,20 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.Name,
 		arg.Issuer,
 		arg.Subject,
+		arg.PersonId,
 		arg.ExpiresAt,
 	)
+	return err
+}
+
+const lockSetup = `-- name: LockSetup :exec
+SELECT pg_advisory_xact_lock(hashtextextended('mandate.setup', 0))
+`
+
+// One setup at a time across every server: making a setup link and using
+// one both take it, so two links never both make a tenant.
+func (q *Queries) LockSetup(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockSetup)
 	return err
 }
 
@@ -126,5 +214,28 @@ WHERE token_hash = $1 AND (last_seen_at IS NULL OR last_seen_at < now() - interv
 
 func (q *Queries) TouchSession(ctx context.Context, tokenHash []byte) error {
 	_, err := q.db.Exec(ctx, touchSession, tokenHash)
+	return err
+}
+
+const useLink = `-- name: UseLink :execrows
+UPDATE mandate.sign_in_links SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+`
+
+// Nothing when it is used or expired, by the database's clock.
+func (q *Queries) UseLink(ctx context.Context, tokenHash []byte) (int64, error) {
+	result, err := q.db.Exec(ctx, useLink, tokenHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const voidSetupLinks = `-- name: VoidSetupLinks :exec
+DELETE FROM mandate.sign_in_links WHERE purpose = 'setup' AND used_at IS NULL
+`
+
+// Unused setup links, when a new one is made.
+func (q *Queries) VoidSetupLinks(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, voidSetupLinks)
 	return err
 }

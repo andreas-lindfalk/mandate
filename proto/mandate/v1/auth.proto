@@ -12,6 +12,13 @@ service AuthService {
   // SignInMethods says how a person can sign in here. It needs no session.
   rpc SignInMethods(SignInMethodsRequest) returns (SignInMethodsResponse);
   rpc DevLogin(DevLoginRequest) returns (DevLoginResponse);
+  // SetUp uses the setup link the server writes to its log while there is
+  // no tenant: it makes the first tenant and its owner, and signs the owner
+  // in. Every link that does not work is refused alike.
+  rpc SetUp(SetUpRequest) returns (SetUpResponse);
+  // RedeemLink uses a person's single-use sign-in link, made with
+  // `pgmandate sign-in-link`, and signs them in.
+  rpc RedeemLink(RedeemLinkRequest) returns (RedeemLinkResponse);
   rpc Logout(LogoutRequest) returns (LogoutResponse);
   // Me returns who is signed in and the tenants where they are a person.
   rpc Me(MeRequest) returns (MeResponse);
@@ -22,6 +29,30 @@ message SignInMethodsRequest {}
 message SignInMethodsResponse {
   bool dev_login = 1;
   bool oidc = 2;
+  // Nobody has set pgmandate up yet: the setup link is in the server's log.
+  bool setup_pending = 3;
+}
+
+message SetUpRequest {
+  // The token from the link, after the "#".
+  string token = 1;
+  // The organisation's name, and the first owner's.
+  string organisation = 2;
+  string name = 3;
+  string email = 4;
+}
+
+message SetUpResponse {
+  // The session's token; the answer also sets the session cookie.
+  string token = 1;
+}
+
+message RedeemLinkRequest {
+  string token = 1;
+}
+
+message RedeemLinkResponse {
+  string token = 1;
 }
 
 message DevLoginRequest {

@@ -58,9 +58,11 @@ func (*SignInMethodsRequest) Descriptor() ([]byte, []int) {
 }
 
 type SignInMethodsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DevLogin      bool                   `protobuf:"varint,1,opt,name=dev_login,json=devLogin,proto3" json:"dev_login,omitempty"`
-	Oidc          bool                   `protobuf:"varint,2,opt,name=oidc,proto3" json:"oidc,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	DevLogin bool                   `protobuf:"varint,1,opt,name=dev_login,json=devLogin,proto3" json:"dev_login,omitempty"`
+	Oidc     bool                   `protobuf:"varint,2,opt,name=oidc,proto3" json:"oidc,omitempty"`
+	// Nobody has set pgmandate up yet: the setup link is in the server's log.
+	SetupPending  bool `protobuf:"varint,3,opt,name=setup_pending,json=setupPending,proto3" json:"setup_pending,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -109,6 +111,216 @@ func (x *SignInMethodsResponse) GetOidc() bool {
 	return false
 }
 
+func (x *SignInMethodsResponse) GetSetupPending() bool {
+	if x != nil {
+		return x.SetupPending
+	}
+	return false
+}
+
+type SetUpRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The token from the link, after the "#".
+	Token string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	// The organisation's name, and the first owner's.
+	Organisation  string `protobuf:"bytes,2,opt,name=organisation,proto3" json:"organisation,omitempty"`
+	Name          string `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Email         string `protobuf:"bytes,4,opt,name=email,proto3" json:"email,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetUpRequest) Reset() {
+	*x = SetUpRequest{}
+	mi := &file_mandate_v1_auth_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetUpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetUpRequest) ProtoMessage() {}
+
+func (x *SetUpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_mandate_v1_auth_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetUpRequest.ProtoReflect.Descriptor instead.
+func (*SetUpRequest) Descriptor() ([]byte, []int) {
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *SetUpRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *SetUpRequest) GetOrganisation() string {
+	if x != nil {
+		return x.Organisation
+	}
+	return ""
+}
+
+func (x *SetUpRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SetUpRequest) GetEmail() string {
+	if x != nil {
+		return x.Email
+	}
+	return ""
+}
+
+type SetUpResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The session's token; the answer also sets the session cookie.
+	Token         string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetUpResponse) Reset() {
+	*x = SetUpResponse{}
+	mi := &file_mandate_v1_auth_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetUpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetUpResponse) ProtoMessage() {}
+
+func (x *SetUpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_mandate_v1_auth_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetUpResponse.ProtoReflect.Descriptor instead.
+func (*SetUpResponse) Descriptor() ([]byte, []int) {
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *SetUpResponse) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+type RedeemLinkRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RedeemLinkRequest) Reset() {
+	*x = RedeemLinkRequest{}
+	mi := &file_mandate_v1_auth_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RedeemLinkRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RedeemLinkRequest) ProtoMessage() {}
+
+func (x *RedeemLinkRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_mandate_v1_auth_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RedeemLinkRequest.ProtoReflect.Descriptor instead.
+func (*RedeemLinkRequest) Descriptor() ([]byte, []int) {
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *RedeemLinkRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+type RedeemLinkResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RedeemLinkResponse) Reset() {
+	*x = RedeemLinkResponse{}
+	mi := &file_mandate_v1_auth_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RedeemLinkResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RedeemLinkResponse) ProtoMessage() {}
+
+func (x *RedeemLinkResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_mandate_v1_auth_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RedeemLinkResponse.ProtoReflect.Descriptor instead.
+func (*RedeemLinkResponse) Descriptor() ([]byte, []int) {
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *RedeemLinkResponse) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
 type DevLoginRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Email         string                 `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
@@ -119,7 +331,7 @@ type DevLoginRequest struct {
 
 func (x *DevLoginRequest) Reset() {
 	*x = DevLoginRequest{}
-	mi := &file_mandate_v1_auth_proto_msgTypes[2]
+	mi := &file_mandate_v1_auth_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -131,7 +343,7 @@ func (x *DevLoginRequest) String() string {
 func (*DevLoginRequest) ProtoMessage() {}
 
 func (x *DevLoginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_auth_proto_msgTypes[2]
+	mi := &file_mandate_v1_auth_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -144,7 +356,7 @@ func (x *DevLoginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DevLoginRequest.ProtoReflect.Descriptor instead.
 func (*DevLoginRequest) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{2}
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *DevLoginRequest) GetEmail() string {
@@ -170,7 +382,7 @@ type DevLoginResponse struct {
 
 func (x *DevLoginResponse) Reset() {
 	*x = DevLoginResponse{}
-	mi := &file_mandate_v1_auth_proto_msgTypes[3]
+	mi := &file_mandate_v1_auth_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -182,7 +394,7 @@ func (x *DevLoginResponse) String() string {
 func (*DevLoginResponse) ProtoMessage() {}
 
 func (x *DevLoginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_auth_proto_msgTypes[3]
+	mi := &file_mandate_v1_auth_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -195,7 +407,7 @@ func (x *DevLoginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DevLoginResponse.ProtoReflect.Descriptor instead.
 func (*DevLoginResponse) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{3}
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DevLoginResponse) GetToken() string {
@@ -213,7 +425,7 @@ type LogoutRequest struct {
 
 func (x *LogoutRequest) Reset() {
 	*x = LogoutRequest{}
-	mi := &file_mandate_v1_auth_proto_msgTypes[4]
+	mi := &file_mandate_v1_auth_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -225,7 +437,7 @@ func (x *LogoutRequest) String() string {
 func (*LogoutRequest) ProtoMessage() {}
 
 func (x *LogoutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_auth_proto_msgTypes[4]
+	mi := &file_mandate_v1_auth_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -238,7 +450,7 @@ func (x *LogoutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogoutRequest.ProtoReflect.Descriptor instead.
 func (*LogoutRequest) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{4}
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{8}
 }
 
 type LogoutResponse struct {
@@ -249,7 +461,7 @@ type LogoutResponse struct {
 
 func (x *LogoutResponse) Reset() {
 	*x = LogoutResponse{}
-	mi := &file_mandate_v1_auth_proto_msgTypes[5]
+	mi := &file_mandate_v1_auth_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -261,7 +473,7 @@ func (x *LogoutResponse) String() string {
 func (*LogoutResponse) ProtoMessage() {}
 
 func (x *LogoutResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_auth_proto_msgTypes[5]
+	mi := &file_mandate_v1_auth_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -274,7 +486,7 @@ func (x *LogoutResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogoutResponse.ProtoReflect.Descriptor instead.
 func (*LogoutResponse) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{5}
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{9}
 }
 
 type MeRequest struct {
@@ -285,7 +497,7 @@ type MeRequest struct {
 
 func (x *MeRequest) Reset() {
 	*x = MeRequest{}
-	mi := &file_mandate_v1_auth_proto_msgTypes[6]
+	mi := &file_mandate_v1_auth_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -297,7 +509,7 @@ func (x *MeRequest) String() string {
 func (*MeRequest) ProtoMessage() {}
 
 func (x *MeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_auth_proto_msgTypes[6]
+	mi := &file_mandate_v1_auth_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -310,7 +522,7 @@ func (x *MeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeRequest.ProtoReflect.Descriptor instead.
 func (*MeRequest) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{6}
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{10}
 }
 
 type MeResponse struct {
@@ -327,7 +539,7 @@ type MeResponse struct {
 
 func (x *MeResponse) Reset() {
 	*x = MeResponse{}
-	mi := &file_mandate_v1_auth_proto_msgTypes[7]
+	mi := &file_mandate_v1_auth_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -339,7 +551,7 @@ func (x *MeResponse) String() string {
 func (*MeResponse) ProtoMessage() {}
 
 func (x *MeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_auth_proto_msgTypes[7]
+	mi := &file_mandate_v1_auth_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -352,7 +564,7 @@ func (x *MeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeResponse.ProtoReflect.Descriptor instead.
 func (*MeResponse) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{7}
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MeResponse) GetEmail() string {
@@ -402,7 +614,7 @@ type TenantMembership struct {
 
 func (x *TenantMembership) Reset() {
 	*x = TenantMembership{}
-	mi := &file_mandate_v1_auth_proto_msgTypes[8]
+	mi := &file_mandate_v1_auth_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -414,7 +626,7 @@ func (x *TenantMembership) String() string {
 func (*TenantMembership) ProtoMessage() {}
 
 func (x *TenantMembership) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_auth_proto_msgTypes[8]
+	mi := &file_mandate_v1_auth_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -427,7 +639,7 @@ func (x *TenantMembership) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantMembership.ProtoReflect.Descriptor instead.
 func (*TenantMembership) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{8}
+	return file_mandate_v1_auth_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *TenantMembership) GetTenantId() string {
@@ -464,10 +676,22 @@ const file_mandate_v1_auth_proto_rawDesc = "" +
 	"\n" +
 	"\x15mandate/v1/auth.proto\x12\n" +
 	"mandate.v1\"\x16\n" +
-	"\x14SignInMethodsRequest\"H\n" +
+	"\x14SignInMethodsRequest\"m\n" +
 	"\x15SignInMethodsResponse\x12\x1b\n" +
 	"\tdev_login\x18\x01 \x01(\bR\bdevLogin\x12\x12\n" +
-	"\x04oidc\x18\x02 \x01(\bR\x04oidc\";\n" +
+	"\x04oidc\x18\x02 \x01(\bR\x04oidc\x12#\n" +
+	"\rsetup_pending\x18\x03 \x01(\bR\fsetupPending\"r\n" +
+	"\fSetUpRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12\"\n" +
+	"\forganisation\x18\x02 \x01(\tR\forganisation\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12\x14\n" +
+	"\x05email\x18\x04 \x01(\tR\x05email\"%\n" +
+	"\rSetUpResponse\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\")\n" +
+	"\x11RedeemLinkRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\"*\n" +
+	"\x12RedeemLinkResponse\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\";\n" +
 	"\x0fDevLoginRequest\x12\x14\n" +
 	"\x05email\x18\x01 \x01(\tR\x05email\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"(\n" +
@@ -488,10 +712,13 @@ const file_mandate_v1_auth_proto_rawDesc = "" +
 	"\vtenant_name\x18\x02 \x01(\tR\n" +
 	"tenantName\x12\x1b\n" +
 	"\tperson_id\x18\x03 \x01(\tR\bpersonId\x12\x12\n" +
-	"\x04role\x18\x04 \x01(\tR\x04role2\xa0\x02\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role2\xab\x03\n" +
 	"\vAuthService\x12T\n" +
 	"\rSignInMethods\x12 .mandate.v1.SignInMethodsRequest\x1a!.mandate.v1.SignInMethodsResponse\x12E\n" +
-	"\bDevLogin\x12\x1b.mandate.v1.DevLoginRequest\x1a\x1c.mandate.v1.DevLoginResponse\x12?\n" +
+	"\bDevLogin\x12\x1b.mandate.v1.DevLoginRequest\x1a\x1c.mandate.v1.DevLoginResponse\x12<\n" +
+	"\x05SetUp\x12\x18.mandate.v1.SetUpRequest\x1a\x19.mandate.v1.SetUpResponse\x12K\n" +
+	"\n" +
+	"RedeemLink\x12\x1d.mandate.v1.RedeemLinkRequest\x1a\x1e.mandate.v1.RedeemLinkResponse\x12?\n" +
 	"\x06Logout\x12\x19.mandate.v1.LogoutRequest\x1a\x1a.mandate.v1.LogoutResponse\x123\n" +
 	"\x02Me\x12\x15.mandate.v1.MeRequest\x1a\x16.mandate.v1.MeResponseBCZAgithub.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1;mandatev1b\x06proto3"
 
@@ -507,33 +734,41 @@ func file_mandate_v1_auth_proto_rawDescGZIP() []byte {
 	return file_mandate_v1_auth_proto_rawDescData
 }
 
-var file_mandate_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_mandate_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_mandate_v1_auth_proto_goTypes = []any{
 	(*SignInMethodsRequest)(nil),  // 0: mandate.v1.SignInMethodsRequest
 	(*SignInMethodsResponse)(nil), // 1: mandate.v1.SignInMethodsResponse
-	(*DevLoginRequest)(nil),       // 2: mandate.v1.DevLoginRequest
-	(*DevLoginResponse)(nil),      // 3: mandate.v1.DevLoginResponse
-	(*LogoutRequest)(nil),         // 4: mandate.v1.LogoutRequest
-	(*LogoutResponse)(nil),        // 5: mandate.v1.LogoutResponse
-	(*MeRequest)(nil),             // 6: mandate.v1.MeRequest
-	(*MeResponse)(nil),            // 7: mandate.v1.MeResponse
-	(*TenantMembership)(nil),      // 8: mandate.v1.TenantMembership
+	(*SetUpRequest)(nil),          // 2: mandate.v1.SetUpRequest
+	(*SetUpResponse)(nil),         // 3: mandate.v1.SetUpResponse
+	(*RedeemLinkRequest)(nil),     // 4: mandate.v1.RedeemLinkRequest
+	(*RedeemLinkResponse)(nil),    // 5: mandate.v1.RedeemLinkResponse
+	(*DevLoginRequest)(nil),       // 6: mandate.v1.DevLoginRequest
+	(*DevLoginResponse)(nil),      // 7: mandate.v1.DevLoginResponse
+	(*LogoutRequest)(nil),         // 8: mandate.v1.LogoutRequest
+	(*LogoutResponse)(nil),        // 9: mandate.v1.LogoutResponse
+	(*MeRequest)(nil),             // 10: mandate.v1.MeRequest
+	(*MeResponse)(nil),            // 11: mandate.v1.MeResponse
+	(*TenantMembership)(nil),      // 12: mandate.v1.TenantMembership
 }
 var file_mandate_v1_auth_proto_depIdxs = []int32{
-	8, // 0: mandate.v1.MeResponse.tenants:type_name -> mandate.v1.TenantMembership
-	0, // 1: mandate.v1.AuthService.SignInMethods:input_type -> mandate.v1.SignInMethodsRequest
-	2, // 2: mandate.v1.AuthService.DevLogin:input_type -> mandate.v1.DevLoginRequest
-	4, // 3: mandate.v1.AuthService.Logout:input_type -> mandate.v1.LogoutRequest
-	6, // 4: mandate.v1.AuthService.Me:input_type -> mandate.v1.MeRequest
-	1, // 5: mandate.v1.AuthService.SignInMethods:output_type -> mandate.v1.SignInMethodsResponse
-	3, // 6: mandate.v1.AuthService.DevLogin:output_type -> mandate.v1.DevLoginResponse
-	5, // 7: mandate.v1.AuthService.Logout:output_type -> mandate.v1.LogoutResponse
-	7, // 8: mandate.v1.AuthService.Me:output_type -> mandate.v1.MeResponse
-	5, // [5:9] is the sub-list for method output_type
-	1, // [1:5] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	12, // 0: mandate.v1.MeResponse.tenants:type_name -> mandate.v1.TenantMembership
+	0,  // 1: mandate.v1.AuthService.SignInMethods:input_type -> mandate.v1.SignInMethodsRequest
+	6,  // 2: mandate.v1.AuthService.DevLogin:input_type -> mandate.v1.DevLoginRequest
+	2,  // 3: mandate.v1.AuthService.SetUp:input_type -> mandate.v1.SetUpRequest
+	4,  // 4: mandate.v1.AuthService.RedeemLink:input_type -> mandate.v1.RedeemLinkRequest
+	8,  // 5: mandate.v1.AuthService.Logout:input_type -> mandate.v1.LogoutRequest
+	10, // 6: mandate.v1.AuthService.Me:input_type -> mandate.v1.MeRequest
+	1,  // 7: mandate.v1.AuthService.SignInMethods:output_type -> mandate.v1.SignInMethodsResponse
+	7,  // 8: mandate.v1.AuthService.DevLogin:output_type -> mandate.v1.DevLoginResponse
+	3,  // 9: mandate.v1.AuthService.SetUp:output_type -> mandate.v1.SetUpResponse
+	5,  // 10: mandate.v1.AuthService.RedeemLink:output_type -> mandate.v1.RedeemLinkResponse
+	9,  // 11: mandate.v1.AuthService.Logout:output_type -> mandate.v1.LogoutResponse
+	11, // 12: mandate.v1.AuthService.Me:output_type -> mandate.v1.MeResponse
+	7,  // [7:13] is the sub-list for method output_type
+	1,  // [1:7] is the sub-list for method input_type
+	1,  // [1:1] is the sub-list for extension type_name
+	1,  // [1:1] is the sub-list for extension extendee
+	0,  // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_mandate_v1_auth_proto_init() }
@@ -547,7 +782,7 @@ func file_mandate_v1_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mandate_v1_auth_proto_rawDesc), len(file_mandate_v1_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
