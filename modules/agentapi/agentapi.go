@@ -165,7 +165,7 @@ var (
 	uuidPattern   = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	actionPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`)
 	runPattern    = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,100}$`)
-	statusPattern = regexp.MustCompile(`^(?:pending|approved|rejected|executed|withdrawn|expired)$`)
+	statusPattern = regexp.MustCompile(`^(?:pending|approved|rejected|executed|withdrawn|expired|would_allow|dismissed)$`)
 )
 
 // maxArgument bounds any id-like argument before it is matched or kept.

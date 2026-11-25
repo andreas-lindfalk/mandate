@@ -13,7 +13,7 @@ import (
 )
 
 const getAgent = `-- name: GetAgent :one
-SELECT id, tenant_id, name, department, created_by, created_at, revoked_at, revoked_by, max_per_minute, max_per_hour FROM mandate.agents WHERE id = $1
+SELECT id, tenant_id, name, department, created_by, created_at, revoked_at, revoked_by, mode, max_per_minute, max_per_hour FROM mandate.agents WHERE id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (MandateAgent, error) {
@@ -28,6 +28,30 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (MandateAgent, err
 		&i.CreatedAt,
 		&i.RevokedAt,
 		&i.RevokedBy,
+		&i.Mode,
+		&i.MaxPerMinute,
+		&i.MaxPerHour,
+	)
+	return i, err
+}
+
+const getAgentForUpdate = `-- name: GetAgentForUpdate :one
+SELECT id, tenant_id, name, department, created_by, created_at, revoked_at, revoked_by, mode, max_per_minute, max_per_hour FROM mandate.agents WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) GetAgentForUpdate(ctx context.Context, id uuid.UUID) (MandateAgent, error) {
+	row := q.db.QueryRow(ctx, getAgentForUpdate, id)
+	var i MandateAgent
+	err := row.Scan(
+		&i.Id,
+		&i.TenantId,
+		&i.Name,
+		&i.Department,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.Mode,
 		&i.MaxPerMinute,
 		&i.MaxPerHour,
 	)
@@ -52,7 +76,7 @@ func (q *Queries) GetToken(ctx context.Context, id uuid.UUID) (GetTokenRow, erro
 }
 
 const insertAgent = `-- name: InsertAgent :exec
-INSERT INTO mandate.agents (id, tenant_id, name, department) VALUES ($1, $2, $3, $4)
+INSERT INTO mandate.agents (id, tenant_id, name, department, mode) VALUES ($1, $2, $3, $4, $5)
 `
 
 type InsertAgentParams struct {
@@ -60,6 +84,7 @@ type InsertAgentParams struct {
 	TenantId   uuid.UUID
 	Name       string
 	Department *string
+	Mode       string
 }
 
 func (q *Queries) InsertAgent(ctx context.Context, arg InsertAgentParams) error {
@@ -68,6 +93,7 @@ func (q *Queries) InsertAgent(ctx context.Context, arg InsertAgentParams) error 
 		arg.TenantId,
 		arg.Name,
 		arg.Department,
+		arg.Mode,
 	)
 	return err
 }
@@ -101,7 +127,7 @@ func (q *Queries) InsertToken(ctx context.Context, arg InsertTokenParams) error 
 }
 
 const listAgents = `-- name: ListAgents :many
-SELECT id, tenant_id, name, department, created_by, created_at, revoked_at, revoked_by, max_per_minute, max_per_hour FROM mandate.agents ORDER BY revoked_at IS NOT NULL, created_at, id
+SELECT id, tenant_id, name, department, created_by, created_at, revoked_at, revoked_by, mode, max_per_minute, max_per_hour FROM mandate.agents ORDER BY revoked_at IS NOT NULL, created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context) ([]MandateAgent, error) {
@@ -122,6 +148,7 @@ func (q *Queries) ListAgents(ctx context.Context) ([]MandateAgent, error) {
 			&i.CreatedAt,
 			&i.RevokedAt,
 			&i.RevokedBy,
+			&i.Mode,
 			&i.MaxPerMinute,
 			&i.MaxPerHour,
 		); err != nil {
@@ -213,6 +240,24 @@ type SetAgentLimitsParams struct {
 
 func (q *Queries) SetAgentLimits(ctx context.Context, arg SetAgentLimitsParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setAgentLimits, arg.MaxPerMinute, arg.MaxPerHour, arg.Id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setAgentMode = `-- name: SetAgentMode :execrows
+UPDATE mandate.agents SET mode = $1 WHERE id = $2 AND revoked_at IS NULL AND mode <> $1
+`
+
+type SetAgentModeParams struct {
+	Mode string
+	Id   uuid.UUID
+}
+
+// Nothing when the agent is revoked or already in the mode.
+func (q *Queries) SetAgentMode(ctx context.Context, arg SetAgentModeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAgentMode, arg.Mode, arg.Id)
 	if err != nil {
 		return 0, err
 	}

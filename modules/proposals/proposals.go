@@ -49,6 +49,13 @@ const (
 	// StatusExpired marks a proposal nobody decided before its deadline.
 	// Nothing was done.
 	StatusExpired = "expired"
+	// StatusWouldAllow marks a dry run a mandate would have allowed. The
+	// basis is recorded; nothing was done, and nothing counts against the
+	// budget.
+	StatusWouldAllow = "would_allow"
+	// StatusDismissed marks a dry run a person set aside. A dry run is never
+	// approved or rejected.
+	StatusDismissed = "dismissed"
 
 	// FlagSteeringText marks a proposal whose title, payload or account
 	// holds text that tries to steer a model. Such a proposal is high risk and is never
@@ -135,6 +142,9 @@ type Proposal struct {
 
 	Id      uuid.UUID
 	AgentId uuid.UUID
+	// DryRun says it was made while its agent was in dry run: it is never
+	// carried out. The database sets it, and it never changes.
+	DryRun  bool
 	RunId   string
 	Action  string
 	Risk    string
@@ -290,7 +300,10 @@ type Filter struct {
 	RunId string
 	// OldestFirst orders a queue as it is worked.
 	OldestFirst bool
-	Limit       int
+	// DryRun keeps only dry runs (true) or only live proposals (false);
+	// nil keeps both.
+	DryRun *bool
+	Limit  int
 }
 
 // AfterStore runs in the transaction that stores a proposal that may be
@@ -321,11 +334,21 @@ func (s *Service) SetOnWaiting(hook AfterStore) {
 	s.onWaiting = hook
 }
 
-func (s *Service) waiting(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
-	if s.onWaiting == nil {
+func (s *Service) waiting(ctx context.Context, tx pgx.Tx, id uuid.UUID, dryRun bool) error {
+	// A dry run waits for nobody: no chat is told about it.
+	if s.onWaiting == nil || dryRun {
 		return nil
 	}
 	return s.onWaiting(ctx, tx, id)
+}
+
+// tagged marks an event's fields as about a dry run, so the chain says so
+// of every event of one.
+func tagged(fields map[string]any, dryRun bool) map[string]any {
+	if dryRun {
+		fields["dryRun"] = true
+	}
+	return fields
 }
 
 // SetAfterStore connects the execution queue. Nil means nothing is ever
@@ -497,6 +520,7 @@ func (s *Service) Propose(ctx context.Context, input Input) (Proposal, bool, err
 			}
 		}
 		fields["provenance"] = provenance
+		tagged(fields, result.DryRun)
 		if len(action.Schema) > 0 {
 			if fields["actionSchemaSha256"], err = events.Digest(action.Schema); err != nil {
 				return err
@@ -508,7 +532,7 @@ func (s *Service) Propose(ctx context.Context, input Input) (Proposal, bool, err
 		if s.afterStore != nil && Candidate(action, result) {
 			return s.afterStore(ctx, tx, id)
 		}
-		if err := s.waiting(ctx, tx, id); err != nil {
+		if err := s.waiting(ctx, tx, id, result.DryRun); err != nil {
 			return err
 		}
 		return nil
@@ -605,7 +629,7 @@ func (s *Service) List(ctx context.Context, filter Filter) ([]Proposal, error) {
 	if limit <= 0 || limit > maxListLimit {
 		limit = maxListLimit
 	}
-	params := repo.ListProposalsParams{MaxRows: int32(limit), AgentId: filter.AgentId, OldestFirst: filter.OldestFirst} //nolint:gosec // bounded above
+	params := repo.ListProposalsParams{MaxRows: int32(limit), AgentId: filter.AgentId, OldestFirst: filter.OldestFirst, DryRun: filter.DryRun} //nolint:gosec // bounded above
 	if filter.Status != "" {
 		params.Status = &filter.Status
 	}
@@ -630,8 +654,9 @@ func (s *Service) List(ctx context.Context, filter Filter) ([]Proposal, error) {
 }
 
 // Count is how many proposals of the tenant in scope have the status, or
-// how many there are at all when the status is empty.
-func (s *Service) Count(ctx context.Context, status string) (int64, error) {
+// how many there are at all when the status is empty; dryRun, when set,
+// counts only dry runs or only live proposals.
+func (s *Service) Count(ctx context.Context, status string, dryRun *bool) (int64, error) {
 	var count int64
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		var filter *string
@@ -639,7 +664,7 @@ func (s *Service) Count(ctx context.Context, status string) (int64, error) {
 			filter = &status
 		}
 		var err error
-		count, err = repo.New(tx).CountProposals(ctx, filter)
+		count, err = repo.New(tx).CountProposals(ctx, repo.CountProposalsParams{Status: filter, DryRun: dryRun})
 		return err
 	})
 	return count, err
@@ -756,7 +781,7 @@ func (s *Service) Withdraw(ctx context.Context, id uuid.UUID, reason string) (Pr
 		}
 		result = toProposal(withdrawn)
 		_, err = events.Append(ctx, tx, events.Event{
-			Type: "proposal.withdrawn", SubjectId: id, Payload: map[string]any{"reasonChars": utf8.RuneCountInString(reason)},
+			Type: "proposal.withdrawn", SubjectId: id, Payload: tagged(map[string]any{"reasonChars": utf8.RuneCountInString(reason)}, result.DryRun),
 		})
 		return err
 	})
@@ -769,6 +794,61 @@ func (s *Service) Withdraw(ctx context.Context, id uuid.UUID, reason string) (Pr
 // Reject decides a proposal as rejected. Only a person may.
 func (s *Service) Reject(ctx context.Context, id uuid.UUID, note string) (Proposal, error) {
 	return s.decide(ctx, id, StatusRejected, Decision{Note: note})
+}
+
+// Dismiss sets a waiting dry run aside, as a person of the tenant, with an
+// optional note. A dry run is never approved or rejected, so this is all a
+// person does with one. A live proposal, or one no longer waiting, is a
+// FailedPrecondition.
+func (s *Service) Dismiss(ctx context.Context, id uuid.UUID, note string) (Proposal, error) {
+	a, ok := actor.From(ctx)
+	if !ok || a.Kind != actor.Person {
+		return Proposal{}, fault.New(fault.PermissionDenied, "only a person dismisses a dry run")
+	}
+	note = strings.TrimSpace(note)
+	if utf8.RuneCountInString(note) > maxNote {
+		return Proposal{}, fault.New(fault.InvalidArgument, fmt.Sprintf("the note can be at most %d characters", maxNote))
+	}
+	var notePtr *string
+	if note != "" {
+		notePtr = &note
+	}
+	var result Proposal
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		q := repo.New(tx)
+		row, err := q.GetProposalForUpdate(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fault.New(fault.NotFound, "proposal not found")
+		}
+		if err != nil {
+			return err
+		}
+		if !row.DryRun {
+			return fault.New(fault.FailedPrecondition, "only a dry run is dismissed; approve or reject this proposal")
+		}
+		if row.Status != StatusPending {
+			return fault.New(fault.FailedPrecondition, "the dry run is already "+row.Status)
+		}
+		if err := pastDeadline(ctx, q, id); err != nil {
+			return err
+		}
+		if _, err := q.DismissProposal(ctx, repo.DismissProposalParams{Id: id, Note: notePtr}); err != nil {
+			return err
+		}
+		dismissed, err := q.GetProposal(ctx, id)
+		if err != nil {
+			return err
+		}
+		result = toProposal(dismissed)
+		_, err = events.Append(ctx, tx, events.Event{
+			Type: "proposal.dismissed", SubjectId: id, Payload: tagged(map[string]any{"action": row.Action, "noteChars": utf8.RuneCountInString(note)}, true),
+		})
+		return err
+	})
+	if err != nil {
+		return Proposal{}, fault.FromDb(err)
+	}
+	return result, nil
 }
 
 func (s *Service) decide(ctx context.Context, id uuid.UUID, status string, decision Decision) (Proposal, error) {
@@ -797,6 +877,9 @@ func (s *Service) decide(ctx context.Context, id uuid.UUID, status string, decis
 		}
 		if row.Status != StatusPending {
 			return fault.New(fault.FailedPrecondition, "proposal is already decided")
+		}
+		if row.DryRun {
+			return fault.New(fault.FailedPrecondition, "this is a dry run: nothing of it is carried out, so it is never approved or rejected; dismiss it")
 		}
 		if err := pastDeadline(ctx, q, id); err != nil {
 			return err
@@ -980,11 +1063,11 @@ func (s *Service) Execute(ctx context.Context, id uuid.UUID, basisFor BasisFor) 
 		skip := func(reason string) error {
 			skipped = reason
 			if _, err := events.Append(ctx, tx, events.Event{
-				Type: "proposal.execution_skipped", SubjectId: id, Payload: map[string]any{"reason": reason, "action": proposal.Action},
+				Type: "proposal.execution_skipped", SubjectId: id, Payload: tagged(map[string]any{"reason": reason, "action": proposal.Action}, proposal.DryRun),
 			}); err != nil {
 				return err
 			}
-			return s.waiting(ctx, tx, id)
+			return s.waiting(ctx, tx, id, proposal.DryRun)
 		}
 		action, ok, err := s.actions.LookupIn(ctx, tx, proposal.Action)
 		if err != nil {
@@ -1029,11 +1112,20 @@ func (s *Service) Execute(ctx context.Context, id uuid.UUID, basisFor BasisFor) 
 		if err != nil {
 			return err
 		}
+		eventType := "proposal.executed"
+		if result.DryRun {
+			eventType = "proposal.would_allow"
+		}
 		if _, err := events.Append(ctx, tx, events.Event{
-			Type: "proposal.executed", SubjectId: id,
-			Payload: map[string]any{"action": result.Action, "risk": result.Risk, "basis": basis, "payloadSha256": payloadDigest},
+			Type: eventType, SubjectId: id,
+			Payload: tagged(map[string]any{"action": result.Action, "risk": result.Risk, "basis": basis, "payloadSha256": payloadDigest}, result.DryRun),
 		}); err != nil {
 			return err
+		}
+		// A dry run would have been allowed, and that is all: nothing is
+		// applied and nothing is delivered.
+		if result.DryRun {
+			return nil
 		}
 		if err := s.apply(ctx, tx, action, result); err != nil {
 			return fmt.Errorf("%w: apply %s: %w", ErrActionFailed, result.Action, err)
@@ -1075,7 +1167,7 @@ func (s *Service) ExpireDue(ctx context.Context) (int, error) {
 			}
 			_, err = events.Append(ctx, tx, events.Event{
 				Type: "proposal.expired", SubjectId: ids[0],
-				Payload: map[string]any{"action": row.Action, "expiresAt": row.ExpiresAt.UTC().Format(time.RFC3339)},
+				Payload: tagged(map[string]any{"action": row.Action, "expiresAt": row.ExpiresAt.UTC().Format(time.RFC3339)}, row.DryRun),
 			})
 			return err
 		})
@@ -1093,12 +1185,20 @@ func (s *Service) ExpireDue(ctx context.Context) (int, error) {
 // when the database refused the execution itself.
 func (s *Service) RecordSkip(ctx context.Context, id uuid.UUID, reason string) error {
 	return db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		row, err := repo.New(tx).GetProposal(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Gone, as with its tenant: nothing left to explain.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 		if _, err := events.Append(ctx, tx, events.Event{
-			Type: "proposal.execution_skipped", SubjectId: id, Payload: map[string]any{"reason": reason},
+			Type: "proposal.execution_skipped", SubjectId: id, Payload: tagged(map[string]any{"reason": reason}, row.DryRun),
 		}); err != nil {
 			return err
 		}
-		return s.waiting(ctx, tx, id)
+		return s.waiting(ctx, tx, id, row.DryRun)
 	})
 }
 
@@ -1265,7 +1365,7 @@ func toProposal(row repo.MandateProposal) Proposal {
 		Payload: json.RawMessage(row.Payload), ProposedPayload: json.RawMessage(row.ProposedPayload), Flags: slices.Clone(row.Flags),
 		IdempotencyKey: row.IdempotencyKey, Status: row.Status, Edited: row.Edited, DecidedBy: row.DecidedBy,
 		DecisionNote: deref(row.DecisionNote), CreatedAt: row.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
-		ExpiresAt: row.ExpiresAt, DeliverWithin: intervalDuration(row.DeliverWithin),
+		ExpiresAt: row.ExpiresAt, DeliverWithin: intervalDuration(row.DeliverWithin), DryRun: row.DryRun,
 	}
 	if result.Flags == nil {
 		result.Flags = []string{}

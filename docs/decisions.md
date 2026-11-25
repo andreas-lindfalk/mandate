@@ -2,6 +2,19 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
+## 2026-11-26: build step 4, the dry run
+
+Built as [design-0.1.md](design-0.1.md) section 1 sets out.
+
+- **A new agent starts in dry run** (`agents.mode`, default `dry_run`). An owner creates one live (`-mode live`, or *Live from the start* in the UI) or switches it (`SetAgentMode`, `pgmandate agent mode`), logged as `agent.mode_changed`. The fixture of the tests, the demo's main agent and the quickstart create agents live, and say so.
+- **The database holds it.** The insert trigger sets `proposals.dry_run` from the agent's mode, whatever the insert says, and the update trigger never lets it change. Two table checks and the update trigger keep a dry run from becoming approved, rejected or executed, and a live proposal from becoming *would allow* or *dismissed*. *Would allow* is held to the same checks as an execution (the mandate locked, `basis_holds`); only `executed` counts against a budget. `may_write_for` opens a host's table only for a live proposal it can see, so it fails closed, and the deliveries guard refuses a delivery for a dry run. `may_write_for` moved below the proposals table it now reads, and stays plain SQL.
+- **The execution job runs a dry run as far as the decision**, records *would allow* with the basis, and stops: nothing is applied, nothing delivered.
+- **The person's side.** `DismissProposal` and `pgmandate dismiss`; approving or rejecting a dry run is `failed_precondition`. A waiting dry run sends no chat notice.
+- **The agent's side.** Every answer of the agent contract carries `dryRun`, false included. Only the answer that made a dry run tells the agent to do it itself, once; a repeat or a later read says not to do it again, so a framework that resends cannot make the agent act twice. `get_proposal` does not wait for a dry run, since nobody decides it.
+- **The inbox keeps dry runs apart.** Waiting dry runs have their own tab and are not in the *Waiting* queue or its count (`dry_run` filter on `ListProposals`), so they cannot crowd out what a person must decide.
+- **The record.** Every event of a dry run carries `dryRun: true`; the evidence page marks them. The decisions export already took only approved, rejected and executed, so dry runs stay out. There are no agreement figures yet to keep them out of.
+- **The demo** gains a step: a second agent in dry run, a *would allow* with nothing delivered or spent, and a dismissal.
+
 ## 2026-11-26: build step 3, the agent contract
 
 Built as [design-0.1.md](design-0.1.md) section 5 sets out.

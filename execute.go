@@ -66,10 +66,13 @@ func (k *Kernel) ExecuteProposal(ctx context.Context, tenantId, proposalId uuid.
 	if agent.RevokedAt != nil {
 		return k.Proposals.RecordSkip(ctx, proposalId, SkipAgentRevoked)
 	}
-	_, skipped, err := k.Proposals.Execute(ctx, proposalId, k.basisFor)
+	done, skipped, err := k.Proposals.Execute(ctx, proposalId, k.basisFor)
 	switch {
 	case err == nil && skipped != "":
 		slog.InfoContext(ctx, "execution skipped", "tenant", tenantId, "proposal", proposalId, "reason", skipped)
+		return nil
+	case err == nil && done.DryRun:
+		slog.InfoContext(ctx, "a mandate would allow the dry run; nothing was done", "tenant", tenantId, "proposal", proposalId)
 		return nil
 	case err == nil:
 		slog.InfoContext(ctx, "proposal executed under a mandate", "tenant", tenantId, "proposal", proposalId)

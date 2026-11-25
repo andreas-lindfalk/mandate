@@ -173,6 +173,10 @@ func (s *Service) propose(ctx context.Context, req *agentv1.ProposeRequest) (*ag
 		return nil, err
 	}
 	resp := &agentv1.ProposeResponse{Proposal: view, Created: proto.Bool(created)}
+	// Only the answer that made a dry run tells the agent to act itself.
+	if created && proposal.DryRun {
+		view.Next = DryRunNext
+	}
 	if !created {
 		// A repeat must not read as something that just happened: a model
 		// that reuses a key next week would otherwise think it acted.
@@ -341,7 +345,9 @@ func (s *Service) settled(ctx context.Context, id uuid.UUID, wait time.Duration,
 				return nil, err
 			}
 			reason = recorded
-			done = justProposed && found
+			// Nobody decides a dry run, so a read does not wait for one;
+			// a proposal just made waits for its mandates' answer.
+			done = (justProposed && found) || (p.DryRun && !justProposed)
 		} else {
 			d, found, err := s.host.DeliveryOf(ctx, id)
 			if err != nil {

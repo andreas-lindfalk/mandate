@@ -263,7 +263,7 @@ func (s *AgentApiSuite) Test_AnAgentSeesOnlyItsOwn() {
 	s.Require().NoError(err)
 	id := mine.GetProposal().GetProposalId()
 
-	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "")
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "", "live")
 	s.Require().NoError(err)
 	_, otherToken, err := s.W.Kernel.Agents.IssueToken(t.Owner, other.Id, 1)
 	s.Require().NoError(err)
@@ -369,4 +369,62 @@ func (s *AgentApiSuite) toolCalls(t testfix.Tenant) []events.Stored {
 		return err
 	}))
 	return calls
+}
+
+// Every answer says whether it is a dry run, false included, and a dry run
+// tells the agent to act itself; a live one never does.
+func (s *AgentApiSuite) Test_EveryAnswerSaysDryRun() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	dry := s.W.DryRunAgent(s.T(), t)
+	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &dry.Id, Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P", Days: 30})
+	s.Require().NoError(err)
+
+	live := s.mcpCall(t.Token, "propose", map[string]any{"action": "test.manual", "title": "T", "payload": map[string]any{}, "idempotency_key": "k-1", "rationale": "Why."})
+	var answer map[string]any
+	s.Require().NoError(json.Unmarshal([]byte(live), &answer))
+	s.Require().Equal(false, answer["proposal"].(map[string]any)["dryRun"], "false is said, not left out")
+	s.Require().NotContains(answer["proposal"].(map[string]any)["next"], "own credential")
+
+	waiting := s.mcpCall(dry.Token, "propose", map[string]any{"action": "test.manual", "title": "T", "payload": map[string]any{}, "idempotency_key": "k-1", "rationale": "Why."})
+	s.Require().NoError(json.Unmarshal([]byte(waiting), &answer))
+	p := answer["proposal"].(map[string]any)
+	s.Require().Equal(true, p["dryRun"])
+	s.Require().Equal(proposals.StatusPending, p["status"])
+	s.Require().Contains(p["outcome"], "dry run: a person would have decided it")
+	s.Require().Contains(p["next"], "Do it yourself with your own credential, once")
+	s.Require().NotEmpty(p["createdAt"], "a dry run has its time like any proposal")
+
+	// A repeat, and every later read, never tells the agent to act again.
+	repeat := s.mcpCall(dry.Token, "propose", map[string]any{"action": "test.manual", "title": "T", "payload": map[string]any{}, "idempotency_key": "k-1", "rationale": "Why."})
+	s.Require().NoError(json.Unmarshal([]byte(repeat), &answer))
+	s.Require().Equal(true, answer["repeat"])
+	s.Require().NotContains(answer["proposal"].(map[string]any)["next"], "Do it yourself")
+	s.Require().Contains(answer["proposal"].(map[string]any)["next"], "do not do it again")
+	reread := s.mcpCall(dry.Token, "get_proposal", map[string]any{"proposal_id": p["proposalId"]})
+	s.Require().NoError(json.Unmarshal([]byte(reread), &answer))
+	s.Require().NotContains(answer["proposal"].(map[string]any)["next"], "Do it yourself")
+
+	// Without a job queue here, the kernel's execution is run by hand: the
+	// mandate would allow it.
+	allowed, err := s.client(dry.Token).Propose(context.Background(), &agentv1.ProposeRequest{Action: "test.low", Title: "T", PayloadJson: `{}`, IdempotencyKey: "k-2", Rationale: "Why."})
+	s.Require().NoError(err)
+	s.Require().True(allowed.GetProposal().GetDryRun())
+	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, uuid.MustParse(allowed.GetProposal().GetProposalId())))
+	read, err := s.client(dry.Token).GetProposal(context.Background(), &agentv1.GetProposalRequest{ProposalId: allowed.GetProposal().GetProposalId(), WaitSeconds: 30})
+	s.Require().NoError(err)
+	s.Require().Equal(proposals.StatusWouldAllow, read.GetProposal().GetStatus())
+	s.Require().NotContains(read.GetProposal().GetNext(), "Do it yourself")
+	s.Require().Contains(read.GetProposal().GetOutcome(), "a mandate would have allowed it")
+	s.Require().NotNil(read.GetProposal().GetExecutionBasis())
+	s.Require().Nil(read.GetProposal().GetDelivery())
+
+	start := time.Now()
+	pending, err := s.client(dry.Token).GetProposal(context.Background(), &agentv1.GetProposalRequest{ProposalId: p["proposalId"].(string), WaitSeconds: 30})
+	s.Require().NoError(err)
+	s.Require().Equal(proposals.StatusPending, pending.GetProposal().GetStatus())
+	s.Require().Less(time.Since(start), 5*time.Second, "nobody decides a dry run, so a read does not wait for one")
+
+	listed, err := s.client(dry.Token).ListProposals(context.Background(), &agentv1.ListProposalsRequest{Status: "would_allow"})
+	s.Require().NoError(err)
+	s.Require().Len(listed.GetProposals(), 1)
 }

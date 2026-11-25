@@ -45,7 +45,16 @@ type Agent struct {
 	// make; the database refuses the rest.
 	MaxPerMinute int
 	MaxPerHour   int
+	// Mode is ModeLive or ModeDryRun. In dry run what the agent proposes is
+	// recorded and never carried out.
+	Mode string
 }
+
+// An agent's modes.
+const (
+	ModeLive   = "live"
+	ModeDryRun = "dry_run"
+)
 
 type Token struct {
 	Id         uuid.UUID
@@ -85,11 +94,19 @@ func (s *Service) SetNow(now func() time.Time) {
 }
 
 // Create registers an agent in the tenant in scope, with an optional
-// department label. Only an owner may, which the database enforces.
-func (s *Service) Create(ctx context.Context, name, department string) (Agent, error) {
+// department label, in a mode: ModeLive, or ModeDryRun, which is also what
+// an empty mode means, so that a new agent changes nothing until an owner
+// says so. Only an owner may, which the database enforces.
+func (s *Service) Create(ctx context.Context, name, department, mode string) (Agent, error) {
 	tenantId, ok := actor.TenantFrom(ctx)
 	if !ok {
 		return Agent{}, fault.New(fault.InvalidArgument, "no tenant in scope")
+	}
+	if mode == "" {
+		mode = ModeDryRun
+	}
+	if mode != ModeLive && mode != ModeDryRun {
+		return Agent{}, fault.New(fault.InvalidArgument, "the mode is live or dry_run")
 	}
 	name = strings.TrimSpace(name)
 	department = strings.TrimSpace(department)
@@ -106,7 +123,7 @@ func (s *Service) Create(ctx context.Context, name, department string) (Agent, e
 	agent := Agent{Id: uuid.New(), Name: name, Department: department}
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		q := repo.New(tx)
-		if err := q.InsertAgent(ctx, repo.InsertAgentParams{Id: agent.Id, TenantId: tenantId, Name: name, Department: dept}); err != nil {
+		if err := q.InsertAgent(ctx, repo.InsertAgentParams{Id: agent.Id, TenantId: tenantId, Name: name, Department: dept, Mode: mode}); err != nil {
 			return err
 		}
 		row, err := q.GetAgent(ctx, agent.Id)
@@ -114,7 +131,7 @@ func (s *Service) Create(ctx context.Context, name, department string) (Agent, e
 			return err
 		}
 		agent = toAgent(row)
-		_, err = events.Append(ctx, tx, events.Event{Type: "agent.created", SubjectId: agent.Id, Payload: map[string]any{"name": name, "department": dept}})
+		_, err = events.Append(ctx, tx, events.Event{Type: "agent.created", SubjectId: agent.Id, Payload: map[string]any{"name": name, "department": dept, "mode": mode}})
 		return err
 	})
 	return agent, fault.FromDb(err)
@@ -199,6 +216,46 @@ func (s *Service) SetLimits(ctx context.Context, id uuid.UUID, perMinute, perHou
 		}
 		result = toAgent(row)
 		_, err = events.Append(ctx, tx, events.Event{Type: "agent.limits_set", SubjectId: id, Payload: map[string]any{"maxPerMinute": perMinute, "maxPerHour": perHour}})
+		return err
+	})
+	return result, fault.FromDb(err)
+}
+
+// SetMode makes an agent live or puts it in dry run, as an owner. It
+// changes the agent's proposals from now on, never those already made. A
+// revoked agent, or one already in the mode, is NotFound or unchanged.
+func (s *Service) SetMode(ctx context.Context, id uuid.UUID, mode string) (Agent, error) {
+	if mode != ModeLive && mode != ModeDryRun {
+		return Agent{}, fault.New(fault.InvalidArgument, "the mode is live or dry_run")
+	}
+	var result Agent
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := db.RequireOwner(ctx, tx); err != nil {
+			return err
+		}
+		q := repo.New(tx)
+		// Locked, so the mode logged as before is the one changed, and a
+		// revocation at the same moment comes first or after, not between.
+		before, err := q.GetAgentForUpdate(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && before.RevokedAt != nil) {
+			return fault.New(fault.NotFound, "no agent that is not revoked with that id")
+		}
+		if err != nil {
+			return err
+		}
+		changed, err := q.SetAgentMode(ctx, repo.SetAgentModeParams{Id: id, Mode: mode})
+		if err != nil {
+			return err
+		}
+		row, err := q.GetAgent(ctx, id)
+		if err != nil {
+			return err
+		}
+		result = toAgent(row)
+		if changed == 0 {
+			return nil
+		}
+		_, err = events.Append(ctx, tx, events.Event{Type: "agent.mode_changed", SubjectId: id, Payload: map[string]any{"from": before.Mode, "to": mode}})
 		return err
 	})
 	return result, fault.FromDb(err)
@@ -339,7 +396,7 @@ func (s *Service) Called(ctx context.Context, grant Grant, tool string, argument
 func toAgent(row repo.MandateAgent) Agent {
 	a := Agent{
 		Id: row.Id, Name: row.Name, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt, RevokedAt: row.RevokedAt,
-		MaxPerMinute: int(row.MaxPerMinute), MaxPerHour: int(row.MaxPerHour),
+		MaxPerMinute: int(row.MaxPerMinute), MaxPerHour: int(row.MaxPerHour), Mode: row.Mode,
 	}
 	if row.Department != nil {
 		a.Department = *row.Department

@@ -177,7 +177,9 @@ func (w *World) NewTenant(tb testing.TB, name string) Tenant {
 	}
 	t.ReviewerId = reviewer.Id
 	t.Reviewer = actor.AsPerson(ctx, tenant.Id, reviewer.Id)
-	agent, err := w.Kernel.Agents.Create(t.Owner, "bot", "")
+	// The fixture's agent is live, so that what tests propose can be carried
+	// out; a dry-run agent is made with DryRunAgent.
+	agent, err := w.Kernel.Agents.Create(t.Owner, "bot", "", agents.ModeLive)
 	if err != nil {
 		tb.Fatalf("create agent: %v", err)
 	}
@@ -193,6 +195,32 @@ func (w *World) NewTenant(tb testing.TB, name string) Tenant {
 		tb.Fatalf("authenticate: %v", err)
 	}
 	return t
+}
+
+// DryRun is an agent of a tenant in dry run, with its scope and a token.
+type DryRun struct {
+	Id    uuid.UUID
+	Agent context.Context
+	Token string
+	Grant agents.Grant
+}
+
+// DryRunAgent registers a second agent of the tenant, in dry run.
+func (w *World) DryRunAgent(tb testing.TB, t Tenant) DryRun {
+	tb.Helper()
+	agent, err := w.Kernel.Agents.Create(t.Owner, "trial-bot", "", agents.ModeDryRun)
+	if err != nil {
+		tb.Fatalf("create dry-run agent: %v", err)
+	}
+	_, secret, err := w.Kernel.Agents.IssueToken(t.Owner, agent.Id, 30)
+	if err != nil {
+		tb.Fatalf("issue token: %v", err)
+	}
+	grant, err := w.Kernel.Agents.Authenticate(context.Background(), secret)
+	if err != nil {
+		tb.Fatalf("authenticate: %v", err)
+	}
+	return DryRun{Id: agent.Id, Agent: actor.AsAgent(context.Background(), t.Id, agent.Id), Token: secret, Grant: grant}
 }
 
 // Signer is the key the fixture's kernel signs deliveries with, and Keys

@@ -106,17 +106,6 @@ LANGUAGE sql STABLE AS $$
 $$;
 GRANT EXECUTE ON FUNCTION mandate.current_role() TO mandate_app;
 
--- may_write_for says whether the actor may write a host row that belongs to
--- p_proposal: a person of the tenant always, the system only while
--- executing exactly that proposal, an agent never. A host table that takes
--- writes from proposals puts this in its policy, and then no agent and no
--- code path outside an execution can write it.
-CREATE FUNCTION mandate.may_write_for(p_proposal uuid) RETURNS boolean
-LANGUAGE sql STABLE AS $$
-    SELECT mandate.current_role() IS NOT NULL
-        OR (mandate.current_actor_kind() = 'system' AND p_proposal IS NOT NULL AND p_proposal = mandate.executing_proposal())
-$$;
-GRANT EXECUTE ON FUNCTION mandate.may_write_for(uuid) TO mandate_app;
 
 -- Risk levels in order, for comparisons.
 CREATE FUNCTION mandate.risk_rank(p_risk text) RETURNS int
@@ -183,6 +172,10 @@ CREATE TABLE mandate.agents (
     created_at  timestamptz NOT NULL DEFAULT now(),
     revoked_at  timestamptz,
     revoked_by  uuid,
+    -- A new agent starts in dry run: what it proposes is recorded and never
+    -- carried out, while it keeps acting with its own credential. An owner
+    -- makes it live, or creates it live.
+    mode        text NOT NULL DEFAULT 'dry_run' CHECK (mode IN ('live', 'dry_run')),
     max_per_minute int NOT NULL DEFAULT 30 CHECK (max_per_minute BETWEEN 1 AND 10000),
     max_per_hour   int NOT NULL DEFAULT 300 CHECK (max_per_hour BETWEEN 1 AND 100000),
     CHECK (max_per_hour >= max_per_minute),
@@ -200,7 +193,7 @@ CREATE POLICY agents_scope ON mandate.agents
 
 GRANT SELECT, INSERT ON mandate.agents TO mandate_app;
 GRANT UPDATE (revoked_at, revoked_by) ON mandate.agents TO mandate_app;
-GRANT UPDATE (max_per_minute, max_per_hour) ON mandate.agents TO mandate_app;
+GRANT UPDATE (max_per_minute, max_per_hour, mode) ON mandate.agents TO mandate_app;
 
 CREATE FUNCTION mandate.agents_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -216,12 +209,12 @@ BEGIN
         RETURN NEW;
     END IF;
     IF OLD.revoked_at IS NULL AND NEW.revoked_at IS NULL
-        AND (to_jsonb(NEW) - 'max_per_minute' - 'max_per_hour') = (to_jsonb(OLD) - 'max_per_minute' - 'max_per_hour') THEN
+        AND (to_jsonb(NEW) - 'max_per_minute' - 'max_per_hour' - 'mode') = (to_jsonb(OLD) - 'max_per_minute' - 'max_per_hour' - 'mode') THEN
         RETURN NEW;
     END IF;
     IF OLD.revoked_at IS NOT NULL OR NEW.revoked_at IS NULL
         OR (to_jsonb(NEW) - 'revoked_at' - 'revoked_by') <> (to_jsonb(OLD) - 'revoked_at' - 'revoked_by') THEN
-        RAISE EXCEPTION 'an agent can only be revoked, once, or have its limits changed while live' USING ERRCODE = 'insufficient_privilege';
+        RAISE EXCEPTION 'an agent can only be revoked, once, or have its limits or mode changed while not revoked' USING ERRCODE = 'insufficient_privilege';
     END IF;
     NEW.revoked_by := mandate.current_actor();
     RETURN NEW;
@@ -629,7 +622,14 @@ CREATE TABLE mandate.proposals (
     rationale        text CHECK (rationale IS NULL OR length(rationale) BETWEEN 1 AND 8000),
     evidence         jsonb NOT NULL DEFAULT '[]' CHECK (mandate.valid_evidence(evidence)),
     provenance       jsonb NOT NULL DEFAULT '{}' CHECK (mandate.valid_provenance(provenance)),
-    status           text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'executed', 'withdrawn', 'expired')),
+    -- Made while the agent was in dry run: set by the insert trigger from
+    -- the agent's mode, and never changed. A dry run is never approved,
+    -- rejected, executed or delivered; a mandate may only say it would have
+    -- allowed it, and a person may only dismiss it.
+    dry_run          boolean NOT NULL DEFAULT false,
+    status           text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'executed', 'withdrawn', 'expired', 'would_allow', 'dismissed')),
+    CHECK (dry_run OR status NOT IN ('would_allow', 'dismissed')),
+    CHECK (NOT dry_run OR status NOT IN ('approved', 'rejected', 'executed')),
     edited           boolean NOT NULL DEFAULT false,
     decided_by       uuid,
     decided_at       timestamptz,
@@ -656,6 +656,22 @@ CREATE POLICY proposals_scope ON mandate.proposals
 
 GRANT SELECT, INSERT, UPDATE ON mandate.proposals TO mandate_app;
 
+-- may_write_for says whether the actor may write a host row that belongs to
+-- p_proposal: a person of the tenant always, the system only while
+-- executing exactly that proposal, and only a live one, an agent never. A
+-- host table that takes writes from proposals puts this in its policy, and
+-- then no agent, no dry run and no code path outside an execution can write
+-- it. A proposal row it cannot see opens nothing.
+CREATE FUNCTION mandate.may_write_for(p_proposal uuid) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    SELECT mandate.current_role() IS NOT NULL
+        OR (mandate.current_actor_kind() = 'system' AND p_proposal IS NOT NULL AND p_proposal = mandate.executing_proposal()
+            AND EXISTS (SELECT 1 FROM mandate.proposals p
+                WHERE p.id = p_proposal AND p.tenant_id = mandate.current_tenant() AND NOT p.dry_run))
+$$;
+GRANT EXECUTE ON FUNCTION mandate.may_write_for(uuid) TO mandate_app;
+
+
 -- The proposer is always the agent in scope, never what the caller wrote.
 CREATE FUNCTION mandate.proposals_on_insert() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -669,9 +685,10 @@ BEGIN
     IF mandate.current_actor_kind() IS DISTINCT FROM 'agent' OR mandate.current_actor() IS NULL THEN
         RAISE EXCEPTION 'only an agent proposes' USING ERRCODE = 'insufficient_privilege';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM mandate.agents a
-            WHERE a.id = mandate.current_actor() AND a.tenant_id = NEW.tenant_id AND a.revoked_at IS NULL) THEN
-        RAISE EXCEPTION 'only a live agent of the tenant proposes' USING ERRCODE = 'insufficient_privilege';
+    SELECT a.mode = 'dry_run' INTO NEW.dry_run FROM mandate.agents a
+        WHERE a.id = mandate.current_actor() AND a.tenant_id = NEW.tenant_id AND a.revoked_at IS NULL;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'only an agent of the tenant that is not revoked proposes' USING ERRCODE = 'insufficient_privilege';
     END IF;
     -- Where the tenant has defined the action, the proposal is held to the
     -- definition: not removed, and for a webhook action a risk no lower than
@@ -930,6 +947,29 @@ BEGIN
     IF NEW.status = 'expired' THEN
         RAISE EXCEPTION 'proposal % has not reached its deadline', OLD.id USING ERRCODE = 'insufficient_privilege';
     END IF;
+    IF NEW.dry_run IS DISTINCT FROM OLD.dry_run THEN
+        RAISE EXCEPTION 'whether a proposal is a dry run never changes' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    -- A dry run is never decided for real, and a live proposal never as a
+    -- dry run. The table's checks say the same.
+    IF OLD.dry_run AND NEW.status IN ('approved', 'rejected', 'executed') THEN
+        RAISE EXCEPTION 'proposal % is a dry run: it is never approved, rejected or executed', OLD.id USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF NOT OLD.dry_run AND NEW.status IN ('would_allow', 'dismissed') THEN
+        RAISE EXCEPTION 'proposal % is live: only a dry run would be allowed or is dismissed', OLD.id USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    -- A person sets a waiting dry run aside, with a note, and changes
+    -- nothing else.
+    IF NEW.status = 'dismissed' THEN
+        IF mandate.current_role() IS NULL
+            OR (to_jsonb(NEW) - 'status' - 'decided_at' - 'decided_by' - 'decision_note')
+                <> (to_jsonb(OLD) - 'status' - 'decided_at' - 'decided_by' - 'decision_note') THEN
+            RAISE EXCEPTION 'only a person dismisses a dry run, and nothing else changes with it' USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        NEW.decided_by := mandate.current_actor();
+        NEW.decided_at := now();
+        RETURN NEW;
+    END IF;
     -- The agent that proposed it may withdraw a waiting proposal, with a
     -- reason in the note, and change nothing else.
     IF NEW.status = 'withdrawn' THEN
@@ -943,7 +983,9 @@ BEGIN
         NEW.decided_at := now();
         RETURN NEW;
     END IF;
-    IF NEW.status = 'executed' THEN
+    -- would_allow is held to the same rules as executed: a mandate that
+    -- holds now, with room in its budget. It counts nothing against it.
+    IF NEW.status IN ('executed', 'would_allow') THEN
         -- The mandate row is locked, so two executions under it count the
         -- budget one after the other whatever the caller did.
         PERFORM 1 FROM mandate.mandates m
@@ -1224,7 +1266,7 @@ BEGIN
         SELECT p.decided_at + p.deliver_within INTO NEW.not_after
             FROM mandate.proposals p
             JOIN mandate.actions a ON a.tenant_id = p.tenant_id AND a.key = p.action
-            WHERE p.id = NEW.proposal_id AND p.tenant_id = NEW.tenant_id AND p.status IN ('approved', 'executed')
+            WHERE p.id = NEW.proposal_id AND p.tenant_id = NEW.tenant_id AND p.status IN ('approved', 'executed') AND NOT p.dry_run
                 AND p.decided_at = now()
                 AND a.connector_kind = 'webhook' AND a.removed_at IS NULL
                 AND a.connector_url = NEW.url AND a.connector_audience = NEW.audience AND p.action = NEW.action_key;

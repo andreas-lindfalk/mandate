@@ -240,7 +240,7 @@ func (s *McpSuite) Test_AnAgentProposesAndSeesTheOutcome() {
 	s.Require().Contains(errText, "invalid proposal id")
 
 	// Another agent of the same tenant sees none of it.
-	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "")
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "", "live")
 	s.Require().NoError(err)
 	_, otherSecret, err := s.W.Kernel.Agents.IssueToken(t.Owner, other.Id, 1)
 	s.Require().NoError(err)

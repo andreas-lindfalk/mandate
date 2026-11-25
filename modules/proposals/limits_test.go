@@ -73,7 +73,7 @@ func (s *LimitsSuite) Test_AnAgentBeyondItsLimitIsRefused() {
 	s.Require().True(seconds > 60 && seconds <= 30*60, "the oldest of the hour leaves it in about half an hour: %d", seconds)
 
 	// Another agent of the same tenant has its own count.
-	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "")
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "", "live")
 	s.Require().NoError(err)
 	_, secret, err := s.W.Kernel.Agents.IssueToken(t.Owner, other.Id, 30)
 	s.Require().NoError(err)

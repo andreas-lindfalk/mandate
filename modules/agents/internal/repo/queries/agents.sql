@@ -1,5 +1,5 @@
 -- name: InsertAgent :exec
-INSERT INTO mandate.agents (id, tenant_id, name, department) VALUES (@id, @tenant_id, @name, sqlc.narg('department'));
+INSERT INTO mandate.agents (id, tenant_id, name, department, mode) VALUES (@id, @tenant_id, @name, sqlc.narg('department'), @mode);
 
 -- name: GetAgent :one
 SELECT * FROM mandate.agents WHERE id = @id;
@@ -32,3 +32,10 @@ WHERE id = @id AND (last_used_at IS NULL OR last_used_at < now() - interval '1 m
 
 -- name: SetAgentLimits :execrows
 UPDATE mandate.agents SET max_per_minute = @max_per_minute, max_per_hour = @max_per_hour WHERE id = @id AND revoked_at IS NULL;
+
+-- name: SetAgentMode :execrows
+-- Nothing when the agent is revoked or already in the mode.
+UPDATE mandate.agents SET mode = @mode WHERE id = @id AND revoked_at IS NULL AND mode <> @mode;
+
+-- name: GetAgentForUpdate :one
+SELECT * FROM mandate.agents WHERE id = @id FOR UPDATE;

@@ -15,6 +15,9 @@ service AgentService {
   rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
   rpc RevokeAgent(RevokeAgentRequest) returns (RevokeAgentResponse);
   rpc SetAgentLimits(SetAgentLimitsRequest) returns (SetAgentLimitsResponse);
+  // SetAgentMode makes an agent live or puts it in dry run. Its proposals
+  // made before keep what they were.
+  rpc SetAgentMode(SetAgentModeRequest) returns (SetAgentModeResponse);
   // IssueToken returns the secret once; only its hash is stored.
   rpc IssueToken(IssueTokenRequest) returns (IssueTokenResponse);
   rpc ListTokens(ListTokensRequest) returns (ListTokensResponse);
@@ -30,6 +33,8 @@ message Agent {
   // How many proposals the agent may make; the database refuses the rest.
   int32 max_per_minute = 6;
   int32 max_per_hour = 7;
+  // live, or dry_run: what it proposes is recorded and never carried out.
+  string mode = 8;
 }
 
 message Token {
@@ -51,6 +56,9 @@ message ListAgentsResponse {
 message CreateAgentRequest {
   string name = 1;
   string department = 2;
+  // live or dry_run; empty is dry_run, so a new agent changes nothing
+  // until an owner makes it live.
+  string mode = 3;
 }
 
 message CreateAgentResponse {
@@ -70,6 +78,16 @@ message SetAgentLimitsRequest {
 }
 
 message SetAgentLimitsResponse {
+  Agent agent = 1;
+}
+
+message SetAgentModeRequest {
+  string id = 1;
+  // live or dry_run.
+  string mode = 2;
+}
+
+message SetAgentModeResponse {
   Agent agent = 1;
 }
 

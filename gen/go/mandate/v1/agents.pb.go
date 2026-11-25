@@ -30,8 +30,10 @@ type Agent struct {
 	CreatedAt  *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	RevokedAt  *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
 	// How many proposals the agent may make; the database refuses the rest.
-	MaxPerMinute  int32 `protobuf:"varint,6,opt,name=max_per_minute,json=maxPerMinute,proto3" json:"max_per_minute,omitempty"`
-	MaxPerHour    int32 `protobuf:"varint,7,opt,name=max_per_hour,json=maxPerHour,proto3" json:"max_per_hour,omitempty"`
+	MaxPerMinute int32 `protobuf:"varint,6,opt,name=max_per_minute,json=maxPerMinute,proto3" json:"max_per_minute,omitempty"`
+	MaxPerHour   int32 `protobuf:"varint,7,opt,name=max_per_hour,json=maxPerHour,proto3" json:"max_per_hour,omitempty"`
+	// live, or dry_run: what it proposes is recorded and never carried out.
+	Mode          string `protobuf:"bytes,8,opt,name=mode,proto3" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -113,6 +115,13 @@ func (x *Agent) GetMaxPerHour() int32 {
 		return x.MaxPerHour
 	}
 	return 0
+}
+
+func (x *Agent) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
 }
 
 type Token struct {
@@ -288,9 +297,12 @@ func (x *ListAgentsResponse) GetAgents() []*Agent {
 }
 
 type CreateAgentRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Department    string                 `protobuf:"bytes,2,opt,name=department,proto3" json:"department,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Department string                 `protobuf:"bytes,2,opt,name=department,proto3" json:"department,omitempty"`
+	// live or dry_run; empty is dry_run, so a new agent changes nothing
+	// until an owner makes it live.
+	Mode          string `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -335,6 +347,13 @@ func (x *CreateAgentRequest) GetName() string {
 func (x *CreateAgentRequest) GetDepartment() string {
 	if x != nil {
 		return x.Department
+	}
+	return ""
+}
+
+func (x *CreateAgentRequest) GetMode() string {
+	if x != nil {
+		return x.Mode
 	}
 	return ""
 }
@@ -567,6 +586,103 @@ func (x *SetAgentLimitsResponse) GetAgent() *Agent {
 	return nil
 }
 
+type SetAgentModeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// live or dry_run.
+	Mode          string `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetAgentModeRequest) Reset() {
+	*x = SetAgentModeRequest{}
+	mi := &file_mandate_v1_agents_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetAgentModeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetAgentModeRequest) ProtoMessage() {}
+
+func (x *SetAgentModeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_mandate_v1_agents_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetAgentModeRequest.ProtoReflect.Descriptor instead.
+func (*SetAgentModeRequest) Descriptor() ([]byte, []int) {
+	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SetAgentModeRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SetAgentModeRequest) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+type SetAgentModeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Agent         *Agent                 `protobuf:"bytes,1,opt,name=agent,proto3" json:"agent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetAgentModeResponse) Reset() {
+	*x = SetAgentModeResponse{}
+	mi := &file_mandate_v1_agents_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetAgentModeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetAgentModeResponse) ProtoMessage() {}
+
+func (x *SetAgentModeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_mandate_v1_agents_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetAgentModeResponse.ProtoReflect.Descriptor instead.
+func (*SetAgentModeResponse) Descriptor() ([]byte, []int) {
+	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SetAgentModeResponse) GetAgent() *Agent {
+	if x != nil {
+		return x.Agent
+	}
+	return nil
+}
+
 type IssueTokenRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
@@ -577,7 +693,7 @@ type IssueTokenRequest struct {
 
 func (x *IssueTokenRequest) Reset() {
 	*x = IssueTokenRequest{}
-	mi := &file_mandate_v1_agents_proto_msgTypes[10]
+	mi := &file_mandate_v1_agents_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -589,7 +705,7 @@ func (x *IssueTokenRequest) String() string {
 func (*IssueTokenRequest) ProtoMessage() {}
 
 func (x *IssueTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_agents_proto_msgTypes[10]
+	mi := &file_mandate_v1_agents_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -602,7 +718,7 @@ func (x *IssueTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueTokenRequest.ProtoReflect.Descriptor instead.
 func (*IssueTokenRequest) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{10}
+	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *IssueTokenRequest) GetAgentId() string {
@@ -629,7 +745,7 @@ type IssueTokenResponse struct {
 
 func (x *IssueTokenResponse) Reset() {
 	*x = IssueTokenResponse{}
-	mi := &file_mandate_v1_agents_proto_msgTypes[11]
+	mi := &file_mandate_v1_agents_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -641,7 +757,7 @@ func (x *IssueTokenResponse) String() string {
 func (*IssueTokenResponse) ProtoMessage() {}
 
 func (x *IssueTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_agents_proto_msgTypes[11]
+	mi := &file_mandate_v1_agents_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -654,7 +770,7 @@ func (x *IssueTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueTokenResponse.ProtoReflect.Descriptor instead.
 func (*IssueTokenResponse) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{11}
+	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *IssueTokenResponse) GetToken() *Token {
@@ -680,7 +796,7 @@ type ListTokensRequest struct {
 
 func (x *ListTokensRequest) Reset() {
 	*x = ListTokensRequest{}
-	mi := &file_mandate_v1_agents_proto_msgTypes[12]
+	mi := &file_mandate_v1_agents_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -692,7 +808,7 @@ func (x *ListTokensRequest) String() string {
 func (*ListTokensRequest) ProtoMessage() {}
 
 func (x *ListTokensRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_agents_proto_msgTypes[12]
+	mi := &file_mandate_v1_agents_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -705,7 +821,7 @@ func (x *ListTokensRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTokensRequest.ProtoReflect.Descriptor instead.
 func (*ListTokensRequest) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{12}
+	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ListTokensRequest) GetAgentId() string {
@@ -724,7 +840,7 @@ type ListTokensResponse struct {
 
 func (x *ListTokensResponse) Reset() {
 	*x = ListTokensResponse{}
-	mi := &file_mandate_v1_agents_proto_msgTypes[13]
+	mi := &file_mandate_v1_agents_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -736,7 +852,7 @@ func (x *ListTokensResponse) String() string {
 func (*ListTokensResponse) ProtoMessage() {}
 
 func (x *ListTokensResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_agents_proto_msgTypes[13]
+	mi := &file_mandate_v1_agents_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -749,7 +865,7 @@ func (x *ListTokensResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTokensResponse.ProtoReflect.Descriptor instead.
 func (*ListTokensResponse) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{13}
+	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ListTokensResponse) GetTokens() []*Token {
@@ -768,7 +884,7 @@ type RevokeTokenRequest struct {
 
 func (x *RevokeTokenRequest) Reset() {
 	*x = RevokeTokenRequest{}
-	mi := &file_mandate_v1_agents_proto_msgTypes[14]
+	mi := &file_mandate_v1_agents_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -780,7 +896,7 @@ func (x *RevokeTokenRequest) String() string {
 func (*RevokeTokenRequest) ProtoMessage() {}
 
 func (x *RevokeTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_agents_proto_msgTypes[14]
+	mi := &file_mandate_v1_agents_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -793,7 +909,7 @@ func (x *RevokeTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeTokenRequest.ProtoReflect.Descriptor instead.
 func (*RevokeTokenRequest) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{14}
+	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RevokeTokenRequest) GetId() string {
@@ -811,7 +927,7 @@ type RevokeTokenResponse struct {
 
 func (x *RevokeTokenResponse) Reset() {
 	*x = RevokeTokenResponse{}
-	mi := &file_mandate_v1_agents_proto_msgTypes[15]
+	mi := &file_mandate_v1_agents_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -823,7 +939,7 @@ func (x *RevokeTokenResponse) String() string {
 func (*RevokeTokenResponse) ProtoMessage() {}
 
 func (x *RevokeTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_agents_proto_msgTypes[15]
+	mi := &file_mandate_v1_agents_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -836,7 +952,7 @@ func (x *RevokeTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeTokenResponse.ProtoReflect.Descriptor instead.
 func (*RevokeTokenResponse) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{15}
+	return file_mandate_v1_agents_proto_rawDescGZIP(), []int{17}
 }
 
 var File_mandate_v1_agents_proto protoreflect.FileDescriptor
@@ -844,7 +960,7 @@ var File_mandate_v1_agents_proto protoreflect.FileDescriptor
 const file_mandate_v1_agents_proto_rawDesc = "" +
 	"\n" +
 	"\x17mandate/v1/agents.proto\x12\n" +
-	"mandate.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x89\x02\n" +
+	"mandate.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x9d\x02\n" +
 	"\x05Agent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1e\n" +
@@ -857,7 +973,8 @@ const file_mandate_v1_agents_proto_rawDesc = "" +
 	"revoked_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\x12$\n" +
 	"\x0emax_per_minute\x18\x06 \x01(\x05R\fmaxPerMinute\x12 \n" +
 	"\fmax_per_hour\x18\a \x01(\x05R\n" +
-	"maxPerHour\"\xb5\x02\n" +
+	"maxPerHour\x12\x12\n" +
+	"\x04mode\x18\b \x01(\tR\x04mode\"\xb5\x02\n" +
 	"\x05Token\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12\x12\n" +
@@ -872,12 +989,13 @@ const file_mandate_v1_agents_proto_rawDesc = "" +
 	"revoked_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\"\x13\n" +
 	"\x11ListAgentsRequest\"?\n" +
 	"\x12ListAgentsResponse\x12)\n" +
-	"\x06agents\x18\x01 \x03(\v2\x11.mandate.v1.AgentR\x06agents\"H\n" +
+	"\x06agents\x18\x01 \x03(\v2\x11.mandate.v1.AgentR\x06agents\"\\\n" +
 	"\x12CreateAgentRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n" +
 	"\n" +
 	"department\x18\x02 \x01(\tR\n" +
-	"department\">\n" +
+	"department\x12\x12\n" +
+	"\x04mode\x18\x03 \x01(\tR\x04mode\">\n" +
 	"\x13CreateAgentResponse\x12'\n" +
 	"\x05agent\x18\x01 \x01(\v2\x11.mandate.v1.AgentR\x05agent\"$\n" +
 	"\x12RevokeAgentRequest\x12\x0e\n" +
@@ -889,6 +1007,11 @@ const file_mandate_v1_agents_proto_rawDesc = "" +
 	"\fmax_per_hour\x18\x03 \x01(\x05R\n" +
 	"maxPerHour\"A\n" +
 	"\x16SetAgentLimitsResponse\x12'\n" +
+	"\x05agent\x18\x01 \x01(\v2\x11.mandate.v1.AgentR\x05agent\"9\n" +
+	"\x13SetAgentModeRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\"?\n" +
+	"\x14SetAgentModeResponse\x12'\n" +
 	"\x05agent\x18\x01 \x01(\v2\x11.mandate.v1.AgentR\x05agent\"B\n" +
 	"\x11IssueTokenRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x12\n" +
@@ -902,13 +1025,14 @@ const file_mandate_v1_agents_proto_rawDesc = "" +
 	"\x06tokens\x18\x01 \x03(\v2\x11.mandate.v1.TokenR\x06tokens\"$\n" +
 	"\x12RevokeTokenRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x15\n" +
-	"\x13RevokeTokenResponse2\xbe\x04\n" +
+	"\x13RevokeTokenResponse2\x91\x05\n" +
 	"\fAgentService\x12K\n" +
 	"\n" +
 	"ListAgents\x12\x1d.mandate.v1.ListAgentsRequest\x1a\x1e.mandate.v1.ListAgentsResponse\x12N\n" +
 	"\vCreateAgent\x12\x1e.mandate.v1.CreateAgentRequest\x1a\x1f.mandate.v1.CreateAgentResponse\x12N\n" +
 	"\vRevokeAgent\x12\x1e.mandate.v1.RevokeAgentRequest\x1a\x1f.mandate.v1.RevokeAgentResponse\x12W\n" +
-	"\x0eSetAgentLimits\x12!.mandate.v1.SetAgentLimitsRequest\x1a\".mandate.v1.SetAgentLimitsResponse\x12K\n" +
+	"\x0eSetAgentLimits\x12!.mandate.v1.SetAgentLimitsRequest\x1a\".mandate.v1.SetAgentLimitsResponse\x12Q\n" +
+	"\fSetAgentMode\x12\x1f.mandate.v1.SetAgentModeRequest\x1a .mandate.v1.SetAgentModeResponse\x12K\n" +
 	"\n" +
 	"IssueToken\x12\x1d.mandate.v1.IssueTokenRequest\x1a\x1e.mandate.v1.IssueTokenResponse\x12K\n" +
 	"\n" +
@@ -927,7 +1051,7 @@ func file_mandate_v1_agents_proto_rawDescGZIP() []byte {
 	return file_mandate_v1_agents_proto_rawDescData
 }
 
-var file_mandate_v1_agents_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_mandate_v1_agents_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_mandate_v1_agents_proto_goTypes = []any{
 	(*Agent)(nil),                  // 0: mandate.v1.Agent
 	(*Token)(nil),                  // 1: mandate.v1.Token
@@ -939,45 +1063,50 @@ var file_mandate_v1_agents_proto_goTypes = []any{
 	(*RevokeAgentResponse)(nil),    // 7: mandate.v1.RevokeAgentResponse
 	(*SetAgentLimitsRequest)(nil),  // 8: mandate.v1.SetAgentLimitsRequest
 	(*SetAgentLimitsResponse)(nil), // 9: mandate.v1.SetAgentLimitsResponse
-	(*IssueTokenRequest)(nil),      // 10: mandate.v1.IssueTokenRequest
-	(*IssueTokenResponse)(nil),     // 11: mandate.v1.IssueTokenResponse
-	(*ListTokensRequest)(nil),      // 12: mandate.v1.ListTokensRequest
-	(*ListTokensResponse)(nil),     // 13: mandate.v1.ListTokensResponse
-	(*RevokeTokenRequest)(nil),     // 14: mandate.v1.RevokeTokenRequest
-	(*RevokeTokenResponse)(nil),    // 15: mandate.v1.RevokeTokenResponse
-	(*timestamppb.Timestamp)(nil),  // 16: google.protobuf.Timestamp
+	(*SetAgentModeRequest)(nil),    // 10: mandate.v1.SetAgentModeRequest
+	(*SetAgentModeResponse)(nil),   // 11: mandate.v1.SetAgentModeResponse
+	(*IssueTokenRequest)(nil),      // 12: mandate.v1.IssueTokenRequest
+	(*IssueTokenResponse)(nil),     // 13: mandate.v1.IssueTokenResponse
+	(*ListTokensRequest)(nil),      // 14: mandate.v1.ListTokensRequest
+	(*ListTokensResponse)(nil),     // 15: mandate.v1.ListTokensResponse
+	(*RevokeTokenRequest)(nil),     // 16: mandate.v1.RevokeTokenRequest
+	(*RevokeTokenResponse)(nil),    // 17: mandate.v1.RevokeTokenResponse
+	(*timestamppb.Timestamp)(nil),  // 18: google.protobuf.Timestamp
 }
 var file_mandate_v1_agents_proto_depIdxs = []int32{
-	16, // 0: mandate.v1.Agent.created_at:type_name -> google.protobuf.Timestamp
-	16, // 1: mandate.v1.Agent.revoked_at:type_name -> google.protobuf.Timestamp
-	16, // 2: mandate.v1.Token.created_at:type_name -> google.protobuf.Timestamp
-	16, // 3: mandate.v1.Token.expires_at:type_name -> google.protobuf.Timestamp
-	16, // 4: mandate.v1.Token.last_used_at:type_name -> google.protobuf.Timestamp
-	16, // 5: mandate.v1.Token.revoked_at:type_name -> google.protobuf.Timestamp
+	18, // 0: mandate.v1.Agent.created_at:type_name -> google.protobuf.Timestamp
+	18, // 1: mandate.v1.Agent.revoked_at:type_name -> google.protobuf.Timestamp
+	18, // 2: mandate.v1.Token.created_at:type_name -> google.protobuf.Timestamp
+	18, // 3: mandate.v1.Token.expires_at:type_name -> google.protobuf.Timestamp
+	18, // 4: mandate.v1.Token.last_used_at:type_name -> google.protobuf.Timestamp
+	18, // 5: mandate.v1.Token.revoked_at:type_name -> google.protobuf.Timestamp
 	0,  // 6: mandate.v1.ListAgentsResponse.agents:type_name -> mandate.v1.Agent
 	0,  // 7: mandate.v1.CreateAgentResponse.agent:type_name -> mandate.v1.Agent
 	0,  // 8: mandate.v1.SetAgentLimitsResponse.agent:type_name -> mandate.v1.Agent
-	1,  // 9: mandate.v1.IssueTokenResponse.token:type_name -> mandate.v1.Token
-	1,  // 10: mandate.v1.ListTokensResponse.tokens:type_name -> mandate.v1.Token
-	2,  // 11: mandate.v1.AgentService.ListAgents:input_type -> mandate.v1.ListAgentsRequest
-	4,  // 12: mandate.v1.AgentService.CreateAgent:input_type -> mandate.v1.CreateAgentRequest
-	6,  // 13: mandate.v1.AgentService.RevokeAgent:input_type -> mandate.v1.RevokeAgentRequest
-	8,  // 14: mandate.v1.AgentService.SetAgentLimits:input_type -> mandate.v1.SetAgentLimitsRequest
-	10, // 15: mandate.v1.AgentService.IssueToken:input_type -> mandate.v1.IssueTokenRequest
-	12, // 16: mandate.v1.AgentService.ListTokens:input_type -> mandate.v1.ListTokensRequest
-	14, // 17: mandate.v1.AgentService.RevokeToken:input_type -> mandate.v1.RevokeTokenRequest
-	3,  // 18: mandate.v1.AgentService.ListAgents:output_type -> mandate.v1.ListAgentsResponse
-	5,  // 19: mandate.v1.AgentService.CreateAgent:output_type -> mandate.v1.CreateAgentResponse
-	7,  // 20: mandate.v1.AgentService.RevokeAgent:output_type -> mandate.v1.RevokeAgentResponse
-	9,  // 21: mandate.v1.AgentService.SetAgentLimits:output_type -> mandate.v1.SetAgentLimitsResponse
-	11, // 22: mandate.v1.AgentService.IssueToken:output_type -> mandate.v1.IssueTokenResponse
-	13, // 23: mandate.v1.AgentService.ListTokens:output_type -> mandate.v1.ListTokensResponse
-	15, // 24: mandate.v1.AgentService.RevokeToken:output_type -> mandate.v1.RevokeTokenResponse
-	18, // [18:25] is the sub-list for method output_type
-	11, // [11:18] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	0,  // 9: mandate.v1.SetAgentModeResponse.agent:type_name -> mandate.v1.Agent
+	1,  // 10: mandate.v1.IssueTokenResponse.token:type_name -> mandate.v1.Token
+	1,  // 11: mandate.v1.ListTokensResponse.tokens:type_name -> mandate.v1.Token
+	2,  // 12: mandate.v1.AgentService.ListAgents:input_type -> mandate.v1.ListAgentsRequest
+	4,  // 13: mandate.v1.AgentService.CreateAgent:input_type -> mandate.v1.CreateAgentRequest
+	6,  // 14: mandate.v1.AgentService.RevokeAgent:input_type -> mandate.v1.RevokeAgentRequest
+	8,  // 15: mandate.v1.AgentService.SetAgentLimits:input_type -> mandate.v1.SetAgentLimitsRequest
+	10, // 16: mandate.v1.AgentService.SetAgentMode:input_type -> mandate.v1.SetAgentModeRequest
+	12, // 17: mandate.v1.AgentService.IssueToken:input_type -> mandate.v1.IssueTokenRequest
+	14, // 18: mandate.v1.AgentService.ListTokens:input_type -> mandate.v1.ListTokensRequest
+	16, // 19: mandate.v1.AgentService.RevokeToken:input_type -> mandate.v1.RevokeTokenRequest
+	3,  // 20: mandate.v1.AgentService.ListAgents:output_type -> mandate.v1.ListAgentsResponse
+	5,  // 21: mandate.v1.AgentService.CreateAgent:output_type -> mandate.v1.CreateAgentResponse
+	7,  // 22: mandate.v1.AgentService.RevokeAgent:output_type -> mandate.v1.RevokeAgentResponse
+	9,  // 23: mandate.v1.AgentService.SetAgentLimits:output_type -> mandate.v1.SetAgentLimitsResponse
+	11, // 24: mandate.v1.AgentService.SetAgentMode:output_type -> mandate.v1.SetAgentModeResponse
+	13, // 25: mandate.v1.AgentService.IssueToken:output_type -> mandate.v1.IssueTokenResponse
+	15, // 26: mandate.v1.AgentService.ListTokens:output_type -> mandate.v1.ListTokensResponse
+	17, // 27: mandate.v1.AgentService.RevokeToken:output_type -> mandate.v1.RevokeTokenResponse
+	20, // [20:28] is the sub-list for method output_type
+	12, // [12:20] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_mandate_v1_agents_proto_init() }
@@ -991,7 +1120,7 @@ func file_mandate_v1_agents_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mandate_v1_agents_proto_rawDesc), len(file_mandate_v1_agents_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -16,7 +16,7 @@ var _ mandatev1connect.AgentServiceHandler = (*agentHandler)(nil)
 func toAgent(a agents.Agent) *mandatev1.Agent {
 	return &mandatev1.Agent{
 		Id: a.Id.String(), Name: a.Name, Department: a.Department, CreatedAt: ts(a.CreatedAt), RevokedAt: tsPtr(a.RevokedAt),
-		MaxPerMinute: int32(a.MaxPerMinute), MaxPerHour: int32(a.MaxPerHour), //nolint:gosec // bounded by the database
+		MaxPerMinute: int32(a.MaxPerMinute), MaxPerHour: int32(a.MaxPerHour), Mode: a.Mode, //nolint:gosec // bounded by the database
 	}
 }
 
@@ -40,7 +40,7 @@ func (h *agentHandler) ListAgents(ctx context.Context, _ *mandatev1.ListAgentsRe
 }
 
 func (h *agentHandler) CreateAgent(ctx context.Context, req *mandatev1.CreateAgentRequest) (*mandatev1.CreateAgentResponse, error) {
-	a, err := h.kernel.Agents.Create(ctx, req.GetName(), req.GetDepartment())
+	a, err := h.kernel.Agents.Create(ctx, req.GetName(), req.GetDepartment(), req.GetMode())
 	if err != nil {
 		return nil, fault.ToConnect(err)
 	}
@@ -68,6 +68,18 @@ func (h *agentHandler) SetAgentLimits(ctx context.Context, req *mandatev1.SetAge
 		return nil, fault.ToConnect(err)
 	}
 	return &mandatev1.SetAgentLimitsResponse{Agent: toAgent(agent)}, nil
+}
+
+func (h *agentHandler) SetAgentMode(ctx context.Context, req *mandatev1.SetAgentModeRequest) (*mandatev1.SetAgentModeResponse, error) {
+	id, err := parseId(req.GetId(), "agent id")
+	if err != nil {
+		return nil, err
+	}
+	agent, err := h.kernel.Agents.SetMode(ctx, id, req.GetMode())
+	if err != nil {
+		return nil, fault.ToConnect(err)
+	}
+	return &mandatev1.SetAgentModeResponse{Agent: toAgent(agent)}, nil
 }
 
 func (h *agentHandler) IssueToken(ctx context.Context, req *mandatev1.IssueTokenRequest) (*mandatev1.IssueTokenResponse, error) {

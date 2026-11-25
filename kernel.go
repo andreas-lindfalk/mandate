@@ -422,7 +422,8 @@ func (k *Kernel) describeWaiting(ctx context.Context, proposalId uuid.UUID) (not
 	if fault.CodeOf(err) == fault.NotFound {
 		return notifications.Message{}, false, nil
 	}
-	if err != nil || p.Status != proposals.StatusPending {
+	// A dry run waits for nobody, so no chat is told.
+	if err != nil || p.Status != proposals.StatusPending || p.DryRun {
 		return notifications.Message{}, false, err
 	}
 	agent, err := k.Agents.Get(ctx, p.AgentId)

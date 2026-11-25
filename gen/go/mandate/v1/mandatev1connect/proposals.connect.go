@@ -45,6 +45,9 @@ const (
 	// ProposalServiceRejectProposalProcedure is the fully-qualified name of the ProposalService's
 	// RejectProposal RPC.
 	ProposalServiceRejectProposalProcedure = "/mandate.v1.ProposalService/RejectProposal"
+	// ProposalServiceDismissProposalProcedure is the fully-qualified name of the ProposalService's
+	// DismissProposal RPC.
+	ProposalServiceDismissProposalProcedure = "/mandate.v1.ProposalService/DismissProposal"
 	// ProposalServiceRedeliverProposalProcedure is the fully-qualified name of the ProposalService's
 	// RedeliverProposal RPC.
 	ProposalServiceRedeliverProposalProcedure = "/mandate.v1.ProposalService/RedeliverProposal"
@@ -59,6 +62,9 @@ type ProposalServiceClient interface {
 	GetProposal(context.Context, *v1.GetProposalRequest) (*v1.GetProposalResponse, error)
 	ApproveProposal(context.Context, *v1.ApproveProposalRequest) (*v1.ApproveProposalResponse, error)
 	RejectProposal(context.Context, *v1.RejectProposalRequest) (*v1.RejectProposalResponse, error)
+	// DismissProposal sets a waiting dry run aside. A dry run is never
+	// approved or rejected.
+	DismissProposal(context.Context, *v1.DismissProposalRequest) (*v1.DismissProposalResponse, error)
 	// RedeliverProposal sends again a delivery that was never sent, before
 	// its deadline.
 	RedeliverProposal(context.Context, *v1.RedeliverProposalRequest) (*v1.RedeliverProposalResponse, error)
@@ -102,6 +108,12 @@ func NewProposalServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(proposalServiceMethods.ByName("RejectProposal")),
 			connect.WithClientOptions(opts...),
 		),
+		dismissProposal: connect.NewClient[v1.DismissProposalRequest, v1.DismissProposalResponse](
+			httpClient,
+			baseURL+ProposalServiceDismissProposalProcedure,
+			connect.WithSchema(proposalServiceMethods.ByName("DismissProposal")),
+			connect.WithClientOptions(opts...),
+		),
 		redeliverProposal: connect.NewClient[v1.RedeliverProposalRequest, v1.RedeliverProposalResponse](
 			httpClient,
 			baseURL+ProposalServiceRedeliverProposalProcedure,
@@ -123,6 +135,7 @@ type proposalServiceClient struct {
 	getProposal       *connect.Client[v1.GetProposalRequest, v1.GetProposalResponse]
 	approveProposal   *connect.Client[v1.ApproveProposalRequest, v1.ApproveProposalResponse]
 	rejectProposal    *connect.Client[v1.RejectProposalRequest, v1.RejectProposalResponse]
+	dismissProposal   *connect.Client[v1.DismissProposalRequest, v1.DismissProposalResponse]
 	redeliverProposal *connect.Client[v1.RedeliverProposalRequest, v1.RedeliverProposalResponse]
 	settleDelivery    *connect.Client[v1.SettleDeliveryRequest, v1.SettleDeliveryResponse]
 }
@@ -163,6 +176,15 @@ func (c *proposalServiceClient) RejectProposal(ctx context.Context, req *v1.Reje
 	return nil, err
 }
 
+// DismissProposal calls mandate.v1.ProposalService.DismissProposal.
+func (c *proposalServiceClient) DismissProposal(ctx context.Context, req *v1.DismissProposalRequest) (*v1.DismissProposalResponse, error) {
+	response, err := c.dismissProposal.CallUnary(ctx, connect.NewRequest(req))
+	if response != nil {
+		return response.Msg, err
+	}
+	return nil, err
+}
+
 // RedeliverProposal calls mandate.v1.ProposalService.RedeliverProposal.
 func (c *proposalServiceClient) RedeliverProposal(ctx context.Context, req *v1.RedeliverProposalRequest) (*v1.RedeliverProposalResponse, error) {
 	response, err := c.redeliverProposal.CallUnary(ctx, connect.NewRequest(req))
@@ -187,6 +209,9 @@ type ProposalServiceHandler interface {
 	GetProposal(context.Context, *v1.GetProposalRequest) (*v1.GetProposalResponse, error)
 	ApproveProposal(context.Context, *v1.ApproveProposalRequest) (*v1.ApproveProposalResponse, error)
 	RejectProposal(context.Context, *v1.RejectProposalRequest) (*v1.RejectProposalResponse, error)
+	// DismissProposal sets a waiting dry run aside. A dry run is never
+	// approved or rejected.
+	DismissProposal(context.Context, *v1.DismissProposalRequest) (*v1.DismissProposalResponse, error)
 	// RedeliverProposal sends again a delivery that was never sent, before
 	// its deadline.
 	RedeliverProposal(context.Context, *v1.RedeliverProposalRequest) (*v1.RedeliverProposalResponse, error)
@@ -226,6 +251,12 @@ func NewProposalServiceHandler(svc ProposalServiceHandler, opts ...connect.Handl
 		connect.WithSchema(proposalServiceMethods.ByName("RejectProposal")),
 		connect.WithHandlerOptions(opts...),
 	)
+	proposalServiceDismissProposalHandler := connect.NewUnaryHandlerSimple(
+		ProposalServiceDismissProposalProcedure,
+		svc.DismissProposal,
+		connect.WithSchema(proposalServiceMethods.ByName("DismissProposal")),
+		connect.WithHandlerOptions(opts...),
+	)
 	proposalServiceRedeliverProposalHandler := connect.NewUnaryHandlerSimple(
 		ProposalServiceRedeliverProposalProcedure,
 		svc.RedeliverProposal,
@@ -248,6 +279,8 @@ func NewProposalServiceHandler(svc ProposalServiceHandler, opts ...connect.Handl
 			proposalServiceApproveProposalHandler.ServeHTTP(w, r)
 		case ProposalServiceRejectProposalProcedure:
 			proposalServiceRejectProposalHandler.ServeHTTP(w, r)
+		case ProposalServiceDismissProposalProcedure:
+			proposalServiceDismissProposalHandler.ServeHTTP(w, r)
 		case ProposalServiceRedeliverProposalProcedure:
 			proposalServiceRedeliverProposalHandler.ServeHTTP(w, r)
 		case ProposalServiceSettleDeliveryProcedure:
@@ -275,6 +308,10 @@ func (UnimplementedProposalServiceHandler) ApproveProposal(context.Context, *v1.
 
 func (UnimplementedProposalServiceHandler) RejectProposal(context.Context, *v1.RejectProposalRequest) (*v1.RejectProposalResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mandate.v1.ProposalService.RejectProposal is not implemented"))
+}
+
+func (UnimplementedProposalServiceHandler) DismissProposal(context.Context, *v1.DismissProposalRequest) (*v1.DismissProposalResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mandate.v1.ProposalService.DismissProposal is not implemented"))
 }
 
 func (UnimplementedProposalServiceHandler) RedeliverProposal(context.Context, *v1.RedeliverProposalRequest) (*v1.RedeliverProposalResponse, error) {

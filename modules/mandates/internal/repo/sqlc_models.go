@@ -41,6 +41,7 @@ type MandateAgent struct {
 	CreatedAt    time.Time
 	RevokedAt    *time.Time
 	RevokedBy    *uuid.UUID
+	Mode         string
 	MaxPerMinute int32
 	MaxPerHour   int32
 }
@@ -150,6 +151,7 @@ type MandateProposal struct {
 	Rationale       *string
 	Evidence        []byte
 	Provenance      []byte
+	DryRun          bool
 	Status          string
 	Edited          bool
 	DecidedBy       *uuid.UUID

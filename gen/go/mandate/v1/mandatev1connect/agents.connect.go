@@ -44,6 +44,9 @@ const (
 	// AgentServiceSetAgentLimitsProcedure is the fully-qualified name of the AgentService's
 	// SetAgentLimits RPC.
 	AgentServiceSetAgentLimitsProcedure = "/mandate.v1.AgentService/SetAgentLimits"
+	// AgentServiceSetAgentModeProcedure is the fully-qualified name of the AgentService's SetAgentMode
+	// RPC.
+	AgentServiceSetAgentModeProcedure = "/mandate.v1.AgentService/SetAgentMode"
 	// AgentServiceIssueTokenProcedure is the fully-qualified name of the AgentService's IssueToken RPC.
 	AgentServiceIssueTokenProcedure = "/mandate.v1.AgentService/IssueToken"
 	// AgentServiceListTokensProcedure is the fully-qualified name of the AgentService's ListTokens RPC.
@@ -59,6 +62,9 @@ type AgentServiceClient interface {
 	CreateAgent(context.Context, *v1.CreateAgentRequest) (*v1.CreateAgentResponse, error)
 	RevokeAgent(context.Context, *v1.RevokeAgentRequest) (*v1.RevokeAgentResponse, error)
 	SetAgentLimits(context.Context, *v1.SetAgentLimitsRequest) (*v1.SetAgentLimitsResponse, error)
+	// SetAgentMode makes an agent live or puts it in dry run. Its proposals
+	// made before keep what they were.
+	SetAgentMode(context.Context, *v1.SetAgentModeRequest) (*v1.SetAgentModeResponse, error)
 	// IssueToken returns the secret once; only its hash is stored.
 	IssueToken(context.Context, *v1.IssueTokenRequest) (*v1.IssueTokenResponse, error)
 	ListTokens(context.Context, *v1.ListTokensRequest) (*v1.ListTokensResponse, error)
@@ -100,6 +106,12 @@ func NewAgentServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(agentServiceMethods.ByName("SetAgentLimits")),
 			connect.WithClientOptions(opts...),
 		),
+		setAgentMode: connect.NewClient[v1.SetAgentModeRequest, v1.SetAgentModeResponse](
+			httpClient,
+			baseURL+AgentServiceSetAgentModeProcedure,
+			connect.WithSchema(agentServiceMethods.ByName("SetAgentMode")),
+			connect.WithClientOptions(opts...),
+		),
 		issueToken: connect.NewClient[v1.IssueTokenRequest, v1.IssueTokenResponse](
 			httpClient,
 			baseURL+AgentServiceIssueTokenProcedure,
@@ -127,6 +139,7 @@ type agentServiceClient struct {
 	createAgent    *connect.Client[v1.CreateAgentRequest, v1.CreateAgentResponse]
 	revokeAgent    *connect.Client[v1.RevokeAgentRequest, v1.RevokeAgentResponse]
 	setAgentLimits *connect.Client[v1.SetAgentLimitsRequest, v1.SetAgentLimitsResponse]
+	setAgentMode   *connect.Client[v1.SetAgentModeRequest, v1.SetAgentModeResponse]
 	issueToken     *connect.Client[v1.IssueTokenRequest, v1.IssueTokenResponse]
 	listTokens     *connect.Client[v1.ListTokensRequest, v1.ListTokensResponse]
 	revokeToken    *connect.Client[v1.RevokeTokenRequest, v1.RevokeTokenResponse]
@@ -168,6 +181,15 @@ func (c *agentServiceClient) SetAgentLimits(ctx context.Context, req *v1.SetAgen
 	return nil, err
 }
 
+// SetAgentMode calls mandate.v1.AgentService.SetAgentMode.
+func (c *agentServiceClient) SetAgentMode(ctx context.Context, req *v1.SetAgentModeRequest) (*v1.SetAgentModeResponse, error) {
+	response, err := c.setAgentMode.CallUnary(ctx, connect.NewRequest(req))
+	if response != nil {
+		return response.Msg, err
+	}
+	return nil, err
+}
+
 // IssueToken calls mandate.v1.AgentService.IssueToken.
 func (c *agentServiceClient) IssueToken(ctx context.Context, req *v1.IssueTokenRequest) (*v1.IssueTokenResponse, error) {
 	response, err := c.issueToken.CallUnary(ctx, connect.NewRequest(req))
@@ -201,6 +223,9 @@ type AgentServiceHandler interface {
 	CreateAgent(context.Context, *v1.CreateAgentRequest) (*v1.CreateAgentResponse, error)
 	RevokeAgent(context.Context, *v1.RevokeAgentRequest) (*v1.RevokeAgentResponse, error)
 	SetAgentLimits(context.Context, *v1.SetAgentLimitsRequest) (*v1.SetAgentLimitsResponse, error)
+	// SetAgentMode makes an agent live or puts it in dry run. Its proposals
+	// made before keep what they were.
+	SetAgentMode(context.Context, *v1.SetAgentModeRequest) (*v1.SetAgentModeResponse, error)
 	// IssueToken returns the secret once; only its hash is stored.
 	IssueToken(context.Context, *v1.IssueTokenRequest) (*v1.IssueTokenResponse, error)
 	ListTokens(context.Context, *v1.ListTokensRequest) (*v1.ListTokensResponse, error)
@@ -238,6 +263,12 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(agentServiceMethods.ByName("SetAgentLimits")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentServiceSetAgentModeHandler := connect.NewUnaryHandlerSimple(
+		AgentServiceSetAgentModeProcedure,
+		svc.SetAgentMode,
+		connect.WithSchema(agentServiceMethods.ByName("SetAgentMode")),
+		connect.WithHandlerOptions(opts...),
+	)
 	agentServiceIssueTokenHandler := connect.NewUnaryHandlerSimple(
 		AgentServiceIssueTokenProcedure,
 		svc.IssueToken,
@@ -266,6 +297,8 @@ func NewAgentServiceHandler(svc AgentServiceHandler, opts ...connect.HandlerOpti
 			agentServiceRevokeAgentHandler.ServeHTTP(w, r)
 		case AgentServiceSetAgentLimitsProcedure:
 			agentServiceSetAgentLimitsHandler.ServeHTTP(w, r)
+		case AgentServiceSetAgentModeProcedure:
+			agentServiceSetAgentModeHandler.ServeHTTP(w, r)
 		case AgentServiceIssueTokenProcedure:
 			agentServiceIssueTokenHandler.ServeHTTP(w, r)
 		case AgentServiceListTokensProcedure:
@@ -295,6 +328,10 @@ func (UnimplementedAgentServiceHandler) RevokeAgent(context.Context, *v1.RevokeA
 
 func (UnimplementedAgentServiceHandler) SetAgentLimits(context.Context, *v1.SetAgentLimitsRequest) (*v1.SetAgentLimitsResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mandate.v1.AgentService.SetAgentLimits is not implemented"))
+}
+
+func (UnimplementedAgentServiceHandler) SetAgentMode(context.Context, *v1.SetAgentModeRequest) (*v1.SetAgentModeResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mandate.v1.AgentService.SetAgentMode is not implemented"))
 }
 
 func (UnimplementedAgentServiceHandler) IssueToken(context.Context, *v1.IssueTokenRequest) (*v1.IssueTokenResponse, error) {
