@@ -54,7 +54,7 @@ examples/webhook/       A receiver of deliveries that verifies signatures
 examples/refunds/       A receiver that checks each claim in the payload against its own records
 cmd/pgmandate/          The service binary and the operator's command line, with the demo
 deploy/                 Compose and Dockerfile
-docs/                   scope.md (canonical), landscape.md, design.md, threat-model.md, roadmap.md, decisions.md,
+docs/                   scope.md (canonical), landscape.md, design.md, design-0.1.md, threat-model.md, roadmap.md, decisions.md,
                         delivery-v1.schema.json (the delivery contract)
 ```
 

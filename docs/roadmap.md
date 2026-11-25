@@ -19,7 +19,7 @@ Rough size, for one person working evenings with AI agents: phase 1 is three to 
 
 Phase 2 is more than anyone needs; a first team will need a part of it.
 
-**How an item is built.** The roadmap says what each item must achieve and what it must not break. Before any code, an item gets a short design note in `docs/`, reviewed like code. The note covers its states, its migration, its contract changes and its tests. Items 5, 6, 8 and 9 shape the contracts and the schema that 0.1.0 freezes, so they are designed together, before any of them is built.
+**How an item is built.** The roadmap says what each item must achieve and what it must not break. Before any code, an item gets a short design note in `docs/`, reviewed like code. The note covers its states, its migration, its contract changes and its tests. Items 5, 6, 8 and 9 shape the contracts and the schema that 0.1.0 freezes, so they are designed together, before any of them is built: [design-0.1.md](design-0.1.md).
 
 **No compatibility before 0.1.0.** Nobody runs pgmandate yet, so until 0.1.0:
 - the schema, the migrations and the contracts change freely
@@ -60,13 +60,13 @@ This is the critical path, so it starts at once.
 5. **Proposal expiry.**
    - An action sets how long a proposal for it may wait, and how long a decision may take to be carried out. Both are fixed on the proposal when it is made.
    - When the waiting time is up, the system decides the proposal as expired under a database rule, the agent is told, and nothing is delivered.
-   - After that deadline, the database refuses every change to the proposal except expiry and withdrawal: no approval, and no execution under a mandate.
+   - After that deadline, the database refuses every change to the proposal except expiry: no approval, no withdrawal, and no execution under a mandate.
    - A decision can still be delivered late: retries, an outage, or a person sending a failed delivery again. So the delivery carries `notAfter` (item 8): the time of the decision plus the action's window. After it:
      - the worker stops retrying
      - the database refuses a person's resend
      - a receiver refuses the delivery
 6. **A dry run, as the way in.** No team removes an agent's credentials on day one.
-   - **Setting it.** An owner sets an agent to dry run, and the switch is logged. Each proposal records whether it was made in a dry run. The database sets that, and it never changes, so turning dry run off later does not turn old proposals into real ones. Every answer to the agent says whether it is a dry run, so a key reused after the switch can never return a dry-run proposal as if it were real.
+   - **Setting it.** A new agent starts in dry run, and an owner makes it live, or creates it live. The switch is logged. Each proposal records whether it was made in a dry run. The database sets that, and it never changes, so turning dry run off later does not turn old proposals into real ones. Every answer to the agent says whether it is a dry run, so a key reused after the switch can never return a dry-run proposal as if it were real.
    - **The agent's side.** In a dry run the agent keeps its credential. It proposes what it is about to do, and carries on without waiting.
    - **pgmandate's side.** It records what a mandate would have allowed and what would have waited for a person.
    - **Its own outcomes.** A dry run never becomes *executed*. The database refuses to deliver it, to let it count as spend, or to let `may_write_for` open a host's table for it, so it cannot reach a receiver or an embedded host's code.
@@ -93,18 +93,10 @@ This is the critical path, so it starts at once.
      - Money (phase 2) adds one block per currency to the list, not a new version.
    - **`notAfter`** (item 5).
    - **A kind in what pgmandate signs:** a delivery or a callback, so one can never pass for the other, whatever the audiences are. A late result is the receiver's, and is authenticated only by its token (below).
-   - **A delivery status *outcome unknown*,** and an answer a receiver gives to signal it.
-     - A person settles it as done or not done. Sending it again, or moving it to another address, is refused, since either could do the work twice.
-     - The MCP bridge needs this. So does any receiver whose own downstream call can time out.
-   - **A result reported later,** for receivers whose work takes longer than a delivery's time limit.
-     - A receiver that accepts work to finish later answers *accepted*, and the delivery waits in a state of its own.
-     - The signed body carries `resultBy`, fixed per action like the window. A receiver must not commit work after it.
-     - The receiver reports the result with a single-use token that the delivery carries, bound to its id. The token is stored only as a hash, or derived from a key outside the database, so a copy of the database cannot forge a result.
-   - **One outcome per delivery,** held by the database: the first of a result, a refusal, or a person's settlement wins.
-     - No attempt starts later than `notAfter` minus the request timeout. A final attempt that timed out ends as outcome unknown, never as failed.
-     - A person may settle "not done" only once the last moment the work could still happen has passed, plus an allowance for clock skew stated in the contract. That moment is `notAfter` plus the request timeout, or `resultBy` for accepted work. Settling revokes the token.
-     - A result that arrives after a settlement is recorded as a conflict for a person, never applied.
-     - Only after "not done" may the agent propose the same thing again.
+   - **Only an explicit answer is final.** A receiver says `done`, `refused` or `unknown`. Anything else is retried, and ends as *unknown* if an attempt was sent, or *not sent* if none was. The worker records that an attempt started before it calls, so a crash cannot turn "maybe" into "not sent".
+   - **A person settles *unknown*** as done or not done, and only once the work can no longer happen. A delivery may be sent again only from *not sent*, and only before `notAfter`. Only after "not done", "refused" or a late "not sent" may the agent propose the same thing again.
+   - **A result reported later** (an *accepted* answer) is left out of 0.1.0. It is purely additive, so it can come later without a new contract.
+   - The details are in [design-0.1.md](design-0.1.md).
 9. **One agent contract.**
    - The agent's operations are list actions, propose, get, list and withdraw. They move out of `mcp/` into one service defined as a Connect contract (`mandate.agent.v1`).
    - MCP becomes one way to call it, and JSON over HTTP comes with it. The clients in phase 2 are generated from it.
