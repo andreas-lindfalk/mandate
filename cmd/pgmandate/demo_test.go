@@ -110,13 +110,16 @@ func TestDemoAndCommandLine(t *testing.T) {
 	agentToken := regexp.MustCompile(`token (mnd_\S+)`).FindStringSubmatch(out.String())[1]
 
 	out.Reset()
-	require.NoError(t, run(ctx, "grant", []string{"-tenant", tenantId, "-as", "cli@test.example", "-agent", agentId, "-actions", "tickets.*", "-max-risk", "low", "-budget", "5", "-policy", "CLI-POLICY"}, &out))
+	require.NoError(t, run(ctx, "grant", []string{"-tenant", tenantId, "-as", "cli@test.example", "-agent", agentId, "-actions", "tickets.*", "-max-risk", "low", "-budget", "5", "-policy", "CLI-POLICY",
+		"-condition", `action == "tickets.create"`}, &out))
 	require.Contains(t, out.String(), "0 of 5 units")
+	require.Contains(t, out.String(), `when action == "tickets.create"`)
 	require.Error(t, run(ctx, "grant", []string{"-tenant", tenantId, "-as", "cli@test.example", "-actions", "*", "-max-risk", "high", "-budget", "5", "-policy", "P"}, &out))
 
 	out.Reset()
 	require.NoError(t, run(ctx, "mandates", []string{"-tenant", tenantId}, &out))
 	require.Contains(t, out.String(), "CLI-POLICY")
+	require.Contains(t, out.String(), `when action == "tickets.create"`)
 	out.Reset()
 	require.NoError(t, run(ctx, "verify", []string{"-tenant", tenantId}, &out))
 	require.Contains(t, out.String(), "chain intact: 5 events")
@@ -151,7 +154,7 @@ func TestDemoAndCommandLine(t *testing.T) {
 	defer appPool.Close()
 	mcpServer := httptest.NewServer(pgmandate.New(appPool, pgmandate.Options{}).Handler())
 	defer mcpServer.Close()
-	proposeArgs := []string{"-token", agentToken, "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "From the shell",
+	proposeArgs := []string{"-token", agentToken, "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "From the shell", "-rationale", "Tried from a shell.",
 		"-payload", `{"subject":"Printer","account":9007199254740993}`, "-run", "shell-1"}
 	out.Reset()
 	require.NoError(t, run(ctx, "propose", proposeArgs, &out))
@@ -161,12 +164,12 @@ func TestDemoAndCommandLine(t *testing.T) {
 	out.Reset()
 	require.NoError(t, run(ctx, "propose", proposeArgs, &out))
 	require.Contains(t, out.String(), `"repeat": true`, "the same run and key again is a repeat")
-	require.Error(t, run(ctx, "propose", []string{"-token", "mnd_nope", "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "x"}, &out))
+	require.Error(t, run(ctx, "propose", []string{"-token", "mnd_nope", "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "x", "-rationale", "r"}, &out))
 	require.Error(t, run(ctx, "propose", []string{"-action", "tickets.create"}, &out), "a token is needed")
 	out.Reset()
-	require.ErrorContains(t, run(ctx, "propose", []string{"-token", agentToken, "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "x", "-payload", "[1]"}, &out), "-payload must be a JSON object")
+	require.ErrorContains(t, run(ctx, "propose", []string{"-token", agentToken, "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "x", "-payload", "[1]", "-rationale", "r"}, &out), "-payload must be a JSON object")
 	out.Reset()
-	require.NoError(t, run(ctx, "propose", []string{"-token", agentToken, "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "a\x01b \"quoted\"", "-payload", `{"subject":"x"}`}, &out), "a title with control characters and quotes is sent as JSON")
+	require.NoError(t, run(ctx, "propose", []string{"-token", agentToken, "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "a\x01b \"quoted\"", "-rationale", "Quotes \"and\" control\x01 characters.", "-payload", `{"subject":"x"}`}, &out), "a title with control characters and quotes is sent as JSON")
 	require.Contains(t, out.String(), `"created": true`)
 
 	// An approval from the command line queues its delivery for the server.
@@ -184,6 +187,25 @@ func TestDemoAndCommandLine(t *testing.T) {
 
 	require.Error(t, run(ctx, "nonsense", nil, &out))
 	require.Error(t, run(ctx, "approve", []string{"-tenant", tenantId, "-as", "nobody@test.example", "-proposal", agentId}, &out))
+
+	// Notifications are set and turned off from the command line too.
+	out.Reset()
+	require.NoError(t, run(ctx, "notify", []string{"set", "-tenant", tenantId, "-as", "cli@test.example", "-kind", "discord", "-url", "https://discord.com/api/webhooks/1/abc"}, &out))
+	require.Contains(t, out.String(), "notifications go to a discord channel")
+	// The address from standard input, kept out of the shell's history.
+	stdin = strings.NewReader("https://hooks.slack.com/services/T0/B0/secret\n")
+	defer func() { stdin = os.Stdin }()
+	out.Reset()
+	require.NoError(t, run(ctx, "notify", []string{"set", "-tenant", tenantId, "-as", "cli@test.example", "-kind", "slack"}, &out))
+	require.Contains(t, out.String(), "notifications go to a slack channel")
+	require.NotContains(t, out.String(), "secret")
+	stdin = strings.NewReader("")
+	require.ErrorContains(t, run(ctx, "notify", []string{"set", "-tenant", tenantId, "-as", "cli@test.example", "-kind", "slack"}, &out), "standard input")
+	require.ErrorContains(t, run(ctx, "notify", []string{"set", "-tenant", tenantId, "-as", "cli@test.example", "-kind", "slack", "-url", "https://example.com/hook"}, &out), "incoming webhook")
+	out.Reset()
+	require.NoError(t, run(ctx, "notify", []string{"remove", "-tenant", tenantId, "-as", "cli@test.example"}, &out))
+	require.Contains(t, out.String(), "notifications are off")
+	require.Error(t, run(ctx, "notify", []string{"remove", "-tenant", tenantId, "-as", "cli@test.example"}, &out), "nothing left to remove")
 }
 
 func TestDescribeDeliveryShowsTheIdsAndTheBody(t *testing.T) {

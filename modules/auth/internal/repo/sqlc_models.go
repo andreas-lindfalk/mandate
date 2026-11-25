@@ -31,14 +31,16 @@ type MandateAction struct {
 }
 
 type MandateAgent struct {
-	Id         uuid.UUID
-	TenantId   uuid.UUID
-	Name       string
-	Department *string
-	CreatedBy  *uuid.UUID
-	CreatedAt  time.Time
-	RevokedAt  *time.Time
-	RevokedBy  *uuid.UUID
+	Id           uuid.UUID
+	TenantId     uuid.UUID
+	Name         string
+	Department   *string
+	CreatedBy    *uuid.UUID
+	CreatedAt    time.Time
+	RevokedAt    *time.Time
+	RevokedBy    *uuid.UUID
+	MaxPerMinute int32
+	MaxPerHour   int32
 }
 
 type MandateAgentToken struct {
@@ -84,20 +86,33 @@ type MandateEvent struct {
 }
 
 type MandateMandate struct {
-	Id          uuid.UUID
-	TenantId    uuid.UUID
-	AgentId     *uuid.UUID
-	Actions     []string
-	MaxRisk     string
-	BudgetUnits int64
-	PolicyRef   string
-	Department  *string
-	GrantedBy   *uuid.UUID
-	ValidFrom   time.Time
-	ValidUntil  time.Time
-	RevokedAt   *time.Time
-	RevokedBy   *uuid.UUID
-	CreatedAt   time.Time
+	Id            uuid.UUID
+	TenantId      uuid.UUID
+	AgentId       *uuid.UUID
+	Actions       []string
+	MaxRisk       string
+	BudgetUnits   int64
+	PolicyRef     string
+	Department    *string
+	GrantedBy     *uuid.UUID
+	ValidFrom     time.Time
+	ValidUntil    time.Time
+	RevokedAt     *time.Time
+	RevokedBy     *uuid.UUID
+	CreatedAt     time.Time
+	Condition     *string
+	ConditionPlan []byte
+}
+
+type MandateNotifier struct {
+	Id        uuid.UUID
+	TenantId  uuid.UUID
+	Kind      string
+	Url       string
+	CreatedBy *uuid.UUID
+	CreatedAt time.Time
+	RemovedAt *time.Time
+	RemovedBy *uuid.UUID
 }
 
 type MandatePerson struct {
@@ -132,6 +147,9 @@ type MandateProposal struct {
 	DecisionNote    *string
 	ExecutionBasis  []byte
 	CreatedAt       time.Time
+	Rationale       *string
+	Evidence        []byte
+	Provenance      []byte
 }
 
 type MandateSession struct {

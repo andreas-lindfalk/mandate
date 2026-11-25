@@ -60,7 +60,8 @@ type Delivery struct {
 	Attempts   int
 	LastStatus *int
 	LastError  string
-	// Result is what the connector answered, when it answered with a JSON object.
+	// Result is what the connector answered, when it answered with a JSON
+	// object: its result, or for a delivery it refused, its reason.
 	Result      json.RawMessage
 	CreatedAt   time.Time
 	DeliveredAt *time.Time
@@ -373,7 +374,7 @@ func (s *Service) Deliver(ctx context.Context, tenantId, deliveryId uuid.UUID, l
 	if lost != nil {
 		// Final: no retry can change it. The job leaves the queue now, so a
 		// later "send again" is the only thing that sends it.
-		err := s.failed(ctx, delivery, lost, "the action no longer has a webhook connector", 0, true)
+		err := s.failed(ctx, delivery, lost, "the action no longer has a webhook connector", 0, true, nil)
 		if !lastAttempt {
 			return river.JobCancel(err)
 		}
@@ -381,12 +382,12 @@ func (s *Service) Deliver(ctx context.Context, tenantId, deliveryId uuid.UUID, l
 	}
 	proposal, err := s.proposals.Get(ctx, delivery.ProposalId)
 	if err != nil {
-		return s.failed(ctx, delivery, err, "the proposal could not be read", 0, lastAttempt)
+		return s.failed(ctx, delivery, err, "the proposal could not be read", 0, lastAttempt, nil)
 	}
 	payload, err := payloadOf(tenantId, delivery, proposal)
 	if err != nil {
 		// Nothing is sent that the published body does not describe.
-		return s.failed(ctx, delivery, err, "the proposal has no decision to deliver", 0, lastAttempt)
+		return s.failed(ctx, delivery, err, "the proposal has no decision to deliver", 0, lastAttempt, nil)
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -412,7 +413,13 @@ func (s *Service) Deliver(ctx context.Context, tenantId, deliveryId uuid.UUID, l
 	// 401 until it has the new one, and the delivery should survive that.
 	final := lastAttempt || errors.Is(callErr, errBlocked) || errors.Is(callErr, errPlain) ||
 		(status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests && status != http.StatusUnauthorized)
-	err = s.failed(ctx, delivery, callErr, describe(callErr), status, final)
+	// A refusal's reason is kept only when it is the final word: an answer
+	// to an attempt that will be retried says nothing settled.
+	var refusal json.RawMessage
+	if final && status >= 400 && status < 500 {
+		refusal = result
+	}
+	err = s.failed(ctx, delivery, callErr, describe(callErr), status, final, refusal)
 	if final && !lastAttempt {
 		// The job must leave the queue now, or sending it again would wait
 		// behind a retry that has nothing left to do.
@@ -530,7 +537,7 @@ func (s *Service) Redeliver(ctx context.Context, proposalId uuid.UUID) (Delivery
 
 // failed records an attempt that did not deliver: as one more attempt, or
 // on the last attempt as the delivery's final failure, in the chain.
-func (s *Service) failed(ctx context.Context, delivery Delivery, callErr error, message string, status int, lastAttempt bool) error {
+func (s *Service) failed(ctx context.Context, delivery Delivery, callErr error, message string, status int, lastAttempt bool, refusal json.RawMessage) error {
 	var lastStatus *int32
 	if status != 0 {
 		code := int32(status) //nolint:gosec // an HTTP status
@@ -541,13 +548,18 @@ func (s *Service) failed(ctx context.Context, delivery Delivery, callErr error, 
 		if !lastAttempt {
 			return q.MarkAttempt(ctx, repo.MarkAttemptParams{Id: delivery.Id, LastStatus: lastStatus, LastError: &message})
 		}
-		if err := q.MarkFailed(ctx, repo.MarkFailedParams{Id: delivery.Id, LastStatus: lastStatus, LastError: &message}); err != nil {
+		if err := q.MarkFailed(ctx, repo.MarkFailedParams{Id: delivery.Id, LastStatus: lastStatus, LastError: &message, Result: refusal}); err != nil {
 			return err
 		}
-		_, err := events.Append(ctx, tx, events.Event{
-			Type: "delivery.failed", SubjectId: delivery.ProposalId,
-			Payload: map[string]any{"deliveryId": delivery.Id, "action": delivery.ActionKey, "status": status, "attempts": delivery.Attempts + 1, "connectorUrlSha256": urlDigest(delivery.Url)},
-		})
+		payload := map[string]any{"deliveryId": delivery.Id, "action": delivery.ActionKey, "status": status, "attempts": delivery.Attempts + 1, "connectorUrlSha256": urlDigest(delivery.Url)}
+		if len(refusal) > 0 {
+			digest, err := events.Digest(refusal)
+			if err != nil {
+				return err
+			}
+			payload["resultSha256"] = digest
+		}
+		_, err := events.Append(ctx, tx, events.Event{Type: "delivery.failed", SubjectId: delivery.ProposalId, Payload: payload})
 		return err
 	}); err != nil {
 		return errors.Join(callErr, err)
@@ -582,14 +594,14 @@ func (s *Service) post(ctx context.Context, url string, secret []byte, deliveryI
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	answer, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return resp.StatusCode, nil, &statusError{status: resp.StatusCode}
-	}
-	// The answer is kept as the result when it is a JSON object that fits;
-	// anything else is a delivery without a result.
+	// The answer is kept when it is a JSON object that fits: the result of
+	// an accepted delivery, or the reason a connector gives for refusing.
 	var object map[string]any
 	if len(answer) > maxResponse || json.Unmarshal(answer, &object) != nil || object == nil {
-		return resp.StatusCode, nil, nil
+		answer = nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return resp.StatusCode, answer, &statusError{status: resp.StatusCode}
 	}
 	return resp.StatusCode, answer, nil
 }

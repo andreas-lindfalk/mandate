@@ -2,6 +2,37 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`.
 
+## 2026-11-25: conditions, the part the database can check
+
+- **Built now, ahead of the order below**, on a branch: a mandate can carry a condition on the payload, such as `payload.amount <= 500 && payload.currency in ["EUR", "SEK"]`. The MCP front and its groundwork keep their place after it.
+- **One language, from the start.** Conditions are written in CEL, but only the part the database can check is accepted: payload fields and the action compared with literal values, `in` a list, `&&`, `||`, `!` and `has()`. Anything else is refused at the grant with what and where. The person granting writes one condition; there is no second form to keep in step.
+- **One plan, two evaluators.** The service compiles the condition to a plan at the grant and stores both. The service and the database evaluate the same plan, and a test runs both over the same cases, malformed plans included. The execution's basis cites the condition; the database checks that it is the mandate's own and that the plan holds for the payload executed.
+- **Exact, and stricter than CEL.** Numbers compare as decimals, not doubles: `500` equals `500.0`, and `0.1` is `0.1`. Strings compare by their bytes. A missing field, a field of another type than the literal (`"500"` against `500`) and anything else that cannot be evaluated is unknown, and unknown never allows; plain CEL would call `"5" != 5` true.
+- **The grant catches mistakes it can see**: a payload field no covered action's schema declares, a literal of a type the schema never gives the field, and an action the condition requires that the mandate does not cover. When a covered action has no schema, the fields cannot be checked and are not.
+- **Rolling back the migration is refused** while a mandate with a condition still holds: without its condition it would allow more than was granted.
+- **Not yet:** a cost taken from the payload, a refused outcome, and the rest of CEL for what comparisons cannot say.
+
+## 2026-11-25: a review round, with a pilot in mind
+
+Six fresh reviews (security, Postgres, the agent's contract, the person's interface, a pilot's fitness, the market) found these, all fixed with tests:
+
+- **A key a receiver could read as another is refused.** A payload with `amountCents` and `amountcents` passed a condition on one and could be carried out on the other by a decoder that ignores case. The service and the database refuse such payloads.
+- **A condition plan is checked by the database**, not only produced by the service: known operators, paths and literal kinds, bounded depth and size. `in` over values that do not compare is unknown, not false.
+- **Counts are made under read committed only.** The budget and the agent's limits rely on a lock that a repeatable-read snapshot sees past; such transactions are refused. The limit's count uses its index.
+- **A receiver's refusal is kept and shown**, to the person and to the agent, which is told not to resend it unchanged. The reference receiver tells a refusal (422) from a failure (500) and remembers only what it did.
+- **An agent can withdraw its own waiting proposal**, so a correction never leaves two versions for a person to approve.
+- **The agent is told more and asked for less**: what a condition missed, its limits, that a repeat kept the first account, never to bend facts or split an action to meet a condition, and to keep personal data and credentials out of what it writes. Labels with spaces are made labels rather than refused.
+- **The inbox shows what will happen first**, then what pgmandate checked, then the agent's account folded and marked as its claim; flagged text is hidden until asked for. A link from a chat notification survives sign-in. Notifications can be tested.
+- **The comparison is brought up to date** with AWS AgentCore Policy, Microsoft's Agent Governance Toolkit, LangSmith's Tool Gateway and DigitalOcean's Action Gateway, all of which decide on a call's arguments too.
+
+## 2026-11-25: what a first pilot needs
+
+- **Every proposal carries the agent's account.** A person cannot decide well on a title and a payload, and a record without the agent's reasoning says little about what agents are up to. The rationale is required, like the idempotency key; evidence (a source, a reference to find it again, a summary) and provenance (the client, the model, the agent's version) are optional. They are kept as written and never edited, the log holds their digests and the provenance labels, and they are not part of the request a key names, so a retry in other words is the same request. A mandate never reads them.
+- **Why a proposal waits is spelled out.** When a condition stopped it, the inbox names the comparison that failed and what the payload had instead. Conditions can be written in the grant dialog.
+- **A chat channel is told when something waits**, through a Slack or Discord incoming webhook an owner sets, one per tenant. The message carries nothing the agent wrote, so a proposal cannot post into the channel or put personal data into the chat tool. Its address is a secret, kept like a connector's. Approving from the chat is not built: the link opens the inbox.
+- **Limits per agent**, 30 proposals a minute and 300 an hour by default, held by a trigger so they hold across instances. This was phase 0 item 5 of the roadmap.
+- **A receiver checks the claims it is given.** A condition decides on what the agent wrote; a receiver of an action that moves value reads each fact from its own records and refuses a mismatch. `examples/refunds` shows it, and the reference receiver can now carry out a delivery and refuse it with a 422.
+
 ## 2026-11-25: the name, and what goes before the first push
 
 - **Renamed to pgmandate.** "Mandate" became the common word for agent authority this year (an IETF draft on agent mandates, Google's payment mandates, several projects), and a search for the project found everything else. pgmandate keeps the concept and names the thesis: Postgres is the last gate. A *mandate* stays the word for a standing grant.

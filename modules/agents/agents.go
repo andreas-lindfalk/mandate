@@ -41,6 +41,10 @@ type Agent struct {
 	CreatedBy  *uuid.UUID
 	CreatedAt  time.Time
 	RevokedAt  *time.Time
+	// MaxPerMinute and MaxPerHour bound how many proposals the agent may
+	// make; the database refuses the rest.
+	MaxPerMinute int
+	MaxPerHour   int
 }
 
 type Token struct {
@@ -165,6 +169,39 @@ func (s *Service) Revoke(ctx context.Context, id uuid.UUID) error {
 		return err
 	})
 	return fault.FromDb(err)
+}
+
+// SetLimits sets how many proposals a live agent may make per minute and
+// per hour. Only an owner may.
+func (s *Service) SetLimits(ctx context.Context, id uuid.UUID, perMinute, perHour int) (Agent, error) {
+	switch {
+	case perMinute < 1 || perMinute > 10_000:
+		return Agent{}, fault.New(fault.InvalidArgument, "the limit per minute is 1 to 10000")
+	case perHour < perMinute || perHour > 100_000:
+		return Agent{}, fault.New(fault.InvalidArgument, "the limit per hour is at least the limit per minute and at most 100000")
+	}
+	var result Agent
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := db.RequireOwner(ctx, tx); err != nil {
+			return err
+		}
+		q := repo.New(tx)
+		changed, err := q.SetAgentLimits(ctx, repo.SetAgentLimitsParams{Id: id, MaxPerMinute: int32(perMinute), MaxPerHour: int32(perHour)}) //nolint:gosec // bounded above
+		if err != nil {
+			return err
+		}
+		if changed == 0 {
+			return fault.New(fault.NotFound, "no live agent with that id")
+		}
+		row, err := q.GetAgent(ctx, id)
+		if err != nil {
+			return err
+		}
+		result = toAgent(row)
+		_, err = events.Append(ctx, tx, events.Event{Type: "agent.limits_set", SubjectId: id, Payload: map[string]any{"maxPerMinute": perMinute, "maxPerHour": perHour}})
+		return err
+	})
+	return result, fault.FromDb(err)
 }
 
 // IssueToken makes a token for an agent. The secret is returned once; only
@@ -300,7 +337,10 @@ func (s *Service) Called(ctx context.Context, grant Grant, tool string, argument
 }
 
 func toAgent(row repo.MandateAgent) Agent {
-	a := Agent{Id: row.Id, Name: row.Name, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt, RevokedAt: row.RevokedAt}
+	a := Agent{
+		Id: row.Id, Name: row.Name, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt, RevokedAt: row.RevokedAt,
+		MaxPerMinute: int(row.MaxPerMinute), MaxPerHour: int(row.MaxPerHour),
+	}
 	if row.Department != nil {
 		a.Department = *row.Department
 	}

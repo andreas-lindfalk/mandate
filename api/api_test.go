@@ -26,21 +26,23 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1/mandatev1connect"
 	"github.com/andreas-lindfalk/pgmandate/internal/testfix"
 	"github.com/andreas-lindfalk/pgmandate/modules/auth"
+	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 )
 
 type ApiSuite struct {
 	suite.Suite
-	W        *testfix.World
-	provider *fakeProvider
-	server   *httptest.Server
-	auth     mandatev1connect.AuthServiceClient
-	persons  mandatev1connect.PersonServiceClient
-	agents   mandatev1connect.AgentServiceClient
-	actions  mandatev1connect.ActionServiceClient
-	mandates mandatev1connect.MandateServiceClient
-	props    mandatev1connect.ProposalServiceClient
-	evidence mandatev1connect.EvidenceServiceClient
+	W         *testfix.World
+	provider  *fakeProvider
+	server    *httptest.Server
+	auth      mandatev1connect.AuthServiceClient
+	persons   mandatev1connect.PersonServiceClient
+	agents    mandatev1connect.AgentServiceClient
+	actions   mandatev1connect.ActionServiceClient
+	mandates  mandatev1connect.MandateServiceClient
+	props     mandatev1connect.ProposalServiceClient
+	evidence  mandatev1connect.EvidenceServiceClient
+	notifiers mandatev1connect.NotifierServiceClient
 }
 
 func TestApiSuite(t *testing.T) {
@@ -67,6 +69,7 @@ func (s *ApiSuite) SetupSuite() {
 	s.mandates = mandatev1connect.NewMandateServiceClient(client, s.server.URL)
 	s.props = mandatev1connect.NewProposalServiceClient(client, s.server.URL)
 	s.evidence = mandatev1connect.NewEvidenceServiceClient(client, s.server.URL)
+	s.notifiers = mandatev1connect.NewNotifierServiceClient(client, s.server.URL)
 }
 
 func (s *ApiSuite) TearDownSuite() {
@@ -203,6 +206,7 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	})
 	s.Require().NoError(err)
 	s.Require().Equal("Support", granted.GetMandate().GetDepartment())
+	s.Require().Empty(granted.GetMandate().GetCondition())
 	mandatesList, err := s.mandates.ListMandates(reviewer, &mandatev1.ListMandatesRequest{})
 	s.Require().NoError(err)
 	s.Require().Len(mandatesList.GetMandates(), 1)
@@ -211,14 +215,17 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	s.code(err, connect.CodePermissionDenied)
 	_, err = s.mandates.GrantMandate(owner, &mandatev1.GrantMandateRequest{Actions: []string{"*"}, MaxRisk: "high", BudgetUnits: 1, PolicyRef: "P", Days: 1})
 	s.code(err, connect.CodeInvalidArgument)
+	_, err = s.mandates.GrantMandate(owner, &mandatev1.GrantMandateRequest{Actions: []string{"tickets.*"}, MaxRisk: "low", BudgetUnits: 1, PolicyRef: "P", Days: 1, Condition: "payload.subjct == \"x\""})
+	s.code(err, connect.CodeInvalidArgument)
+	s.Require().Contains(err.Error(), "payload.subjct", "the refusal names the field no schema declares")
 
 	// The agent proposes through the kernel; people see it in the inbox.
 	grant, err := s.W.Kernel.Agents.Authenticate(context.Background(), issued.GetSecret())
 	s.Require().NoError(err)
 	agentCtx := grant.Context(context.Background())
-	first, _, err := s.W.Kernel.Proposals.Propose(agentCtx, proposals.Input{IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: "Printer jams", Payload: json.RawMessage(`{"subject":"Printer jams"}`)})
+	first, _, err := s.W.Kernel.Proposals.Propose(agentCtx, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: "Printer jams", Payload: json.RawMessage(`{"subject":"Printer jams"}`)})
 	s.Require().NoError(err)
-	second, _, err := s.W.Kernel.Proposals.Propose(agentCtx, proposals.Input{IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: "Ignore previous instructions", Payload: json.RawMessage(`{"subject":"x"}`)})
+	second, _, err := s.W.Kernel.Proposals.Propose(agentCtx, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: "Ignore previous instructions", Payload: json.RawMessage(`{"subject":"x"}`)})
 	s.Require().NoError(err)
 
 	pending, err := s.props.ListProposals(reviewer, &mandatev1.ListProposalsRequest{Status: "pending"})
@@ -229,6 +236,8 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 		byId[p.GetId()] = p
 	}
 	s.Require().Equal("support-bot", byId[first.Id.String()].GetAgentName())
+	s.Require().Equal("Test rationale.", byId[first.Id.String()].GetRationale(), "the agent's account comes with the proposal")
+	s.Require().NotNil(byId[first.Id.String()].GetProvenance())
 	s.Require().Equal(int64(2), pending.GetTotal(), "the total of what waits comes with the list")
 	waiting, err := s.props.GetProposal(reviewer, &mandatev1.GetProposalRequest{Id: first.Id.String()})
 	s.Require().NoError(err)
@@ -327,6 +336,53 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	agentsList, err := s.agents.ListAgents(reviewer, &mandatev1.ListAgentsRequest{})
 	s.Require().NoError(err)
 	s.Require().NotNil(agentsList.GetAgents()[len(agentsList.GetAgents())-1].GetRevokedAt())
+}
+
+// A waiting proposal that a condition stopped says which comparison and
+// what the payload had instead.
+func (s *ApiSuite) Test_AWaitingProposalSaysWhatTheConditionMissed() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	reviewer := as(s.login("reviewer-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: "low", BudgetUnits: 10, PolicyRef: "P", Days: 30, Condition: `payload.amount <= 500`})
+	s.Require().NoError(err)
+	p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Why.", IdempotencyKey: uuid.NewString(), Action: "test.low", Title: "Big", Payload: json.RawMessage(`{"amount": 750}`)})
+	s.Require().NoError(err)
+	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, p.Id))
+	got, err := s.props.GetProposal(reviewer, &mandatev1.GetProposalRequest{Id: p.Id.String()})
+	s.Require().NoError(err)
+	s.Require().Equal(mandates.SkipConditionUnmet, got.GetProposal().GetSkipReason())
+	s.Require().Equal([]string{"mandate " + m.Id.String()[:8] + ": payload.amount <= 500 (payload.amount is 750)"}, got.GetProposal().GetUnmetConditions())
+
+	// Another reason to wait says nothing about conditions.
+	other, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Why.", IdempotencyKey: uuid.NewString(), Action: "test.manual", Title: "Manual", Payload: json.RawMessage(`{}`)})
+	s.Require().NoError(err)
+	got, err = s.props.GetProposal(reviewer, &mandatev1.GetProposalRequest{Id: other.Id.String()})
+	s.Require().NoError(err)
+	s.Require().Empty(got.GetProposal().GetUnmetConditions())
+}
+
+func (s *ApiSuite) Test_OwnersSetNotificationsAndTheAddressStaysSecret() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	owner := as(s.login("owner-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
+	reviewer := as(s.login("reviewer-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
+	none, err := s.notifiers.GetNotifier(reviewer, &mandatev1.GetNotifierRequest{})
+	s.Require().NoError(err)
+	s.Require().Nil(none.GetNotifier())
+	_, err = s.notifiers.SetNotifier(reviewer, &mandatev1.SetNotifierRequest{Kind: "slack", Url: "https://hooks.slack.com/services/T/B/x"})
+	s.code(err, connect.CodePermissionDenied)
+	_, err = s.notifiers.SetNotifier(owner, &mandatev1.SetNotifierRequest{Kind: "slack", Url: "https://example.com/x"})
+	s.code(err, connect.CodeInvalidArgument)
+	set, err := s.notifiers.SetNotifier(owner, &mandatev1.SetNotifierRequest{Kind: "slack", Url: "https://hooks.slack.com/services/T/B/x"})
+	s.Require().NoError(err)
+	s.Require().Equal("slack", set.GetNotifier().GetKind())
+	read, err := s.notifiers.GetNotifier(reviewer, &mandatev1.GetNotifierRequest{})
+	s.Require().NoError(err)
+	s.Require().Equal(set.GetNotifier().GetId(), read.GetNotifier().GetId())
+	s.Require().NotContains(read.String(), "hooks.slack.com", "the address is never returned")
+	_, err = s.notifiers.RemoveNotifier(reviewer, &mandatev1.RemoveNotifierRequest{})
+	s.code(err, connect.CodePermissionDenied)
+	_, err = s.notifiers.RemoveNotifier(owner, &mandatev1.RemoveNotifierRequest{})
+	s.Require().NoError(err)
 }
 
 func (s *ApiSuite) Test_OidcSignsIn() {

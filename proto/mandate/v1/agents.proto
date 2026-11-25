@@ -14,6 +14,7 @@ service AgentService {
   rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
   rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
   rpc RevokeAgent(RevokeAgentRequest) returns (RevokeAgentResponse);
+  rpc SetAgentLimits(SetAgentLimitsRequest) returns (SetAgentLimitsResponse);
   // IssueToken returns the secret once; only its hash is stored.
   rpc IssueToken(IssueTokenRequest) returns (IssueTokenResponse);
   rpc ListTokens(ListTokensRequest) returns (ListTokensResponse);
@@ -26,6 +27,9 @@ message Agent {
   string department = 3;
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp revoked_at = 5;
+  // How many proposals the agent may make; the database refuses the rest.
+  int32 max_per_minute = 6;
+  int32 max_per_hour = 7;
 }
 
 message Token {
@@ -58,6 +62,16 @@ message RevokeAgentRequest {
 }
 
 message RevokeAgentResponse {}
+
+message SetAgentLimitsRequest {
+  string id = 1;
+  int32 max_per_minute = 2;
+  int32 max_per_hour = 3;
+}
+
+message SetAgentLimitsResponse {
+  Agent agent = 1;
+}
 
 message IssueTokenRequest {
   string agent_id = 1;

@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file mandate/v1/proposals.proto.
  */
 export const file_mandate_v1_proposals: GenFile = /*@__PURE__*/
-  fileDesc("ChptYW5kYXRlL3YxL3Byb3Bvc2Fscy5wcm90bxIKbWFuZGF0ZS52MSKJAQoORXhlY3V0aW9uQmFzaXMSEgoKbWFuZGF0ZV9pZBgBIAEoCRISCgpwb2xpY3lfcmVmGAIgASgJEhAKCG1heF9yaXNrGAMgASgJEhQKDGJ1ZGdldF91bml0cxgEIAEoAxITCgtzcGVudF91bml0cxgFIAEoAxISCgpjb3N0X3VuaXRzGAYgASgDIuUBCghEZWxpdmVyeRIKCgJpZBgBIAEoCRIOCgZzdGF0dXMYAiABKAkSEAoIYXR0ZW1wdHMYAyABKAUSCwoDdXJsGAQgASgJEhIKCmxhc3RfZXJyb3IYBSABKAkSMAoMZGVsaXZlcmVkX2F0GAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBItCglmYWlsZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhMKC3Jlc3VsdF9qc29uGAggASgJEhQKDG1heF9hdHRlbXB0cxgJIAEoBSImChhSZWRlbGl2ZXJQcm9wb3NhbFJlcXVlc3QSCgoCaWQYASABKAkiQwoZUmVkZWxpdmVyUHJvcG9zYWxSZXNwb25zZRImCghwcm9wb3NhbBgBIAEoCzIULm1hbmRhdGUudjEuUHJvcG9zYWwihQQKCFByb3Bvc2FsEgoKAmlkGAEgASgJEhAKCGFnZW50X2lkGAIgASgJEhIKCmFnZW50X25hbWUYAyABKAkSDgoGcnVuX2lkGAQgASgJEg4KBmFjdGlvbhgFIAEoCRIMCgRyaXNrGAYgASgJEg0KBXRpdGxlGAcgASgJEhQKDHBheWxvYWRfanNvbhgIIAEoCRISCgpjb3N0X3VuaXRzGAkgASgDEg0KBWZsYWdzGAogAygJEg4KBnN0YXR1cxgLIAEoCRIOCgZlZGl0ZWQYDCABKAgSEgoKZGVjaWRlZF9ieRgNIAEoCRIuCgpkZWNpZGVkX2F0GA4gASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIVCg1kZWNpc2lvbl9ub3RlGA8gASgJEi4KCmNyZWF0ZWRfYXQYECABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEjMKD2V4ZWN1dGlvbl9iYXNpcxgRIAEoCzIaLm1hbmRhdGUudjEuRXhlY3V0aW9uQmFzaXMSEwoLc2tpcF9yZWFzb24YEiABKAkSJgoIZGVsaXZlcnkYEyABKAsyFC5tYW5kYXRlLnYxLkRlbGl2ZXJ5Eh0KFXByb3Bvc2VkX3BheWxvYWRfanNvbhgUIAEoCRIVCg1hcHByb3ZhbF9yaXNrGBUgASgJIksKFExpc3RQcm9wb3NhbHNSZXF1ZXN0Eg4KBnN0YXR1cxgBIAEoCRINCgVsaW1pdBgCIAEoBRIUCgxvbGRlc3RfZmlyc3QYAyABKAgiTwoVTGlzdFByb3Bvc2Fsc1Jlc3BvbnNlEicKCXByb3Bvc2FscxgBIAMoCzIULm1hbmRhdGUudjEuUHJvcG9zYWwSDQoFdG90YWwYAiABKAMiIAoSR2V0UHJvcG9zYWxSZXF1ZXN0EgoKAmlkGAEgASgJImEKE0dldFByb3Bvc2FsUmVzcG9uc2USJgoIcHJvcG9zYWwYASABKAsyFC5tYW5kYXRlLnYxLlByb3Bvc2FsEiIKB2hpc3RvcnkYAiADKAsyES5tYW5kYXRlLnYxLkV2ZW50ImgKFkFwcHJvdmVQcm9wb3NhbFJlcXVlc3QSCgoCaWQYASABKAkSDQoFdGl0bGUYAiABKAkSFAoMcGF5bG9hZF9qc29uGAMgASgJEg8KB2NvbmZpcm0YBCABKAgSDAoEbm90ZRgFIAEoCSJBChdBcHByb3ZlUHJvcG9zYWxSZXNwb25zZRImCghwcm9wb3NhbBgBIAEoCzIULm1hbmRhdGUudjEuUHJvcG9zYWwiMQoVUmVqZWN0UHJvcG9zYWxSZXF1ZXN0EgoKAmlkGAEgASgJEgwKBG5vdGUYAiABKAkiQAoWUmVqZWN0UHJvcG9zYWxSZXNwb25zZRImCghwcm9wb3NhbBgBIAEoCzIULm1hbmRhdGUudjEuUHJvcG9zYWwyzgMKD1Byb3Bvc2FsU2VydmljZRJUCg1MaXN0UHJvcG9zYWxzEiAubWFuZGF0ZS52MS5MaXN0UHJvcG9zYWxzUmVxdWVzdBohLm1hbmRhdGUudjEuTGlzdFByb3Bvc2Fsc1Jlc3BvbnNlEk4KC0dldFByb3Bvc2FsEh4ubWFuZGF0ZS52MS5HZXRQcm9wb3NhbFJlcXVlc3QaHy5tYW5kYXRlLnYxLkdldFByb3Bvc2FsUmVzcG9uc2USWgoPQXBwcm92ZVByb3Bvc2FsEiIubWFuZGF0ZS52MS5BcHByb3ZlUHJvcG9zYWxSZXF1ZXN0GiMubWFuZGF0ZS52MS5BcHByb3ZlUHJvcG9zYWxSZXNwb25zZRJXCg5SZWplY3RQcm9wb3NhbBIhLm1hbmRhdGUudjEuUmVqZWN0UHJvcG9zYWxSZXF1ZXN0GiIubWFuZGF0ZS52MS5SZWplY3RQcm9wb3NhbFJlc3BvbnNlEmAKEVJlZGVsaXZlclByb3Bvc2FsEiQubWFuZGF0ZS52MS5SZWRlbGl2ZXJQcm9wb3NhbFJlcXVlc3QaJS5tYW5kYXRlLnYxLlJlZGVsaXZlclByb3Bvc2FsUmVzcG9uc2VCQ1pBZ2l0aHViLmNvbS9hbmRyZWFzLWxpbmRmYWxrL3BnbWFuZGF0ZS9nZW4vZ28vbWFuZGF0ZS92MTttYW5kYXRldjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_mandate_v1_evidence]);
+  fileDesc("ChptYW5kYXRlL3YxL3Byb3Bvc2Fscy5wcm90bxIKbWFuZGF0ZS52MSKcAQoORXhlY3V0aW9uQmFzaXMSEgoKbWFuZGF0ZV9pZBgBIAEoCRISCgpwb2xpY3lfcmVmGAIgASgJEhAKCG1heF9yaXNrGAMgASgJEhQKDGJ1ZGdldF91bml0cxgEIAEoAxITCgtzcGVudF91bml0cxgFIAEoAxISCgpjb3N0X3VuaXRzGAYgASgDEhEKCWNvbmRpdGlvbhgHIAEoCSLlAQoIRGVsaXZlcnkSCgoCaWQYASABKAkSDgoGc3RhdHVzGAIgASgJEhAKCGF0dGVtcHRzGAMgASgFEgsKA3VybBgEIAEoCRISCgpsYXN0X2Vycm9yGAUgASgJEjAKDGRlbGl2ZXJlZF9hdBgGIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLQoJZmFpbGVkX2F0GAcgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBITCgtyZXN1bHRfanNvbhgIIAEoCRIUCgxtYXhfYXR0ZW1wdHMYCSABKAUiJgoYUmVkZWxpdmVyUHJvcG9zYWxSZXF1ZXN0EgoKAmlkGAEgASgJIkMKGVJlZGVsaXZlclByb3Bvc2FsUmVzcG9uc2USJgoIcHJvcG9zYWwYASABKAsyFC5tYW5kYXRlLnYxLlByb3Bvc2FsIoYFCghQcm9wb3NhbBIKCgJpZBgBIAEoCRIQCghhZ2VudF9pZBgCIAEoCRISCgphZ2VudF9uYW1lGAMgASgJEg4KBnJ1bl9pZBgEIAEoCRIOCgZhY3Rpb24YBSABKAkSDAoEcmlzaxgGIAEoCRINCgV0aXRsZRgHIAEoCRIUCgxwYXlsb2FkX2pzb24YCCABKAkSEgoKY29zdF91bml0cxgJIAEoAxINCgVmbGFncxgKIAMoCRIOCgZzdGF0dXMYCyABKAkSDgoGZWRpdGVkGAwgASgIEhIKCmRlY2lkZWRfYnkYDSABKAkSLgoKZGVjaWRlZF9hdBgOIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASFQoNZGVjaXNpb25fbm90ZRgPIAEoCRIuCgpjcmVhdGVkX2F0GBAgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIzCg9leGVjdXRpb25fYmFzaXMYESABKAsyGi5tYW5kYXRlLnYxLkV4ZWN1dGlvbkJhc2lzEhMKC3NraXBfcmVhc29uGBIgASgJEiYKCGRlbGl2ZXJ5GBMgASgLMhQubWFuZGF0ZS52MS5EZWxpdmVyeRIdChVwcm9wb3NlZF9wYXlsb2FkX2pzb24YFCABKAkSFQoNYXBwcm92YWxfcmlzaxgVIAEoCRIRCglyYXRpb25hbGUYFiABKAkSJgoIZXZpZGVuY2UYFyADKAsyFC5tYW5kYXRlLnYxLkV2aWRlbmNlEioKCnByb3ZlbmFuY2UYGCABKAsyFi5tYW5kYXRlLnYxLlByb3ZlbmFuY2USGAoQdW5tZXRfY29uZGl0aW9ucxgZIAMoCSI4CghFdmlkZW5jZRIOCgZzb3VyY2UYASABKAkSCwoDcmVmGAIgASgJEg8KB3N1bW1hcnkYAyABKAkiWgoKUHJvdmVuYW5jZRIOCgZjbGllbnQYASABKAkSFgoOY2xpZW50X3ZlcnNpb24YAiABKAkSDQoFbW9kZWwYAyABKAkSFQoNYWdlbnRfdmVyc2lvbhgEIAEoCSJLChRMaXN0UHJvcG9zYWxzUmVxdWVzdBIOCgZzdGF0dXMYASABKAkSDQoFbGltaXQYAiABKAUSFAoMb2xkZXN0X2ZpcnN0GAMgASgIIk8KFUxpc3RQcm9wb3NhbHNSZXNwb25zZRInCglwcm9wb3NhbHMYASADKAsyFC5tYW5kYXRlLnYxLlByb3Bvc2FsEg0KBXRvdGFsGAIgASgDIiAKEkdldFByb3Bvc2FsUmVxdWVzdBIKCgJpZBgBIAEoCSJhChNHZXRQcm9wb3NhbFJlc3BvbnNlEiYKCHByb3Bvc2FsGAEgASgLMhQubWFuZGF0ZS52MS5Qcm9wb3NhbBIiCgdoaXN0b3J5GAIgAygLMhEubWFuZGF0ZS52MS5FdmVudCJoChZBcHByb3ZlUHJvcG9zYWxSZXF1ZXN0EgoKAmlkGAEgASgJEg0KBXRpdGxlGAIgASgJEhQKDHBheWxvYWRfanNvbhgDIAEoCRIPCgdjb25maXJtGAQgASgIEgwKBG5vdGUYBSABKAkiQQoXQXBwcm92ZVByb3Bvc2FsUmVzcG9uc2USJgoIcHJvcG9zYWwYASABKAsyFC5tYW5kYXRlLnYxLlByb3Bvc2FsIjEKFVJlamVjdFByb3Bvc2FsUmVxdWVzdBIKCgJpZBgBIAEoCRIMCgRub3RlGAIgASgJIkAKFlJlamVjdFByb3Bvc2FsUmVzcG9uc2USJgoIcHJvcG9zYWwYASABKAsyFC5tYW5kYXRlLnYxLlByb3Bvc2FsMs4DCg9Qcm9wb3NhbFNlcnZpY2USVAoNTGlzdFByb3Bvc2FscxIgLm1hbmRhdGUudjEuTGlzdFByb3Bvc2Fsc1JlcXVlc3QaIS5tYW5kYXRlLnYxLkxpc3RQcm9wb3NhbHNSZXNwb25zZRJOCgtHZXRQcm9wb3NhbBIeLm1hbmRhdGUudjEuR2V0UHJvcG9zYWxSZXF1ZXN0Gh8ubWFuZGF0ZS52MS5HZXRQcm9wb3NhbFJlc3BvbnNlEloKD0FwcHJvdmVQcm9wb3NhbBIiLm1hbmRhdGUudjEuQXBwcm92ZVByb3Bvc2FsUmVxdWVzdBojLm1hbmRhdGUudjEuQXBwcm92ZVByb3Bvc2FsUmVzcG9uc2USVwoOUmVqZWN0UHJvcG9zYWwSIS5tYW5kYXRlLnYxLlJlamVjdFByb3Bvc2FsUmVxdWVzdBoiLm1hbmRhdGUudjEuUmVqZWN0UHJvcG9zYWxSZXNwb25zZRJgChFSZWRlbGl2ZXJQcm9wb3NhbBIkLm1hbmRhdGUudjEuUmVkZWxpdmVyUHJvcG9zYWxSZXF1ZXN0GiUubWFuZGF0ZS52MS5SZWRlbGl2ZXJQcm9wb3NhbFJlc3BvbnNlQkNaQWdpdGh1Yi5jb20vYW5kcmVhcy1saW5kZmFsay9wZ21hbmRhdGUvZ2VuL2dvL21hbmRhdGUvdjE7bWFuZGF0ZXYxYgZwcm90bzM", [file_google_protobuf_timestamp, file_mandate_v1_evidence]);
 
 /**
  * @generated from message mandate.v1.ExecutionBasis
@@ -49,6 +49,13 @@ export type ExecutionBasis = Message<"mandate.v1.ExecutionBasis"> & {
    * @generated from field: int64 cost_units = 6;
    */
   costUnits: bigint;
+
+  /**
+   * The mandate's condition, which held for the payload; empty when it has none.
+   *
+   * @generated from field: string condition = 7;
+   */
+  condition: string;
 };
 
 /**
@@ -270,6 +277,34 @@ export type Proposal = Message<"mandate.v1.Proposal"> & {
    * @generated from field: string approval_risk = 21;
    */
   approvalRisk: string;
+
+  /**
+   * The agent's account: why it proposes this, what it looked at, and who
+   * wrote it. As the agent gave it, never edited. Empty for a proposal made
+   * before rationales existed.
+   *
+   * @generated from field: string rationale = 22;
+   */
+  rationale: string;
+
+  /**
+   * @generated from field: repeated mandate.v1.Evidence evidence = 23;
+   */
+  evidence: Evidence[];
+
+  /**
+   * @generated from field: mandate.v1.Provenance provenance = 24;
+   */
+  provenance?: Provenance | undefined;
+
+  /**
+   * For a waiting proposal read on its own, left for a person because no
+   * mandate's condition held: what in the payload stood in the way, per
+   * mandate, as the mandates are now.
+   *
+   * @generated from field: repeated string unmet_conditions = 25;
+   */
+  unmetConditions: string[];
 };
 
 /**
@@ -278,6 +313,70 @@ export type Proposal = Message<"mandate.v1.Proposal"> & {
  */
 export const ProposalSchema: GenMessage<Proposal> = /*@__PURE__*/
   messageDesc(file_mandate_v1_proposals, 4);
+
+/**
+ * One thing the agent says it looked at. A claim for a person to check.
+ *
+ * @generated from message mandate.v1.Evidence
+ */
+export type Evidence = Message<"mandate.v1.Evidence"> & {
+  /**
+   * @generated from field: string source = 1;
+   */
+  source: string;
+
+  /**
+   * @generated from field: string ref = 2;
+   */
+  ref: string;
+
+  /**
+   * @generated from field: string summary = 3;
+   */
+  summary: string;
+};
+
+/**
+ * Describes the message mandate.v1.Evidence.
+ * Use `create(EvidenceSchema)` to create a new message.
+ */
+export const EvidenceSchema: GenMessage<Evidence> = /*@__PURE__*/
+  messageDesc(file_mandate_v1_proposals, 5);
+
+/**
+ * Who wrote a proposal: the MCP client as it introduced itself, and the
+ * model and the agent's version as the agent states them.
+ *
+ * @generated from message mandate.v1.Provenance
+ */
+export type Provenance = Message<"mandate.v1.Provenance"> & {
+  /**
+   * @generated from field: string client = 1;
+   */
+  client: string;
+
+  /**
+   * @generated from field: string client_version = 2;
+   */
+  clientVersion: string;
+
+  /**
+   * @generated from field: string model = 3;
+   */
+  model: string;
+
+  /**
+   * @generated from field: string agent_version = 4;
+   */
+  agentVersion: string;
+};
+
+/**
+ * Describes the message mandate.v1.Provenance.
+ * Use `create(ProvenanceSchema)` to create a new message.
+ */
+export const ProvenanceSchema: GenMessage<Provenance> = /*@__PURE__*/
+  messageDesc(file_mandate_v1_proposals, 6);
 
 /**
  * @generated from message mandate.v1.ListProposalsRequest
@@ -306,7 +405,7 @@ export type ListProposalsRequest = Message<"mandate.v1.ListProposalsRequest"> & 
  * Use `create(ListProposalsRequestSchema)` to create a new message.
  */
 export const ListProposalsRequestSchema: GenMessage<ListProposalsRequest> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_proposals, 5);
+  messageDesc(file_mandate_v1_proposals, 7);
 
 /**
  * @generated from message mandate.v1.ListProposalsResponse
@@ -330,7 +429,7 @@ export type ListProposalsResponse = Message<"mandate.v1.ListProposalsResponse"> 
  * Use `create(ListProposalsResponseSchema)` to create a new message.
  */
 export const ListProposalsResponseSchema: GenMessage<ListProposalsResponse> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_proposals, 6);
+  messageDesc(file_mandate_v1_proposals, 8);
 
 /**
  * @generated from message mandate.v1.GetProposalRequest
@@ -347,7 +446,7 @@ export type GetProposalRequest = Message<"mandate.v1.GetProposalRequest"> & {
  * Use `create(GetProposalRequestSchema)` to create a new message.
  */
 export const GetProposalRequestSchema: GenMessage<GetProposalRequest> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_proposals, 7);
+  messageDesc(file_mandate_v1_proposals, 9);
 
 /**
  * @generated from message mandate.v1.GetProposalResponse
@@ -369,7 +468,7 @@ export type GetProposalResponse = Message<"mandate.v1.GetProposalResponse"> & {
  * Use `create(GetProposalResponseSchema)` to create a new message.
  */
 export const GetProposalResponseSchema: GenMessage<GetProposalResponse> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_proposals, 8);
+  messageDesc(file_mandate_v1_proposals, 10);
 
 /**
  * @generated from message mandate.v1.ApproveProposalRequest
@@ -408,7 +507,7 @@ export type ApproveProposalRequest = Message<"mandate.v1.ApproveProposalRequest"
  * Use `create(ApproveProposalRequestSchema)` to create a new message.
  */
 export const ApproveProposalRequestSchema: GenMessage<ApproveProposalRequest> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_proposals, 9);
+  messageDesc(file_mandate_v1_proposals, 11);
 
 /**
  * @generated from message mandate.v1.ApproveProposalResponse
@@ -425,7 +524,7 @@ export type ApproveProposalResponse = Message<"mandate.v1.ApproveProposalRespons
  * Use `create(ApproveProposalResponseSchema)` to create a new message.
  */
 export const ApproveProposalResponseSchema: GenMessage<ApproveProposalResponse> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_proposals, 10);
+  messageDesc(file_mandate_v1_proposals, 12);
 
 /**
  * @generated from message mandate.v1.RejectProposalRequest
@@ -447,7 +546,7 @@ export type RejectProposalRequest = Message<"mandate.v1.RejectProposalRequest"> 
  * Use `create(RejectProposalRequestSchema)` to create a new message.
  */
 export const RejectProposalRequestSchema: GenMessage<RejectProposalRequest> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_proposals, 11);
+  messageDesc(file_mandate_v1_proposals, 13);
 
 /**
  * @generated from message mandate.v1.RejectProposalResponse
@@ -464,7 +563,7 @@ export type RejectProposalResponse = Message<"mandate.v1.RejectProposalResponse"
  * Use `create(RejectProposalResponseSchema)` to create a new message.
  */
 export const RejectProposalResponseSchema: GenMessage<RejectProposalResponse> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_proposals, 12);
+  messageDesc(file_mandate_v1_proposals, 14);
 
 /**
  * @generated from service mandate.v1.ProposalService

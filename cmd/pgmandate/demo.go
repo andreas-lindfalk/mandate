@@ -44,7 +44,7 @@ func Demo(ctx context.Context, appUrl, receiverAddr string, out io.Writer) error
 	}
 	defer pool.Close()
 	queue := jobs.NewQueue(pool)
-	kernel := newKernel(pool, queue, true)
+	kernel := newKernel(pool, queue, true, "")
 	if err := queue.Init(2); err != nil {
 		return err
 	}
@@ -336,6 +336,9 @@ func (d *demo) proposeAs(ctx context.Context, step int, action, title string, pa
 	}
 	return d.call(ctx, "propose", map[string]any{
 		"action": action, "title": title, "payload": payload, "run_id": d.runId, "idempotency_key": fmt.Sprintf("%s:%d", d.runId, step),
+		"rationale": "The demo's helpdesk agent read the request and proposes this step: " + title + ".",
+		"evidence":  []map[string]string{{"source": "demo script", "ref": fmt.Sprintf("%s:%d", d.runId, step), "summary": "A scripted step of the demo, not an investigation."}},
+		"model":     "scripted", "agent_version": "demo-1",
 	})
 }
 

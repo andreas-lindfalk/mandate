@@ -29,3 +29,6 @@ UPDATE mandate.agent_tokens SET revoked_at = now() WHERE id = @id AND revoked_at
 -- name: TouchToken :exec
 UPDATE mandate.agent_tokens SET last_used_at = now()
 WHERE id = @id AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute');
+
+-- name: SetAgentLimits :execrows
+UPDATE mandate.agents SET max_per_minute = @max_per_minute, max_per_hour = @max_per_hour WHERE id = @id AND revoked_at IS NULL;

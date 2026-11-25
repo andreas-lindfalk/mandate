@@ -23,13 +23,15 @@ const (
 )
 
 type ExecutionBasis struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MandateId     string                 `protobuf:"bytes,1,opt,name=mandate_id,json=mandateId,proto3" json:"mandate_id,omitempty"`
-	PolicyRef     string                 `protobuf:"bytes,2,opt,name=policy_ref,json=policyRef,proto3" json:"policy_ref,omitempty"`
-	MaxRisk       string                 `protobuf:"bytes,3,opt,name=max_risk,json=maxRisk,proto3" json:"max_risk,omitempty"`
-	BudgetUnits   int64                  `protobuf:"varint,4,opt,name=budget_units,json=budgetUnits,proto3" json:"budget_units,omitempty"`
-	SpentUnits    int64                  `protobuf:"varint,5,opt,name=spent_units,json=spentUnits,proto3" json:"spent_units,omitempty"`
-	CostUnits     int64                  `protobuf:"varint,6,opt,name=cost_units,json=costUnits,proto3" json:"cost_units,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	MandateId   string                 `protobuf:"bytes,1,opt,name=mandate_id,json=mandateId,proto3" json:"mandate_id,omitempty"`
+	PolicyRef   string                 `protobuf:"bytes,2,opt,name=policy_ref,json=policyRef,proto3" json:"policy_ref,omitempty"`
+	MaxRisk     string                 `protobuf:"bytes,3,opt,name=max_risk,json=maxRisk,proto3" json:"max_risk,omitempty"`
+	BudgetUnits int64                  `protobuf:"varint,4,opt,name=budget_units,json=budgetUnits,proto3" json:"budget_units,omitempty"`
+	SpentUnits  int64                  `protobuf:"varint,5,opt,name=spent_units,json=spentUnits,proto3" json:"spent_units,omitempty"`
+	CostUnits   int64                  `protobuf:"varint,6,opt,name=cost_units,json=costUnits,proto3" json:"cost_units,omitempty"`
+	// The mandate's condition, which held for the payload; empty when it has none.
+	Condition     string `protobuf:"bytes,7,opt,name=condition,proto3" json:"condition,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -104,6 +106,13 @@ func (x *ExecutionBasis) GetCostUnits() int64 {
 		return x.CostUnits
 	}
 	return 0
+}
+
+func (x *ExecutionBasis) GetCondition() string {
+	if x != nil {
+		return x.Condition
+	}
+	return ""
 }
 
 type Delivery struct {
@@ -332,9 +341,19 @@ type Proposal struct {
 	// For a waiting proposal read on its own: the risk an approval of it
 	// would run at, under the action as it is now. Empty when the action is
 	// gone and it can only be rejected.
-	ApprovalRisk  string `protobuf:"bytes,21,opt,name=approval_risk,json=approvalRisk,proto3" json:"approval_risk,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ApprovalRisk string `protobuf:"bytes,21,opt,name=approval_risk,json=approvalRisk,proto3" json:"approval_risk,omitempty"`
+	// The agent's account: why it proposes this, what it looked at, and who
+	// wrote it. As the agent gave it, never edited. Empty for a proposal made
+	// before rationales existed.
+	Rationale  string      `protobuf:"bytes,22,opt,name=rationale,proto3" json:"rationale,omitempty"`
+	Evidence   []*Evidence `protobuf:"bytes,23,rep,name=evidence,proto3" json:"evidence,omitempty"`
+	Provenance *Provenance `protobuf:"bytes,24,opt,name=provenance,proto3" json:"provenance,omitempty"`
+	// For a waiting proposal read on its own, left for a person because no
+	// mandate's condition held: what in the payload stood in the way, per
+	// mandate, as the mandates are now.
+	UnmetConditions []string `protobuf:"bytes,25,rep,name=unmet_conditions,json=unmetConditions,proto3" json:"unmet_conditions,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Proposal) Reset() {
@@ -514,6 +533,165 @@ func (x *Proposal) GetApprovalRisk() string {
 	return ""
 }
 
+func (x *Proposal) GetRationale() string {
+	if x != nil {
+		return x.Rationale
+	}
+	return ""
+}
+
+func (x *Proposal) GetEvidence() []*Evidence {
+	if x != nil {
+		return x.Evidence
+	}
+	return nil
+}
+
+func (x *Proposal) GetProvenance() *Provenance {
+	if x != nil {
+		return x.Provenance
+	}
+	return nil
+}
+
+func (x *Proposal) GetUnmetConditions() []string {
+	if x != nil {
+		return x.UnmetConditions
+	}
+	return nil
+}
+
+// One thing the agent says it looked at. A claim for a person to check.
+type Evidence struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Source        string                 `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	Ref           string                 `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
+	Summary       string                 `protobuf:"bytes,3,opt,name=summary,proto3" json:"summary,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Evidence) Reset() {
+	*x = Evidence{}
+	mi := &file_mandate_v1_proposals_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Evidence) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Evidence) ProtoMessage() {}
+
+func (x *Evidence) ProtoReflect() protoreflect.Message {
+	mi := &file_mandate_v1_proposals_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Evidence.ProtoReflect.Descriptor instead.
+func (*Evidence) Descriptor() ([]byte, []int) {
+	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Evidence) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *Evidence) GetRef() string {
+	if x != nil {
+		return x.Ref
+	}
+	return ""
+}
+
+func (x *Evidence) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+// Who wrote a proposal: the MCP client as it introduced itself, and the
+// model and the agent's version as the agent states them.
+type Provenance struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Client        string                 `protobuf:"bytes,1,opt,name=client,proto3" json:"client,omitempty"`
+	ClientVersion string                 `protobuf:"bytes,2,opt,name=client_version,json=clientVersion,proto3" json:"client_version,omitempty"`
+	Model         string                 `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
+	AgentVersion  string                 `protobuf:"bytes,4,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Provenance) Reset() {
+	*x = Provenance{}
+	mi := &file_mandate_v1_proposals_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Provenance) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Provenance) ProtoMessage() {}
+
+func (x *Provenance) ProtoReflect() protoreflect.Message {
+	mi := &file_mandate_v1_proposals_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Provenance.ProtoReflect.Descriptor instead.
+func (*Provenance) Descriptor() ([]byte, []int) {
+	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *Provenance) GetClient() string {
+	if x != nil {
+		return x.Client
+	}
+	return ""
+}
+
+func (x *Provenance) GetClientVersion() string {
+	if x != nil {
+		return x.ClientVersion
+	}
+	return ""
+}
+
+func (x *Provenance) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *Provenance) GetAgentVersion() string {
+	if x != nil {
+		return x.AgentVersion
+	}
+	return ""
+}
+
 type ListProposalsRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Status string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
@@ -526,7 +704,7 @@ type ListProposalsRequest struct {
 
 func (x *ListProposalsRequest) Reset() {
 	*x = ListProposalsRequest{}
-	mi := &file_mandate_v1_proposals_proto_msgTypes[5]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -538,7 +716,7 @@ func (x *ListProposalsRequest) String() string {
 func (*ListProposalsRequest) ProtoMessage() {}
 
 func (x *ListProposalsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_proposals_proto_msgTypes[5]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -551,7 +729,7 @@ func (x *ListProposalsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProposalsRequest.ProtoReflect.Descriptor instead.
 func (*ListProposalsRequest) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{5}
+	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListProposalsRequest) GetStatus() string {
@@ -586,7 +764,7 @@ type ListProposalsResponse struct {
 
 func (x *ListProposalsResponse) Reset() {
 	*x = ListProposalsResponse{}
-	mi := &file_mandate_v1_proposals_proto_msgTypes[6]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -598,7 +776,7 @@ func (x *ListProposalsResponse) String() string {
 func (*ListProposalsResponse) ProtoMessage() {}
 
 func (x *ListProposalsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_proposals_proto_msgTypes[6]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -611,7 +789,7 @@ func (x *ListProposalsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProposalsResponse.ProtoReflect.Descriptor instead.
 func (*ListProposalsResponse) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{6}
+	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListProposalsResponse) GetProposals() []*Proposal {
@@ -637,7 +815,7 @@ type GetProposalRequest struct {
 
 func (x *GetProposalRequest) Reset() {
 	*x = GetProposalRequest{}
-	mi := &file_mandate_v1_proposals_proto_msgTypes[7]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -649,7 +827,7 @@ func (x *GetProposalRequest) String() string {
 func (*GetProposalRequest) ProtoMessage() {}
 
 func (x *GetProposalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_proposals_proto_msgTypes[7]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -662,7 +840,7 @@ func (x *GetProposalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProposalRequest.ProtoReflect.Descriptor instead.
 func (*GetProposalRequest) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{7}
+	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetProposalRequest) GetId() string {
@@ -682,7 +860,7 @@ type GetProposalResponse struct {
 
 func (x *GetProposalResponse) Reset() {
 	*x = GetProposalResponse{}
-	mi := &file_mandate_v1_proposals_proto_msgTypes[8]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -694,7 +872,7 @@ func (x *GetProposalResponse) String() string {
 func (*GetProposalResponse) ProtoMessage() {}
 
 func (x *GetProposalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_proposals_proto_msgTypes[8]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -707,7 +885,7 @@ func (x *GetProposalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProposalResponse.ProtoReflect.Descriptor instead.
 func (*GetProposalResponse) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{8}
+	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetProposalResponse) GetProposal() *Proposal {
@@ -738,7 +916,7 @@ type ApproveProposalRequest struct {
 
 func (x *ApproveProposalRequest) Reset() {
 	*x = ApproveProposalRequest{}
-	mi := &file_mandate_v1_proposals_proto_msgTypes[9]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -750,7 +928,7 @@ func (x *ApproveProposalRequest) String() string {
 func (*ApproveProposalRequest) ProtoMessage() {}
 
 func (x *ApproveProposalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_proposals_proto_msgTypes[9]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -763,7 +941,7 @@ func (x *ApproveProposalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveProposalRequest.ProtoReflect.Descriptor instead.
 func (*ApproveProposalRequest) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{9}
+	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ApproveProposalRequest) GetId() string {
@@ -810,7 +988,7 @@ type ApproveProposalResponse struct {
 
 func (x *ApproveProposalResponse) Reset() {
 	*x = ApproveProposalResponse{}
-	mi := &file_mandate_v1_proposals_proto_msgTypes[10]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -822,7 +1000,7 @@ func (x *ApproveProposalResponse) String() string {
 func (*ApproveProposalResponse) ProtoMessage() {}
 
 func (x *ApproveProposalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_proposals_proto_msgTypes[10]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -835,7 +1013,7 @@ func (x *ApproveProposalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveProposalResponse.ProtoReflect.Descriptor instead.
 func (*ApproveProposalResponse) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{10}
+	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ApproveProposalResponse) GetProposal() *Proposal {
@@ -855,7 +1033,7 @@ type RejectProposalRequest struct {
 
 func (x *RejectProposalRequest) Reset() {
 	*x = RejectProposalRequest{}
-	mi := &file_mandate_v1_proposals_proto_msgTypes[11]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -867,7 +1045,7 @@ func (x *RejectProposalRequest) String() string {
 func (*RejectProposalRequest) ProtoMessage() {}
 
 func (x *RejectProposalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_proposals_proto_msgTypes[11]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -880,7 +1058,7 @@ func (x *RejectProposalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RejectProposalRequest.ProtoReflect.Descriptor instead.
 func (*RejectProposalRequest) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{11}
+	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RejectProposalRequest) GetId() string {
@@ -906,7 +1084,7 @@ type RejectProposalResponse struct {
 
 func (x *RejectProposalResponse) Reset() {
 	*x = RejectProposalResponse{}
-	mi := &file_mandate_v1_proposals_proto_msgTypes[12]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -918,7 +1096,7 @@ func (x *RejectProposalResponse) String() string {
 func (*RejectProposalResponse) ProtoMessage() {}
 
 func (x *RejectProposalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mandate_v1_proposals_proto_msgTypes[12]
+	mi := &file_mandate_v1_proposals_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -931,7 +1109,7 @@ func (x *RejectProposalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RejectProposalResponse.ProtoReflect.Descriptor instead.
 func (*RejectProposalResponse) Descriptor() ([]byte, []int) {
-	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{12}
+	return file_mandate_v1_proposals_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RejectProposalResponse) GetProposal() *Proposal {
@@ -946,7 +1124,7 @@ var File_mandate_v1_proposals_proto protoreflect.FileDescriptor
 const file_mandate_v1_proposals_proto_rawDesc = "" +
 	"\n" +
 	"\x1amandate/v1/proposals.proto\x12\n" +
-	"mandate.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x19mandate/v1/evidence.proto\"\xcc\x01\n" +
+	"mandate.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x19mandate/v1/evidence.proto\"\xea\x01\n" +
 	"\x0eExecutionBasis\x12\x1d\n" +
 	"\n" +
 	"mandate_id\x18\x01 \x01(\tR\tmandateId\x12\x1d\n" +
@@ -957,7 +1135,8 @@ const file_mandate_v1_proposals_proto_rawDesc = "" +
 	"\vspent_units\x18\x05 \x01(\x03R\n" +
 	"spentUnits\x12\x1d\n" +
 	"\n" +
-	"cost_units\x18\x06 \x01(\x03R\tcostUnits\"\xbb\x02\n" +
+	"cost_units\x18\x06 \x01(\x03R\tcostUnits\x12\x1c\n" +
+	"\tcondition\x18\a \x01(\tR\tcondition\"\xbb\x02\n" +
 	"\bDelivery\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1a\n" +
@@ -973,7 +1152,7 @@ const file_mandate_v1_proposals_proto_rawDesc = "" +
 	"\x18RedeliverProposalRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"M\n" +
 	"\x19RedeliverProposalResponse\x120\n" +
-	"\bproposal\x18\x01 \x01(\v2\x14.mandate.v1.ProposalR\bproposal\"\xe0\x05\n" +
+	"\bproposal\x18\x01 \x01(\v2\x14.mandate.v1.ProposalR\bproposal\"\x93\a\n" +
 	"\bProposal\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12\x1d\n" +
@@ -1002,7 +1181,23 @@ const file_mandate_v1_proposals_proto_rawDesc = "" +
 	"skipReason\x120\n" +
 	"\bdelivery\x18\x13 \x01(\v2\x14.mandate.v1.DeliveryR\bdelivery\x122\n" +
 	"\x15proposed_payload_json\x18\x14 \x01(\tR\x13proposedPayloadJson\x12#\n" +
-	"\rapproval_risk\x18\x15 \x01(\tR\fapprovalRisk\"g\n" +
+	"\rapproval_risk\x18\x15 \x01(\tR\fapprovalRisk\x12\x1c\n" +
+	"\trationale\x18\x16 \x01(\tR\trationale\x120\n" +
+	"\bevidence\x18\x17 \x03(\v2\x14.mandate.v1.EvidenceR\bevidence\x126\n" +
+	"\n" +
+	"provenance\x18\x18 \x01(\v2\x16.mandate.v1.ProvenanceR\n" +
+	"provenance\x12)\n" +
+	"\x10unmet_conditions\x18\x19 \x03(\tR\x0funmetConditions\"N\n" +
+	"\bEvidence\x12\x16\n" +
+	"\x06source\x18\x01 \x01(\tR\x06source\x12\x10\n" +
+	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x18\n" +
+	"\asummary\x18\x03 \x01(\tR\asummary\"\x86\x01\n" +
+	"\n" +
+	"Provenance\x12\x16\n" +
+	"\x06client\x18\x01 \x01(\tR\x06client\x12%\n" +
+	"\x0eclient_version\x18\x02 \x01(\tR\rclientVersion\x12\x14\n" +
+	"\x05model\x18\x03 \x01(\tR\x05model\x12#\n" +
+	"\ragent_version\x18\x04 \x01(\tR\fagentVersion\"g\n" +
 	"\x14ListProposalsRequest\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12!\n" +
@@ -1047,52 +1242,56 @@ func file_mandate_v1_proposals_proto_rawDescGZIP() []byte {
 	return file_mandate_v1_proposals_proto_rawDescData
 }
 
-var file_mandate_v1_proposals_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_mandate_v1_proposals_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_mandate_v1_proposals_proto_goTypes = []any{
 	(*ExecutionBasis)(nil),            // 0: mandate.v1.ExecutionBasis
 	(*Delivery)(nil),                  // 1: mandate.v1.Delivery
 	(*RedeliverProposalRequest)(nil),  // 2: mandate.v1.RedeliverProposalRequest
 	(*RedeliverProposalResponse)(nil), // 3: mandate.v1.RedeliverProposalResponse
 	(*Proposal)(nil),                  // 4: mandate.v1.Proposal
-	(*ListProposalsRequest)(nil),      // 5: mandate.v1.ListProposalsRequest
-	(*ListProposalsResponse)(nil),     // 6: mandate.v1.ListProposalsResponse
-	(*GetProposalRequest)(nil),        // 7: mandate.v1.GetProposalRequest
-	(*GetProposalResponse)(nil),       // 8: mandate.v1.GetProposalResponse
-	(*ApproveProposalRequest)(nil),    // 9: mandate.v1.ApproveProposalRequest
-	(*ApproveProposalResponse)(nil),   // 10: mandate.v1.ApproveProposalResponse
-	(*RejectProposalRequest)(nil),     // 11: mandate.v1.RejectProposalRequest
-	(*RejectProposalResponse)(nil),    // 12: mandate.v1.RejectProposalResponse
-	(*timestamppb.Timestamp)(nil),     // 13: google.protobuf.Timestamp
-	(*Event)(nil),                     // 14: mandate.v1.Event
+	(*Evidence)(nil),                  // 5: mandate.v1.Evidence
+	(*Provenance)(nil),                // 6: mandate.v1.Provenance
+	(*ListProposalsRequest)(nil),      // 7: mandate.v1.ListProposalsRequest
+	(*ListProposalsResponse)(nil),     // 8: mandate.v1.ListProposalsResponse
+	(*GetProposalRequest)(nil),        // 9: mandate.v1.GetProposalRequest
+	(*GetProposalResponse)(nil),       // 10: mandate.v1.GetProposalResponse
+	(*ApproveProposalRequest)(nil),    // 11: mandate.v1.ApproveProposalRequest
+	(*ApproveProposalResponse)(nil),   // 12: mandate.v1.ApproveProposalResponse
+	(*RejectProposalRequest)(nil),     // 13: mandate.v1.RejectProposalRequest
+	(*RejectProposalResponse)(nil),    // 14: mandate.v1.RejectProposalResponse
+	(*timestamppb.Timestamp)(nil),     // 15: google.protobuf.Timestamp
+	(*Event)(nil),                     // 16: mandate.v1.Event
 }
 var file_mandate_v1_proposals_proto_depIdxs = []int32{
-	13, // 0: mandate.v1.Delivery.delivered_at:type_name -> google.protobuf.Timestamp
-	13, // 1: mandate.v1.Delivery.failed_at:type_name -> google.protobuf.Timestamp
+	15, // 0: mandate.v1.Delivery.delivered_at:type_name -> google.protobuf.Timestamp
+	15, // 1: mandate.v1.Delivery.failed_at:type_name -> google.protobuf.Timestamp
 	4,  // 2: mandate.v1.RedeliverProposalResponse.proposal:type_name -> mandate.v1.Proposal
-	13, // 3: mandate.v1.Proposal.decided_at:type_name -> google.protobuf.Timestamp
-	13, // 4: mandate.v1.Proposal.created_at:type_name -> google.protobuf.Timestamp
+	15, // 3: mandate.v1.Proposal.decided_at:type_name -> google.protobuf.Timestamp
+	15, // 4: mandate.v1.Proposal.created_at:type_name -> google.protobuf.Timestamp
 	0,  // 5: mandate.v1.Proposal.execution_basis:type_name -> mandate.v1.ExecutionBasis
 	1,  // 6: mandate.v1.Proposal.delivery:type_name -> mandate.v1.Delivery
-	4,  // 7: mandate.v1.ListProposalsResponse.proposals:type_name -> mandate.v1.Proposal
-	4,  // 8: mandate.v1.GetProposalResponse.proposal:type_name -> mandate.v1.Proposal
-	14, // 9: mandate.v1.GetProposalResponse.history:type_name -> mandate.v1.Event
-	4,  // 10: mandate.v1.ApproveProposalResponse.proposal:type_name -> mandate.v1.Proposal
-	4,  // 11: mandate.v1.RejectProposalResponse.proposal:type_name -> mandate.v1.Proposal
-	5,  // 12: mandate.v1.ProposalService.ListProposals:input_type -> mandate.v1.ListProposalsRequest
-	7,  // 13: mandate.v1.ProposalService.GetProposal:input_type -> mandate.v1.GetProposalRequest
-	9,  // 14: mandate.v1.ProposalService.ApproveProposal:input_type -> mandate.v1.ApproveProposalRequest
-	11, // 15: mandate.v1.ProposalService.RejectProposal:input_type -> mandate.v1.RejectProposalRequest
-	2,  // 16: mandate.v1.ProposalService.RedeliverProposal:input_type -> mandate.v1.RedeliverProposalRequest
-	6,  // 17: mandate.v1.ProposalService.ListProposals:output_type -> mandate.v1.ListProposalsResponse
-	8,  // 18: mandate.v1.ProposalService.GetProposal:output_type -> mandate.v1.GetProposalResponse
-	10, // 19: mandate.v1.ProposalService.ApproveProposal:output_type -> mandate.v1.ApproveProposalResponse
-	12, // 20: mandate.v1.ProposalService.RejectProposal:output_type -> mandate.v1.RejectProposalResponse
-	3,  // 21: mandate.v1.ProposalService.RedeliverProposal:output_type -> mandate.v1.RedeliverProposalResponse
-	17, // [17:22] is the sub-list for method output_type
-	12, // [12:17] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	5,  // 7: mandate.v1.Proposal.evidence:type_name -> mandate.v1.Evidence
+	6,  // 8: mandate.v1.Proposal.provenance:type_name -> mandate.v1.Provenance
+	4,  // 9: mandate.v1.ListProposalsResponse.proposals:type_name -> mandate.v1.Proposal
+	4,  // 10: mandate.v1.GetProposalResponse.proposal:type_name -> mandate.v1.Proposal
+	16, // 11: mandate.v1.GetProposalResponse.history:type_name -> mandate.v1.Event
+	4,  // 12: mandate.v1.ApproveProposalResponse.proposal:type_name -> mandate.v1.Proposal
+	4,  // 13: mandate.v1.RejectProposalResponse.proposal:type_name -> mandate.v1.Proposal
+	7,  // 14: mandate.v1.ProposalService.ListProposals:input_type -> mandate.v1.ListProposalsRequest
+	9,  // 15: mandate.v1.ProposalService.GetProposal:input_type -> mandate.v1.GetProposalRequest
+	11, // 16: mandate.v1.ProposalService.ApproveProposal:input_type -> mandate.v1.ApproveProposalRequest
+	13, // 17: mandate.v1.ProposalService.RejectProposal:input_type -> mandate.v1.RejectProposalRequest
+	2,  // 18: mandate.v1.ProposalService.RedeliverProposal:input_type -> mandate.v1.RedeliverProposalRequest
+	8,  // 19: mandate.v1.ProposalService.ListProposals:output_type -> mandate.v1.ListProposalsResponse
+	10, // 20: mandate.v1.ProposalService.GetProposal:output_type -> mandate.v1.GetProposalResponse
+	12, // 21: mandate.v1.ProposalService.ApproveProposal:output_type -> mandate.v1.ApproveProposalResponse
+	14, // 22: mandate.v1.ProposalService.RejectProposal:output_type -> mandate.v1.RejectProposalResponse
+	3,  // 23: mandate.v1.ProposalService.RedeliverProposal:output_type -> mandate.v1.RedeliverProposalResponse
+	19, // [19:24] is the sub-list for method output_type
+	14, // [14:19] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_mandate_v1_proposals_proto_init() }
@@ -1107,7 +1306,7 @@ func file_mandate_v1_proposals_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mandate_v1_proposals_proto_rawDesc), len(file_mandate_v1_proposals_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

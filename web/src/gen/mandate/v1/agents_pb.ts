@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file mandate/v1/agents.proto.
  */
 export const file_mandate_v1_agents: GenFile = /*@__PURE__*/
-  fileDesc("ChdtYW5kYXRlL3YxL2FnZW50cy5wcm90bxIKbWFuZGF0ZS52MSKVAQoFQWdlbnQSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRISCgpkZXBhcnRtZW50GAMgASgJEi4KCmNyZWF0ZWRfYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnJldm9rZWRfYXQYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIvUBCgVUb2tlbhIKCgJpZBgBIAEoCRIQCghhZ2VudF9pZBgCIAEoCRIMCgRoaW50GAMgASgJEi4KCmNyZWF0ZWRfYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCmV4cGlyZXNfYXQYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEjAKDGxhc3RfdXNlZF9hdBgGIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoKcmV2b2tlZF9hdBgHIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiEwoRTGlzdEFnZW50c1JlcXVlc3QiNwoSTGlzdEFnZW50c1Jlc3BvbnNlEiEKBmFnZW50cxgBIAMoCzIRLm1hbmRhdGUudjEuQWdlbnQiNgoSQ3JlYXRlQWdlbnRSZXF1ZXN0EgwKBG5hbWUYASABKAkSEgoKZGVwYXJ0bWVudBgCIAEoCSI3ChNDcmVhdGVBZ2VudFJlc3BvbnNlEiAKBWFnZW50GAEgASgLMhEubWFuZGF0ZS52MS5BZ2VudCIgChJSZXZva2VBZ2VudFJlcXVlc3QSCgoCaWQYASABKAkiFQoTUmV2b2tlQWdlbnRSZXNwb25zZSIzChFJc3N1ZVRva2VuUmVxdWVzdBIQCghhZ2VudF9pZBgBIAEoCRIMCgRkYXlzGAIgASgFIkYKEklzc3VlVG9rZW5SZXNwb25zZRIgCgV0b2tlbhgBIAEoCzIRLm1hbmRhdGUudjEuVG9rZW4SDgoGc2VjcmV0GAIgASgJIiUKEUxpc3RUb2tlbnNSZXF1ZXN0EhAKCGFnZW50X2lkGAEgASgJIjcKEkxpc3RUb2tlbnNSZXNwb25zZRIhCgZ0b2tlbnMYASADKAsyES5tYW5kYXRlLnYxLlRva2VuIiAKElJldm9rZVRva2VuUmVxdWVzdBIKCgJpZBgBIAEoCSIVChNSZXZva2VUb2tlblJlc3BvbnNlMuUDCgxBZ2VudFNlcnZpY2USSwoKTGlzdEFnZW50cxIdLm1hbmRhdGUudjEuTGlzdEFnZW50c1JlcXVlc3QaHi5tYW5kYXRlLnYxLkxpc3RBZ2VudHNSZXNwb25zZRJOCgtDcmVhdGVBZ2VudBIeLm1hbmRhdGUudjEuQ3JlYXRlQWdlbnRSZXF1ZXN0Gh8ubWFuZGF0ZS52MS5DcmVhdGVBZ2VudFJlc3BvbnNlEk4KC1Jldm9rZUFnZW50Eh4ubWFuZGF0ZS52MS5SZXZva2VBZ2VudFJlcXVlc3QaHy5tYW5kYXRlLnYxLlJldm9rZUFnZW50UmVzcG9uc2USSwoKSXNzdWVUb2tlbhIdLm1hbmRhdGUudjEuSXNzdWVUb2tlblJlcXVlc3QaHi5tYW5kYXRlLnYxLklzc3VlVG9rZW5SZXNwb25zZRJLCgpMaXN0VG9rZW5zEh0ubWFuZGF0ZS52MS5MaXN0VG9rZW5zUmVxdWVzdBoeLm1hbmRhdGUudjEuTGlzdFRva2Vuc1Jlc3BvbnNlEk4KC1Jldm9rZVRva2VuEh4ubWFuZGF0ZS52MS5SZXZva2VUb2tlblJlcXVlc3QaHy5tYW5kYXRlLnYxLlJldm9rZVRva2VuUmVzcG9uc2VCQ1pBZ2l0aHViLmNvbS9hbmRyZWFzLWxpbmRmYWxrL3BnbWFuZGF0ZS9nZW4vZ28vbWFuZGF0ZS92MTttYW5kYXRldjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
+  fileDesc("ChdtYW5kYXRlL3YxL2FnZW50cy5wcm90bxIKbWFuZGF0ZS52MSLDAQoFQWdlbnQSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRISCgpkZXBhcnRtZW50GAMgASgJEi4KCmNyZWF0ZWRfYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnJldm9rZWRfYXQYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhYKDm1heF9wZXJfbWludXRlGAYgASgFEhQKDG1heF9wZXJfaG91chgHIAEoBSL1AQoFVG9rZW4SCgoCaWQYASABKAkSEAoIYWdlbnRfaWQYAiABKAkSDAoEaGludBgDIAEoCRIuCgpjcmVhdGVkX2F0GAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgpleHBpcmVzX2F0GAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIwCgxsYXN0X3VzZWRfYXQYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnJldm9rZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIhMKEUxpc3RBZ2VudHNSZXF1ZXN0IjcKEkxpc3RBZ2VudHNSZXNwb25zZRIhCgZhZ2VudHMYASADKAsyES5tYW5kYXRlLnYxLkFnZW50IjYKEkNyZWF0ZUFnZW50UmVxdWVzdBIMCgRuYW1lGAEgASgJEhIKCmRlcGFydG1lbnQYAiABKAkiNwoTQ3JlYXRlQWdlbnRSZXNwb25zZRIgCgVhZ2VudBgBIAEoCzIRLm1hbmRhdGUudjEuQWdlbnQiIAoSUmV2b2tlQWdlbnRSZXF1ZXN0EgoKAmlkGAEgASgJIhUKE1Jldm9rZUFnZW50UmVzcG9uc2UiUQoVU2V0QWdlbnRMaW1pdHNSZXF1ZXN0EgoKAmlkGAEgASgJEhYKDm1heF9wZXJfbWludXRlGAIgASgFEhQKDG1heF9wZXJfaG91chgDIAEoBSI6ChZTZXRBZ2VudExpbWl0c1Jlc3BvbnNlEiAKBWFnZW50GAEgASgLMhEubWFuZGF0ZS52MS5BZ2VudCIzChFJc3N1ZVRva2VuUmVxdWVzdBIQCghhZ2VudF9pZBgBIAEoCRIMCgRkYXlzGAIgASgFIkYKEklzc3VlVG9rZW5SZXNwb25zZRIgCgV0b2tlbhgBIAEoCzIRLm1hbmRhdGUudjEuVG9rZW4SDgoGc2VjcmV0GAIgASgJIiUKEUxpc3RUb2tlbnNSZXF1ZXN0EhAKCGFnZW50X2lkGAEgASgJIjcKEkxpc3RUb2tlbnNSZXNwb25zZRIhCgZ0b2tlbnMYASADKAsyES5tYW5kYXRlLnYxLlRva2VuIiAKElJldm9rZVRva2VuUmVxdWVzdBIKCgJpZBgBIAEoCSIVChNSZXZva2VUb2tlblJlc3BvbnNlMr4ECgxBZ2VudFNlcnZpY2USSwoKTGlzdEFnZW50cxIdLm1hbmRhdGUudjEuTGlzdEFnZW50c1JlcXVlc3QaHi5tYW5kYXRlLnYxLkxpc3RBZ2VudHNSZXNwb25zZRJOCgtDcmVhdGVBZ2VudBIeLm1hbmRhdGUudjEuQ3JlYXRlQWdlbnRSZXF1ZXN0Gh8ubWFuZGF0ZS52MS5DcmVhdGVBZ2VudFJlc3BvbnNlEk4KC1Jldm9rZUFnZW50Eh4ubWFuZGF0ZS52MS5SZXZva2VBZ2VudFJlcXVlc3QaHy5tYW5kYXRlLnYxLlJldm9rZUFnZW50UmVzcG9uc2USVwoOU2V0QWdlbnRMaW1pdHMSIS5tYW5kYXRlLnYxLlNldEFnZW50TGltaXRzUmVxdWVzdBoiLm1hbmRhdGUudjEuU2V0QWdlbnRMaW1pdHNSZXNwb25zZRJLCgpJc3N1ZVRva2VuEh0ubWFuZGF0ZS52MS5Jc3N1ZVRva2VuUmVxdWVzdBoeLm1hbmRhdGUudjEuSXNzdWVUb2tlblJlc3BvbnNlEksKCkxpc3RUb2tlbnMSHS5tYW5kYXRlLnYxLkxpc3RUb2tlbnNSZXF1ZXN0Gh4ubWFuZGF0ZS52MS5MaXN0VG9rZW5zUmVzcG9uc2USTgoLUmV2b2tlVG9rZW4SHi5tYW5kYXRlLnYxLlJldm9rZVRva2VuUmVxdWVzdBofLm1hbmRhdGUudjEuUmV2b2tlVG9rZW5SZXNwb25zZUJDWkFnaXRodWIuY29tL2FuZHJlYXMtbGluZGZhbGsvcGdtYW5kYXRlL2dlbi9nby9tYW5kYXRlL3YxO21hbmRhdGV2MWIGcHJvdG8z", [file_google_protobuf_timestamp]);
 
 /**
  * @generated from message mandate.v1.Agent
@@ -42,6 +42,18 @@ export type Agent = Message<"mandate.v1.Agent"> & {
    * @generated from field: google.protobuf.Timestamp revoked_at = 5;
    */
   revokedAt?: Timestamp | undefined;
+
+  /**
+   * How many proposals the agent may make; the database refuses the rest.
+   *
+   * @generated from field: int32 max_per_minute = 6;
+   */
+  maxPerMinute: number;
+
+  /**
+   * @generated from field: int32 max_per_hour = 7;
+   */
+  maxPerHour: number;
 };
 
 /**
@@ -198,6 +210,50 @@ export const RevokeAgentResponseSchema: GenMessage<RevokeAgentResponse> = /*@__P
   messageDesc(file_mandate_v1_agents, 7);
 
 /**
+ * @generated from message mandate.v1.SetAgentLimitsRequest
+ */
+export type SetAgentLimitsRequest = Message<"mandate.v1.SetAgentLimitsRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: int32 max_per_minute = 2;
+   */
+  maxPerMinute: number;
+
+  /**
+   * @generated from field: int32 max_per_hour = 3;
+   */
+  maxPerHour: number;
+};
+
+/**
+ * Describes the message mandate.v1.SetAgentLimitsRequest.
+ * Use `create(SetAgentLimitsRequestSchema)` to create a new message.
+ */
+export const SetAgentLimitsRequestSchema: GenMessage<SetAgentLimitsRequest> = /*@__PURE__*/
+  messageDesc(file_mandate_v1_agents, 8);
+
+/**
+ * @generated from message mandate.v1.SetAgentLimitsResponse
+ */
+export type SetAgentLimitsResponse = Message<"mandate.v1.SetAgentLimitsResponse"> & {
+  /**
+   * @generated from field: mandate.v1.Agent agent = 1;
+   */
+  agent?: Agent | undefined;
+};
+
+/**
+ * Describes the message mandate.v1.SetAgentLimitsResponse.
+ * Use `create(SetAgentLimitsResponseSchema)` to create a new message.
+ */
+export const SetAgentLimitsResponseSchema: GenMessage<SetAgentLimitsResponse> = /*@__PURE__*/
+  messageDesc(file_mandate_v1_agents, 9);
+
+/**
  * @generated from message mandate.v1.IssueTokenRequest
  */
 export type IssueTokenRequest = Message<"mandate.v1.IssueTokenRequest"> & {
@@ -217,7 +273,7 @@ export type IssueTokenRequest = Message<"mandate.v1.IssueTokenRequest"> & {
  * Use `create(IssueTokenRequestSchema)` to create a new message.
  */
 export const IssueTokenRequestSchema: GenMessage<IssueTokenRequest> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_agents, 8);
+  messageDesc(file_mandate_v1_agents, 10);
 
 /**
  * @generated from message mandate.v1.IssueTokenResponse
@@ -239,7 +295,7 @@ export type IssueTokenResponse = Message<"mandate.v1.IssueTokenResponse"> & {
  * Use `create(IssueTokenResponseSchema)` to create a new message.
  */
 export const IssueTokenResponseSchema: GenMessage<IssueTokenResponse> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_agents, 9);
+  messageDesc(file_mandate_v1_agents, 11);
 
 /**
  * @generated from message mandate.v1.ListTokensRequest
@@ -256,7 +312,7 @@ export type ListTokensRequest = Message<"mandate.v1.ListTokensRequest"> & {
  * Use `create(ListTokensRequestSchema)` to create a new message.
  */
 export const ListTokensRequestSchema: GenMessage<ListTokensRequest> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_agents, 10);
+  messageDesc(file_mandate_v1_agents, 12);
 
 /**
  * @generated from message mandate.v1.ListTokensResponse
@@ -273,7 +329,7 @@ export type ListTokensResponse = Message<"mandate.v1.ListTokensResponse"> & {
  * Use `create(ListTokensResponseSchema)` to create a new message.
  */
 export const ListTokensResponseSchema: GenMessage<ListTokensResponse> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_agents, 11);
+  messageDesc(file_mandate_v1_agents, 13);
 
 /**
  * @generated from message mandate.v1.RevokeTokenRequest
@@ -290,7 +346,7 @@ export type RevokeTokenRequest = Message<"mandate.v1.RevokeTokenRequest"> & {
  * Use `create(RevokeTokenRequestSchema)` to create a new message.
  */
 export const RevokeTokenRequestSchema: GenMessage<RevokeTokenRequest> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_agents, 12);
+  messageDesc(file_mandate_v1_agents, 14);
 
 /**
  * @generated from message mandate.v1.RevokeTokenResponse
@@ -303,7 +359,7 @@ export type RevokeTokenResponse = Message<"mandate.v1.RevokeTokenResponse"> & {
  * Use `create(RevokeTokenResponseSchema)` to create a new message.
  */
 export const RevokeTokenResponseSchema: GenMessage<RevokeTokenResponse> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_agents, 13);
+  messageDesc(file_mandate_v1_agents, 15);
 
 /**
  * @generated from service mandate.v1.AgentService
@@ -332,6 +388,14 @@ export const AgentService: GenService<{
     methodKind: "unary";
     input: typeof RevokeAgentRequestSchema;
     output: typeof RevokeAgentResponseSchema;
+  },
+  /**
+   * @generated from rpc mandate.v1.AgentService.SetAgentLimits
+   */
+  setAgentLimits: {
+    methodKind: "unary";
+    input: typeof SetAgentLimitsRequestSchema;
+    output: typeof SetAgentLimitsResponseSchema;
   },
   /**
    * IssueToken returns the secret once; only its hash is stored.

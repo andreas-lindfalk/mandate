@@ -31,7 +31,8 @@ SELECT connector_url FROM mandate.actions
 WHERE key = @key AND connector_kind = 'webhook' AND removed_at IS NULL AND connector_url IS NOT NULL;
 
 -- name: MarkFailed :exec
-UPDATE mandate.deliveries SET status = 'failed', attempts = attempts + 1, last_status = sqlc.narg('last_status'), last_error = sqlc.narg('last_error'), failed_at = now()
+UPDATE mandate.deliveries SET status = 'failed', attempts = attempts + 1, last_status = sqlc.narg('last_status'), last_error = sqlc.narg('last_error'),
+    result = sqlc.narg('result'), failed_at = now()
 WHERE id = @id;
 
 -- name: RetargetPending :many

@@ -1,13 +1,16 @@
 // Package mandates holds the mandates: the policy, as rows, that lets an
 // agent act without a person. A mandate names the agent (or all), the
 // actions, the highest risk, a budget per calendar month, the adopted policy
-// document it rests on, and until when it holds. An owner grants it, nothing
-// changes it, and it is revoked once. High risk is never delegated.
+// document it rests on, and until when it holds, and it may narrow all that
+// with a condition on the content of a proposal. An owner grants it,
+// nothing changes it, and it is revoked once. High risk is never delegated.
 package mandates
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -60,6 +63,10 @@ type Mandate struct {
 	RevokedAt   *time.Time
 	RevokedBy   *uuid.UUID
 	CreatedAt   time.Time
+	// Condition is the CEL condition the mandate was granted with, or empty.
+	Condition string
+	// plan is the condition compiled, as stored with the mandate.
+	plan Plan
 }
 
 type Input struct {
@@ -77,15 +84,27 @@ type Input struct {
 	Days int
 	// Department is an optional label.
 	Department string
+	// Condition optionally narrows the mandate by the content of a proposal,
+	// such as payload.amount <= 500. See CompileCondition for what it may say.
+	Condition string
 }
 
 type Service struct {
 	pool *pgxpool.Pool
 	now  func() time.Time
+	// builtin lists the actions an embedded host registered in code, by key,
+	// with their payload schema or nil.
+	builtin func() map[string]json.RawMessage
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool, now: time.Now}
+}
+
+// SetBuiltin tells the service which actions exist only as code, so a
+// condition is checked against their schemas too. The kernel wires it.
+func (s *Service) SetBuiltin(builtin func() map[string]json.RawMessage) {
+	s.builtin = builtin
 }
 
 // SetNow replaces the clock, for tests of validity and the month boundary.
@@ -107,6 +126,7 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 	}
 	input.PolicyRef = strings.TrimSpace(input.PolicyRef)
 	input.Department = strings.TrimSpace(input.Department)
+	input.Condition = strings.TrimSpace(input.Condition)
 	switch {
 	case utf8.RuneCountInString(input.Department) > 100:
 		return Mandate{}, fault.New(fault.InvalidArgument, "the department can be at most 100 characters")
@@ -122,6 +142,19 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 		return Mandate{}, fault.New(fault.InvalidArgument, "a mandate rests on a policy document: give its reference")
 	case input.Days < 1 || input.Days > maxDays:
 		return Mandate{}, fault.New(fault.InvalidArgument, "a mandate holds for 1 to 366 days")
+	}
+	var condition *string
+	var planJson []byte
+	var plan Plan
+	if input.Condition != "" {
+		var err error
+		if plan, err = CompileCondition(input.Condition); err != nil {
+			return Mandate{}, err
+		}
+		if planJson, err = json.Marshal(plan); err != nil {
+			return Mandate{}, err
+		}
+		condition = &input.Condition
 	}
 	// Validity is counted in UTC days, so a daylight saving change never
 	// makes 366 days one hour too long for the database's check.
@@ -142,6 +175,15 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 				return fault.New(fault.InvalidArgument, "the agent is revoked")
 			}
 		}
+		if condition != nil {
+			schemas, err := s.coveredSchemas(ctx, q, input.Actions)
+			if err != nil {
+				return err
+			}
+			if err := plan.CheckAgainstSchemas(input.Actions, schemas); err != nil {
+				return err
+			}
+		}
 		var department *string
 		if input.Department != "" {
 			department = &input.Department
@@ -149,6 +191,7 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 		if err := q.InsertMandate(ctx, repo.InsertMandateParams{
 			Id: id, TenantId: tenantId, AgentId: input.AgentId, Actions: input.Actions, MaxRisk: input.MaxRisk,
 			BudgetUnits: input.BudgetUnits, PolicyRef: input.PolicyRef, Department: department, ValidFrom: now, ValidUntil: now.AddDate(0, 0, input.Days),
+			Condition: condition, ConditionPlan: planJson,
 		}); err != nil {
 			return err
 		}
@@ -162,11 +205,38 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 			Payload: map[string]any{
 				"agentId": input.AgentId, "actions": input.Actions, "maxRisk": input.MaxRisk, "budgetUnits": input.BudgetUnits,
 				"policyRef": input.PolicyRef, "department": input.Department, "validUntil": result.ValidUntil.UTC().Format(time.RFC3339),
+				"condition": input.Condition,
 			},
 		})
 		return err
 	})
 	return result, fault.FromDb(err)
+}
+
+// coveredSchemas returns the payload schema of every action the patterns
+// cover now, defined or builtin, with nil for one that has none. A tenant's
+// definition takes precedence over the code, and a removed one hides it.
+func (s *Service) coveredSchemas(ctx context.Context, q *repo.Queries, patterns []string) ([]json.RawMessage, error) {
+	rows, err := q.CoveredActions(ctx, patterns)
+	if err != nil {
+		return nil, err
+	}
+	defined := map[string]bool{}
+	var schemas []json.RawMessage
+	for _, row := range rows {
+		defined[row.Key] = true
+		if !row.Removed {
+			schemas = append(schemas, row.Schema)
+		}
+	}
+	if s.builtin != nil {
+		for key, schema := range s.builtin() {
+			if !defined[key] && Covers(patterns, key) {
+				schemas = append(schemas, schema)
+			}
+		}
+	}
+	return schemas, nil
 }
 
 // Revoke ends a mandate for good. Only an owner may; a mandate revoked
@@ -224,6 +294,13 @@ func (s *Service) List(ctx context.Context, includeEnded bool) ([]Mandate, error
 // Covers says whether the mandate admits the action.
 func (m Mandate) Covers(action string) bool {
 	return Covers(m.Actions, action)
+}
+
+// ConditionHolds says whether the mandate's condition, if it has one, is
+// true for the action and payload. A condition that cannot be evaluated
+// does not hold.
+func (m Mandate) ConditionHolds(action string, payload json.RawMessage) bool {
+	return m.Condition == "" || m.plan.Holds(action, payload)
 }
 
 // Allows says whether the mandate admits the risk.
@@ -299,35 +376,44 @@ const (
 	SkipNoMandate   = "no_mandate"
 	SkipRiskAbove   = "risk_above_mandate"
 	SkipBudgetSpent = "budget_spent"
+	// SkipConditionUnmet: mandates cover the action at the risk, but the
+	// condition of each is false or cannot be evaluated for the payload.
+	SkipConditionUnmet = "condition_not_met"
 )
 
 // Resolve finds, inside the caller's transaction, a live mandate for the
-// agent that covers the action at the risk and still has budget for the
-// cost. The live mandates are locked, so two executions under one mandate
+// agent that covers the action at the risk, whose condition holds for the
+// payload, and that still has budget for the cost. The live mandates are locked, so two executions under one mandate
 // count the budget one after the other. The most permissive mandate with
 // room is chosen. The spend is what the database counts, so the basis
 // recorded here is exactly what the execution trigger will check.
-func (s *Service) Resolve(ctx context.Context, tx pgx.Tx, agentId uuid.UUID, action, risk string, costUnits int64) (Resolution, error) {
+func (s *Service) Resolve(ctx context.Context, tx pgx.Tx, agentId uuid.UUID, action, risk string, payload json.RawMessage, costUnits int64) (Resolution, error) {
 	rows, err := repo.New(tx).ListLiveForAgent(ctx, repo.ListLiveForAgentParams{AgentId: agentId, At: s.now()})
 	if err != nil {
 		return Resolution{}, err
 	}
-	var covering, allowing []Mandate
+	var covering, atRisk, allowing []Mandate
 	for _, row := range rows {
 		m := toMandate(row)
 		if !m.Covers(action) {
 			continue
 		}
 		covering = append(covering, m)
-		if m.Allows(risk) {
+		if !m.Allows(risk) {
+			continue
+		}
+		atRisk = append(atRisk, m)
+		if m.ConditionHolds(action, payload) {
 			allowing = append(allowing, m)
 		}
 	}
 	switch {
 	case len(covering) == 0:
 		return Resolution{Reason: SkipNoMandate}, nil
-	case len(allowing) == 0:
+	case len(atRisk) == 0:
 		return Resolution{Reason: SkipRiskAbove}, nil
+	case len(allowing) == 0:
+		return Resolution{Reason: SkipConditionUnmet}, nil
 	}
 	for _, m := range allowing {
 		spent, err := repo.New(tx).SpentUnits(ctx, m.Id)
@@ -340,6 +426,33 @@ func (s *Service) Resolve(ctx context.Context, tx pgx.Tx, agentId uuid.UUID, act
 		}
 	}
 	return Resolution{Reason: SkipBudgetSpent}, nil
+}
+
+// Unmet explains a proposal left for a person because no mandate's
+// condition held: for each live mandate with a condition that covers the
+// agent, the action and the risk, what in the payload stood in the way.
+// It reads the mandates live now by the service's clock, as Resolve does,
+// which may differ from when the proposal was tried.
+func (s *Service) Unmet(ctx context.Context, agentId uuid.UUID, action, risk string, payload json.RawMessage) ([]string, error) {
+	var rows []repo.MandateMandate
+	if err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		var err error
+		rows, err = repo.New(tx).ListLiveForAgentToRead(ctx, repo.ListLiveForAgentToReadParams{AgentId: agentId, At: s.now()})
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, row := range rows {
+		m := toMandate(row)
+		if m.Condition == "" || !m.Covers(action) || !m.Allows(risk) {
+			continue
+		}
+		for _, line := range m.plan.Unmet(action, payload) {
+			out = append(out, "mandate "+m.Id.String()[:8]+": "+line)
+		}
+	}
+	return out, nil
 }
 
 // SpentFor is Spent for many mandates in one query.
@@ -377,6 +490,17 @@ func toMandate(row repo.MandateMandate) Mandate {
 	}
 	if row.Department != nil {
 		m.Department = *row.Department
+	}
+	if row.Condition != nil {
+		m.Condition = *row.Condition
+		// A plan that does not read is left as the zero Plan, which never
+		// holds. Decoding into the mandate's own plan could leave part of it.
+		var plan Plan
+		if err := json.Unmarshal(row.ConditionPlan, &plan); err != nil {
+			slog.Error("a mandate's condition plan does not read", "mandate", row.Id, "error", err)
+		} else {
+			m.plan = plan
+		}
 	}
 	return m
 }

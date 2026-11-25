@@ -31,6 +31,8 @@ type World struct {
 	Kernel *pgmandate.Kernel
 	// Queue is set when the world was started with jobs.
 	Queue *jobs.Queue
+	// Chat receives the notifications.
+	Chat *Chat
 
 	mu      sync.Mutex
 	now     *time.Time
@@ -44,8 +46,8 @@ func Start(ctx context.Context, withJobs bool) (*World, error) {
 	if err != nil {
 		return nil, err
 	}
-	w := &World{Pg: pg}
-	opts := pgmandate.Options{Now: w.Now, AllowPrivateConnectors: true}
+	w := &World{Pg: pg, Chat: newChat()}
+	opts := pgmandate.Options{Now: w.Now, AllowPrivateConnectors: true, PublicUrl: PublicUrl, NotifyClient: w.Chat.Client()}
 	if withJobs {
 		w.Queue = jobs.NewQueue(pg.App)
 		opts.Queue = w.Queue
@@ -76,6 +78,7 @@ func (w *World) Close() {
 		defer cancel()
 		_ = w.Queue.Stop(ctx)
 	}
+	w.Chat.server.Close()
 	w.Pg.Close()
 }
 

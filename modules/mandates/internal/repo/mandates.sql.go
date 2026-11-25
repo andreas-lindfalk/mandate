@@ -24,8 +24,42 @@ func (q *Queries) AgentState(ctx context.Context, id uuid.UUID) (bool, error) {
 	return live, err
 }
 
+const coveredActions = `-- name: CoveredActions :many
+SELECT key, schema, (removed_at IS NOT NULL)::boolean AS removed FROM mandate.actions
+WHERE mandate.covers($1::text[], key)
+`
+
+type CoveredActionsRow struct {
+	Key     string
+	Schema  []byte
+	Removed bool
+}
+
+// The defined actions that patterns cover, removed ones included (a
+// removed definition hides a builtin action of the same key), for checking
+// a condition at the grant.
+func (q *Queries) CoveredActions(ctx context.Context, patterns []string) ([]CoveredActionsRow, error) {
+	rows, err := q.db.Query(ctx, coveredActions, patterns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CoveredActionsRow
+	for rows.Next() {
+		var i CoveredActionsRow
+		if err := rows.Scan(&i.Key, &i.Schema, &i.Removed); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getMandate = `-- name: GetMandate :one
-SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at FROM mandate.mandates WHERE id = $1
+SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at, condition, condition_plan FROM mandate.mandates WHERE id = $1
 `
 
 func (q *Queries) GetMandate(ctx context.Context, id uuid.UUID) (MandateMandate, error) {
@@ -46,26 +80,31 @@ func (q *Queries) GetMandate(ctx context.Context, id uuid.UUID) (MandateMandate,
 		&i.RevokedAt,
 		&i.RevokedBy,
 		&i.CreatedAt,
+		&i.Condition,
+		&i.ConditionPlan,
 	)
 	return i, err
 }
 
 const insertMandate = `-- name: InsertMandate :exec
-INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, valid_from, valid_until)
-VALUES ($1, $2, $3, $4::text[], $5, $6, $7, $8, $9, $10)
+INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, valid_from, valid_until, condition, condition_plan)
+VALUES ($1, $2, $3, $4::text[], $5, $6, $7, $8, $9, $10,
+    $11, $12)
 `
 
 type InsertMandateParams struct {
-	Id          uuid.UUID
-	TenantId    uuid.UUID
-	AgentId     *uuid.UUID
-	Actions     []string
-	MaxRisk     string
-	BudgetUnits int64
-	PolicyRef   string
-	Department  *string
-	ValidFrom   time.Time
-	ValidUntil  time.Time
+	Id            uuid.UUID
+	TenantId      uuid.UUID
+	AgentId       *uuid.UUID
+	Actions       []string
+	MaxRisk       string
+	BudgetUnits   int64
+	PolicyRef     string
+	Department    *string
+	ValidFrom     time.Time
+	ValidUntil    time.Time
+	Condition     *string
+	ConditionPlan []byte
 }
 
 func (q *Queries) InsertMandate(ctx context.Context, arg InsertMandateParams) error {
@@ -80,12 +119,14 @@ func (q *Queries) InsertMandate(ctx context.Context, arg InsertMandateParams) er
 		arg.Department,
 		arg.ValidFrom,
 		arg.ValidUntil,
+		arg.Condition,
+		arg.ConditionPlan,
 	)
 	return err
 }
 
 const listLiveForAgent = `-- name: ListLiveForAgent :many
-SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at FROM mandate.mandates
+SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at, condition, condition_plan FROM mandate.mandates
 WHERE (agent_id IS NULL OR agent_id = $1::uuid)
     AND revoked_at IS NULL AND valid_from <= $2 AND valid_until > $2
 ORDER BY max_risk DESC, created_at, id
@@ -123,6 +164,58 @@ func (q *Queries) ListLiveForAgent(ctx context.Context, arg ListLiveForAgentPara
 			&i.RevokedAt,
 			&i.RevokedBy,
 			&i.CreatedAt,
+			&i.Condition,
+			&i.ConditionPlan,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLiveForAgentToRead = `-- name: ListLiveForAgentToRead :many
+SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at, condition, condition_plan FROM mandate.mandates
+WHERE (agent_id IS NULL OR agent_id = $1::uuid)
+    AND revoked_at IS NULL AND valid_from <= $2 AND valid_until > $2
+ORDER BY max_risk DESC, created_at, id
+`
+
+type ListLiveForAgentToReadParams struct {
+	AgentId uuid.UUID
+	At      time.Time
+}
+
+// As ListLiveForAgent, without the lock: for explaining, not deciding.
+func (q *Queries) ListLiveForAgentToRead(ctx context.Context, arg ListLiveForAgentToReadParams) ([]MandateMandate, error) {
+	rows, err := q.db.Query(ctx, listLiveForAgentToRead, arg.AgentId, arg.At)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MandateMandate
+	for rows.Next() {
+		var i MandateMandate
+		if err := rows.Scan(
+			&i.Id,
+			&i.TenantId,
+			&i.AgentId,
+			&i.Actions,
+			&i.MaxRisk,
+			&i.BudgetUnits,
+			&i.PolicyRef,
+			&i.Department,
+			&i.GrantedBy,
+			&i.ValidFrom,
+			&i.ValidUntil,
+			&i.RevokedAt,
+			&i.RevokedBy,
+			&i.CreatedAt,
+			&i.Condition,
+			&i.ConditionPlan,
 		); err != nil {
 			return nil, err
 		}
@@ -135,7 +228,7 @@ func (q *Queries) ListLiveForAgent(ctx context.Context, arg ListLiveForAgentPara
 }
 
 const listMandates = `-- name: ListMandates :many
-SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at FROM mandate.mandates
+SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at, condition, condition_plan FROM mandate.mandates
 WHERE $1::boolean OR (revoked_at IS NULL AND valid_until > now())
 ORDER BY created_at DESC, id
 `
@@ -164,6 +257,8 @@ func (q *Queries) ListMandates(ctx context.Context, includeEnded bool) ([]Mandat
 			&i.RevokedAt,
 			&i.RevokedBy,
 			&i.CreatedAt,
+			&i.Condition,
+			&i.ConditionPlan,
 		); err != nil {
 			return nil, err
 		}

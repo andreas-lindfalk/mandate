@@ -7,7 +7,7 @@ pgmandate is a reference implementation of write authority for AI agents. The id
 - a **person** approves, edits or rejects the proposal in an inbox, or
 - a **mandate** that a person granted earlier allows it at once, and the proposal records exactly which mandate, which policy, which risk limit and how much of the budget allowed it.
 
-A mandate is data, not prompt text: *this agent's proposals for these actions may be carried out without a person, up to this risk, within this budget per month, until this date*, with a reference to the policy it rests on. (The reference is recorded with every decision it allows; the document itself is not stored or checked.) The decided proposal is then delivered, signed, to the system that carries it out, and what that system answers comes back to the agent.
+A mandate is data, not prompt text: *this agent's proposals for these actions may be carried out without a person, up to this risk, within this budget per month, until this date*, with a reference to the policy it rests on. (The reference is recorded with every decision it allows; the document itself is not stored or checked.) A mandate can also carry a condition on the payload, such as `payload.amount <= 500 && payload.currency in ["EUR", "SEK"]`, and then allows only what meets it; the database evaluates the condition again on every execution. The decided proposal is then delivered, signed, to the system that carries it out, and what that system answers comes back to the agent.
 
 The rules are enforced twice: in the service, and again in Postgres with row level security and triggers, so a bug in the service cannot record or allow what the rules refuse. Every proposal, decision, delivery and refusal is a row in a hash linked log that can be checked without the server.
 
@@ -87,18 +87,20 @@ Any other MCP client takes the same in its configuration:
     "headers": { "Authorization": "Bearer mnd_..." } } } }
 ```
 
-The server tells the agent how to work with it. In short: call `list_actions`, then `propose` with an `idempotency_key` made from its run and step; the answer says whether it was allowed, delivered, or waits for a person and why. Each answer is both text for a model and structured content for code, and an error carries a code (`invalid_argument`, `conflict`, `permission_denied`, `not_found`, `rate_limited`).
+The server tells the agent how to work with it. In short: call `list_actions`, then `propose` with an `idempotency_key` made from its run and step and a `rationale`, its account for the person who decides of what it found and why this action follows, with `evidence` the person can check (where it looked, an id to find it again, what it showed); the answer says whether it was allowed, delivered, or waits for a person and why. The account is kept with the proposal as written, shown in the inbox as the agent's claim, and named in the log by digest. A mandate never reads it. Each answer is both text for a model and structured content for code, and an error carries a code (`invalid_argument`, `conflict`, `permission_denied`, `not_found`, `rate_limited`).
 
 For whoever runs the agent:
 
 - **Give each run a run id**, in the prompt or the task. Keys are made from it, and a run that reuses one gets the earlier run's answers. An agent given none takes `suggestedRunId` from `list_actions`.
 - **Allow tool calls at least five seconds.** `propose` waits up to two seconds for a mandate's decision, and `get_proposal` can wait longer when asked; some clients give up sooner by default.
-- An agent's calls are limited to five a second, with bursts of thirty.
+- An agent's calls are limited to five a second per token, with bursts of thirty, in each server instance; its proposals to 30 a minute and 300 an hour unless an owner sets other limits, which the database holds across instances. An agent sees its limits in `list_actions`, and a refusal says when to try again.
+- **Withdrawing.** An agent can take back its own waiting proposal with `withdraw_proposal`, as when it proposes a corrected version; a person then never approves both.
+- **Notifications.** An owner can have a Slack or Discord channel told when a proposal waits for a person (in the UI under *People*, or `pgmandate notify set`). The message names the action, its risk, the agent and why it waits, and links to the inbox; nothing the agent wrote goes to the channel.
 
 To try an action without an agent, propose from the command line, over MCP like any client:
 
 ```sh
-go run ./cmd/pgmandate propose -token mnd_... -action tickets.create -title "Printer jams" -payload '{"subject":"Printer jams"}'
+go run ./cmd/pgmandate propose -token mnd_... -action tickets.create -title "Printer jams" -rationale "Three reports from floor 3." -payload '{"subject":"Printer jams"}'
 ```
 
 It prints the answer and the run and key it used; the same `-run` and `-key` again is a repeat.
@@ -204,6 +206,8 @@ The body is described field by field in [docs/delivery-v1.schema.json](docs/deli
 
 `examples/webhook` is a reference handler to mount in your own server, and `pgmandate receiver` runs it locally.
 
+**Check the claims before you act.** The payload is what the agent says, and a mandate's condition decides on what the agent says: `payload.daysSinceDelivery <= 14` is true when the agent wrote 3, whatever the order shows. For an action that moves value, read every fact the payload states from your own records, refuse with a 4xx when one does not match (nothing happens, the delivery is not retried, and a person sees your answer), and carry it out once per proposal. [examples/refunds](examples/refunds/refunds.go) does that for a refund.
+
 ## Doing it once
 
 Agents repeat themselves: a tool call times out and is sent again, or a model is not sure a step went through. Each hop has one name for the work, so a repeat is recognised and nothing is done twice.
@@ -221,7 +225,7 @@ Agents repeat themselves: a tool call times out and is sent again, or a model is
 
 ## The rules, in one place
 
-- A proposal is allowed without a person only if **all** of these hold: the action is defined as one that can be delegated, a person granted a mandate that is live now and covers the agent and the action, the proposal's risk is within the mandate, nothing was flagged, and the month's budget has room for the cost. The agent and the inbox are told which one failed.
+- A proposal is allowed without a person only if **all** of these hold: the action is defined as one that can be delegated, a person granted a mandate that is live now and covers the agent and the action, the proposal's risk is within the mandate, the mandate's condition, if it has one, is true for the payload, nothing was flagged, and the month's budget has room for the cost. The agent and the inbox are told which one failed.
 - A mandate allows low or medium risk. High is never delegated. A person's edit is assessed again and can only raise the risk.
 - The action as it is when the decision is made counts: its schema, its cost and its risk. A proposal made before the action changed waits for a person, who approves it at the action's current risk or edits it to fit.
 - A delivery is recorded in the transaction that makes the decision, and only to the action's own connector. The log names the payload that was proposed, the one decided on and the body that was sent, as digests.
@@ -229,14 +233,18 @@ Agents repeat themselves: a tool call times out and is sent again, or a model is
 - The log is append-only and hash linked per tenant, and each event carries the actor of its session. It is **tamper-evident, not tamper-proof**: an edit, a removal or a forged actor by the application is refused or detectable, and an export verifies offline, but someone who owns the database could rebuild it. Keep the latest hash somewhere the database owner cannot reach.
 - The check for steering text is a **tripwire**, a few known English phrasings. It is not a control and will miss most real attempts. The controls are the action's schema and risk, the mandate, and the person.
 
-What the database enforces, what only the service enforces, and what neither does, is spelled out in [docs/threat-model.md](docs/threat-model.md). The triggers in [schema/0001_init.up.sql](schema/0001_init.up.sql) are the authoritative text.
+- Every proposal carries the agent's rationale, kept as written and never edited. It informs the person deciding; it is the agent's claim, not a checked fact.
+- An agent may make only so many proposals a minute and an hour; the database refuses the rest.
+
+What the database enforces, what only the service enforces, and what neither does, is spelled out in [docs/threat-model.md](docs/threat-model.md). The triggers in [schema/](schema/) are the authoritative text.
 
 ## Glossary
 
 | Term | Meaning | Elsewhere called |
 |---|---|---|
 | Action | Something an agent may ask to have done, such as `tickets.create`, with a payload schema (required for a webhook), a risk and a cost | Tool call, operation |
-| Proposal | One request by an agent to have an action carried out | Approval request, human in the loop |
+| Proposal | One request by an agent to have an action carried out, with its rationale and evidence | Approval request, human in the loop |
+| Condition | A CEL expression on the payload that narrows a mandate, such as `payload.amount <= 500`; the database evaluates it again | Policy rule, guard |
 | Mandate | A person's standing permission for an agent: which actions, up to which risk, within which budget, under which policy, until when | Policy, delegation, standing authorisation |
 | Execution basis | What allowed a proposal without a person: the mandate, its policy reference, its risk limit and the budget at that moment | Authorisation record |
 | Connector | Where a decided proposal is sent to be carried out: a signed webhook | Integration, webhook target |
@@ -250,17 +258,19 @@ The word is used elsewhere too: Google's Agent Payments Protocol calls its signe
 
 Keeping credentials away from agents and asking a person before risky calls is, by late 2026, a common pattern. What others ship, as far as their own documentation says in November 2026:
 
-- **MCP gateways.** TrueFoundry and Permit.io's MCP gateway ask a person before a tool call, and can let an approval cover a time window or exempt a trusted agent. Docker's MCP gateway can require an in-session confirmation through its sandbox policies. Kong's MCP proxy and Enkrypt's gateway apply allow and deny rules and guardrails.
+- **Cloud agent platforms.** [Policy in Amazon Bedrock AgentCore](https://aws.amazon.com/about-aws/whats-new/2026/03/policy-amazon-bedrock-agentcore-generally-available) (generally available since March 2026) applies Cedar policies, conditions on a call's arguments included, at the gateway between agent and tool. DigitalOcean's [Action Gateway](https://docs.digitalocean.com/products/managed-agents/action-gateway/concepts/tool-policies/) (preview) decides allow, ask or deny per tool and keeps the credentials.
+- **MCP gateways.** TrueFoundry and Permit.io's MCP gateway ask a person before a tool call, and can let an approval cover a time window or exempt a trusted agent. LangSmith's [Tool Gateway](https://docs.langchain.com/langsmith/tool-gateway-policies) (beta, November 2026) blocks a call or asks the caller to approve it. Docker's MCP gateway can require an in-session confirmation through its sandbox policies. Kong's MCP proxy and Enkrypt's gateway apply allow and deny rules and guardrails.
+- **Governance libraries.** Microsoft's [Agent Governance Toolkit](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit/) (MIT, April 2026) runs policies in the agent's process, with approvals, spend limits and a chained audit log.
 - **Approval layers of the same kind.** SidClaw wraps an MCP server with policy, approval and a hash-chained audit. Countersign ("the model proposes, deterministic code disposes") is a reference implementation with a hash-chained audit and two approvers for high risk. OpenLeash lets owners set policies that agents ask under, and lets agents propose new policies.
 - **Credential brokers**, such as Infisical Agent Vault (in preview) and Auth0's Token Vault with asynchronous authorisation, hold the secret and inject it, so the agent never sees it.
 - **Identity platforms**, such as Microsoft Entra Agent ID with Agent 365, and Okta, give agents an identity, an owner and access reviews.
 - **Agent frameworks** have approval steps inside one run.
 
-What pgmandate does that none of these does, as far as we have found: a standing grant is a row with a budget, a risk limit, a policy reference and an end date, a decision is a row that names the authority it rests on, and Postgres enforces the rules again, so a bug in the service cannot allow what they refuse. What it lacks: users, high availability and, today, a way in that needs no code. A receiver has to be written for each system; sitting in front of an existing MCP server is next on the [roadmap](docs/roadmap.md).
+Most of these decide on a call's arguments too, several with richer languages than pgmandate's comparisons. What pgmandate does differently, as far as we have found: a standing grant is one row a named person granted, with a budget, a risk limit, a policy reference and an end date; a decision is a row that names the authority it rests on; and Postgres enforces the rules again, conditions included, so a bug in the service cannot allow what they refuse, and a condition that cannot be evaluated never allows. What it lacks: users, high availability and, today, a way in that needs no code. A receiver has to be written for each system; sitting in front of an existing MCP server is next on the [roadmap](docs/roadmap.md).
 
 ## Layout
 
-`modules/` holds the domain, `pkg/` the shared plumbing, `schema/` the migrations, `api/` and `mcp/` the two interfaces, `web/` the UI, `examples/` a receiver and an embedded host. [AGENTS.md](AGENTS.md) has the conventions; [docs/decisions.md](docs/decisions.md) has the reasoning.
+`modules/` holds the domain, `pkg/` the shared plumbing, `schema/` the migrations, `api/` and `mcp/` the two interfaces, `web/` the UI, `examples/` a receiver, a refunds receiver that checks the claims it is given, and an embedded host. [AGENTS.md](AGENTS.md) has the conventions; [docs/decisions.md](docs/decisions.md) has the reasoning.
 
 ## Author
 

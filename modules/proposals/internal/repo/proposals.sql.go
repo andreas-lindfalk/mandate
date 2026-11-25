@@ -77,7 +77,7 @@ func (q *Queries) ExecuteProposal(ctx context.Context, arg ExecuteProposalParams
 }
 
 const getByIdempotencyKey = `-- name: GetByIdempotencyKey :one
-SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, proposed_payload, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE agent_id = $1 AND idempotency_key = $2
+SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, proposed_payload, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at, rationale, evidence, provenance FROM mandate.proposals WHERE agent_id = $1 AND idempotency_key = $2
 `
 
 type GetByIdempotencyKeyParams struct {
@@ -109,12 +109,15 @@ func (q *Queries) GetByIdempotencyKey(ctx context.Context, arg GetByIdempotencyK
 		&i.DecisionNote,
 		&i.ExecutionBasis,
 		&i.CreatedAt,
+		&i.Rationale,
+		&i.Evidence,
+		&i.Provenance,
 	)
 	return i, err
 }
 
 const getProposal = `-- name: GetProposal :one
-SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, proposed_payload, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE id = $1
+SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, proposed_payload, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at, rationale, evidence, provenance FROM mandate.proposals WHERE id = $1
 `
 
 func (q *Queries) GetProposal(ctx context.Context, id uuid.UUID) (MandateProposal, error) {
@@ -141,12 +144,15 @@ func (q *Queries) GetProposal(ctx context.Context, id uuid.UUID) (MandateProposa
 		&i.DecisionNote,
 		&i.ExecutionBasis,
 		&i.CreatedAt,
+		&i.Rationale,
+		&i.Evidence,
+		&i.Provenance,
 	)
 	return i, err
 }
 
 const getProposalForUpdate = `-- name: GetProposalForUpdate :one
-SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, proposed_payload, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE id = $1 FOR UPDATE
+SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, proposed_payload, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at, rationale, evidence, provenance FROM mandate.proposals WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetProposalForUpdate(ctx context.Context, id uuid.UUID) (MandateProposal, error) {
@@ -173,13 +179,18 @@ func (q *Queries) GetProposalForUpdate(ctx context.Context, id uuid.UUID) (Manda
 		&i.DecisionNote,
 		&i.ExecutionBasis,
 		&i.CreatedAt,
+		&i.Rationale,
+		&i.Evidence,
+		&i.Provenance,
 	)
 	return i, err
 }
 
 const insertProposal = `-- name: InsertProposal :one
-INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text[], $10, $11)
+INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash,
+    rationale, evidence, provenance)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text[], $10, $11,
+    $12::text, $13::jsonb, $14::jsonb)
 ON CONFLICT (tenant_id, agent_id, idempotency_key) DO NOTHING
 RETURNING id
 `
@@ -196,6 +207,9 @@ type InsertProposalParams struct {
 	Flags          []string
 	IdempotencyKey string
 	RequestHash    []byte
+	Rationale      string
+	Evidence       []byte
+	Provenance     []byte
 }
 
 func (q *Queries) InsertProposal(ctx context.Context, arg InsertProposalParams) (uuid.UUID, error) {
@@ -211,6 +225,9 @@ func (q *Queries) InsertProposal(ctx context.Context, arg InsertProposalParams) 
 		arg.Flags,
 		arg.IdempotencyKey,
 		arg.RequestHash,
+		arg.Rationale,
+		arg.Evidence,
+		arg.Provenance,
 	)
 	var id uuid.UUID
 	err := row.Scan(&id)
@@ -251,7 +268,7 @@ func (q *Queries) LastSkips(ctx context.Context, subjectIds []uuid.UUID) ([]Last
 }
 
 const listDecided = `-- name: ListDecided :many
-SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, proposed_payload, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals WHERE status <> 'pending' ORDER BY decided_at, id
+SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, proposed_payload, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at, rationale, evidence, provenance FROM mandate.proposals WHERE status <> 'pending' ORDER BY decided_at, id
 `
 
 func (q *Queries) ListDecided(ctx context.Context) ([]MandateProposal, error) {
@@ -284,6 +301,9 @@ func (q *Queries) ListDecided(ctx context.Context) ([]MandateProposal, error) {
 			&i.DecisionNote,
 			&i.ExecutionBasis,
 			&i.CreatedAt,
+			&i.Rationale,
+			&i.Evidence,
+			&i.Provenance,
 		); err != nil {
 			return nil, err
 		}
@@ -296,7 +316,7 @@ func (q *Queries) ListDecided(ctx context.Context) ([]MandateProposal, error) {
 }
 
 const listProposals = `-- name: ListProposals :many
-SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, proposed_payload, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at FROM mandate.proposals
+SELECT id, tenant_id, agent_id, run_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, proposed_payload, status, edited, decided_by, decided_at, decision_note, execution_basis, created_at, rationale, evidence, provenance FROM mandate.proposals
 WHERE ($1::text IS NULL OR status = $1::text)
     AND ($2::uuid IS NULL OR agent_id = $2::uuid)
     AND ($3::text IS NULL OR run_id = $3::text)
@@ -348,6 +368,9 @@ func (q *Queries) ListProposals(ctx context.Context, arg ListProposalsParams) ([
 			&i.DecisionNote,
 			&i.ExecutionBasis,
 			&i.CreatedAt,
+			&i.Rationale,
+			&i.Evidence,
+			&i.Provenance,
 		); err != nil {
 			return nil, err
 		}
@@ -357,4 +380,21 @@ func (q *Queries) ListProposals(ctx context.Context, arg ListProposalsParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const withdrawProposal = `-- name: WithdrawProposal :execrows
+UPDATE mandate.proposals SET status = 'withdrawn', decision_note = $1 WHERE id = $2 AND status = 'pending'
+`
+
+type WithdrawProposalParams struct {
+	Note *string
+	Id   uuid.UUID
+}
+
+func (q *Queries) WithdrawProposal(ctx context.Context, arg WithdrawProposalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, withdrawProposal, arg.Note, arg.Id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -24,6 +24,7 @@ const (
 	SkipNoMandate      = "no_mandate"
 	SkipRiskAbove      = "risk_above_mandate"
 	SkipBudgetSpent    = "budget_spent"
+	SkipConditionUnmet = "condition_not_met"
 	SkipAgentRevoked   = "agent_revoked"
 	// SkipActionFailed is written when the action itself failed under an
 	// execution: at once when it refused with a coded error, and after the
@@ -105,7 +106,7 @@ func (k *Kernel) ExecuteProposal(ctx context.Context, tenantId, proposalId uuid.
 // basisFor asks the mandates, inside the execution transaction, whether one
 // allows the proposal now.
 func (k *Kernel) basisFor(ctx context.Context, tx pgx.Tx, proposal Proposal) (ExecutionBasis, string, error) {
-	resolution, err := k.Mandates.Resolve(ctx, tx, proposal.AgentId, proposal.Action, proposal.Risk, proposal.CostUnits)
+	resolution, err := k.Mandates.Resolve(ctx, tx, proposal.AgentId, proposal.Action, proposal.Risk, proposal.Payload, proposal.CostUnits)
 	if err != nil {
 		return ExecutionBasis{}, "", err
 	}
@@ -115,6 +116,6 @@ func (k *Kernel) basisFor(ctx context.Context, tx pgx.Tx, proposal Proposal) (Ex
 	m := resolution.Mandate
 	return ExecutionBasis{
 		MandateId: m.Id, PolicyRef: m.PolicyRef, MaxRisk: m.MaxRisk, BudgetUnits: m.BudgetUnits,
-		SpentUnits: resolution.SpentUnits, CostUnits: proposal.CostUnits,
+		SpentUnits: resolution.SpentUnits, CostUnits: proposal.CostUnits, Condition: m.Condition,
 	}, "", nil
 }

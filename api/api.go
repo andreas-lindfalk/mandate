@@ -48,6 +48,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle(mandatev1connect.NewMandateServiceHandler(&mandateHandler{h}, options...))
 	mux.Handle(mandatev1connect.NewProposalServiceHandler(&proposalHandler{h}, options...))
 	mux.Handle(mandatev1connect.NewEvidenceServiceHandler(&evidenceHandler{h}, options...))
+	mux.Handle(mandatev1connect.NewNotifierServiceHandler(&notifierHandler{h}, options...))
 	h.auth.Mount(mux)
 }
 
