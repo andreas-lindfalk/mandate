@@ -182,14 +182,14 @@ func (s *KernelSuite) Test_TheChainLeavesTheRestForAPerson() {
 	s.Require().Equal([]string{"proposal.created", "proposal.rejected"}, s.eventTypes(t.Owner, decided.Id), "a decided proposal is left alone")
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, none.Id), "unknown or foreign ids are not failures")
 
-	// The server's clock ahead of the database's: a grant still holds at
-	// once, by the clock the database checks it with.
-	s.W.SetNow(time.Now().Add(5 * time.Second))
+	// A grant holds at once, by the database's clock, which every check of
+	// it reads: with the server's clock an hour ahead, the mandate is still
+	// in its window the moment it is granted.
+	s.W.SetNow(time.Now().Add(time.Hour))
 	ahead, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.medium"}, MaxRisk: mandates.RiskMedium, BudgetCount: 5, PolicyRef: "P", Days: 366})
 	s.W.SetNow(time.Time{})
-	s.Require().NoError(err, "a full-length mandate fits its CHECK when its start is moved back")
-	s.Require().Equal(366*24*time.Hour, ahead.ValidUntil.Sub(ahead.ValidFrom), "its length is kept")
-	s.Require().False(ahead.ValidFrom.After(time.Now().Add(time.Second)), "it starts by the database's clock")
+	s.Require().NoError(err, "a full-length mandate fits its CHECK")
+	s.Require().Equal(366*24*time.Hour, ahead.ValidUntil.Sub(ahead.ValidFrom))
 	soon := s.propose(t.Agent, "test.medium", map[string]any{})
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, soon.Id))
 	executedNow, err := s.W.Kernel.Proposals.Get(t.Owner, soon.Id)

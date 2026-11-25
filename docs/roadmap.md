@@ -101,7 +101,7 @@ This is the critical path, so it starts at once.
    - The call limit, the waiting and the guidance texts live there once.
    - What only the service holds today moves with it, with tests: an agent reads only its own proposals, and the agent service refuses a person's session.
 10. **The job queue kept apart.** pgmandate's River jobs live in a schema of their own, with their own migrations and queue names. The application role gets rights there and nowhere in a host's `public` schema. What a host must know about sharing one River version in one binary is written down.
-11. **What stays flexible, as tests.** The assumptions under *What stays flexible* in the scope become CI that runs:
+11. **What stays flexible, as tests.** Built: the first in the setup tests, the other two in `flexibility_test.go`. The assumptions under *What stays flexible* in the scope become CI that runs:
     - setup as a non-superuser owner
     - an embedded host that runs its own River
     - two server instances on one database. The expected result: decisions, the log and the per-agent proposal limits hold across both, and the per-second call limit holds per instance, as the threat model says.

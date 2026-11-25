@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const bindPerson = `-- name: BindPerson :execrows
@@ -153,7 +154,7 @@ func (q *Queries) InsertLink(ctx context.Context, arg InsertLinkParams) error {
 
 const insertSession = `-- name: InsertSession :exec
 INSERT INTO mandate.sessions (token_hash, email, name, issuer, subject, person_id, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+VALUES ($1, $2, $3, $4, $5, $6, now() + $7::interval)
 `
 
 type InsertSessionParams struct {
@@ -163,9 +164,10 @@ type InsertSessionParams struct {
 	Issuer    *string
 	Subject   *string
 	PersonId  *uuid.UUID
-	ExpiresAt time.Time
+	Ttl       pgtype.Interval
 }
 
+// Its lifetime is counted on the database's clock, which every check reads.
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
 	_, err := q.db.Exec(ctx, insertSession,
 		arg.TokenHash,
@@ -174,7 +176,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.Issuer,
 		arg.Subject,
 		arg.PersonId,
-		arg.ExpiresAt,
+		arg.Ttl,
 	)
 	return err
 }

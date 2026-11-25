@@ -1,11 +1,10 @@
 -- name: InsertMandate :exec
--- A grant holds at once. Its start is never later than the database's
--- clock, which basis_holds reads, even when the server's clock runs ahead;
--- its length is kept.
+-- A grant holds at once, by the clock of the database, which every check of
+-- it reads. Its days are counted in hours, so a daylight saving change in
+-- the time zone of the session never makes them an hour longer or shorter.
 INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, valid_from, valid_until, condition, condition_plan)
-SELECT @id, @tenant_id, sqlc.narg('agent_id'), @actions::text[], @max_risk, @budget_count, @policy_ref, sqlc.narg('department'),
-    starts.at, starts.at + @lasts::interval, sqlc.narg('condition'), sqlc.narg('condition_plan')
-FROM (SELECT LEAST(@starts_at::timestamptz, now()) AS at) AS starts;
+VALUES (@id, @tenant_id, sqlc.narg('agent_id'), @actions::text[], @max_risk, @budget_count, @policy_ref, sqlc.narg('department'),
+    now(), now() + @lasts::interval, sqlc.narg('condition'), sqlc.narg('condition_plan'));
 
 -- name: GetMandate :one
 SELECT * FROM mandate.mandates WHERE id = @id;
@@ -19,11 +18,12 @@ ORDER BY created_at DESC, id;
 UPDATE mandate.mandates SET revoked_at = now() WHERE id = @id AND revoked_at IS NULL;
 
 -- name: ListLiveForAgent :many
--- Mandates that hold at the instant given, for the agent, locked so that two
--- executions under the same mandate count the budget one after the other.
+-- Mandates that hold now, by the database's clock, for the agent, locked so
+-- that two executions under the same mandate count the budget one after the
+-- other.
 SELECT * FROM mandate.mandates
 WHERE (agent_id IS NULL OR agent_id = @agent_id::uuid)
-    AND revoked_at IS NULL AND valid_from <= @at AND valid_until > @at
+    AND revoked_at IS NULL AND valid_from <= now() AND valid_until > now()
 ORDER BY max_risk DESC, created_at, id
 FOR UPDATE;
 
@@ -50,5 +50,5 @@ WHERE mandate.covers(@patterns::text[], key);
 -- As ListLiveForAgent, without the lock: for explaining, not deciding.
 SELECT * FROM mandate.mandates
 WHERE (agent_id IS NULL OR agent_id = @agent_id::uuid)
-    AND revoked_at IS NULL AND valid_from <= @at AND valid_until > @at
+    AND revoked_at IS NULL AND valid_from <= now() AND valid_until > now()
 ORDER BY max_risk DESC, created_at, id;

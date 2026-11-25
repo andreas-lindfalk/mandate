@@ -2,6 +2,13 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
+## 2026-11-25: what stays flexible, as tests, and one clock for mandates
+
+- **An embedded host's own River** runs in a test beside pgmandate's queue, in one binary and one database, migrated and run by a role of the host's own that is no superuser: each queue runs its own jobs, neither table holds the other's, and neither role reaches the other's queue.
+- **Two instances on one database** run in a test: both executing the same waiting proposals at the same moment spend exactly the budget and apply each executed proposal once; an approval on one and a rejection on the other make one decision, the other told it is decided already; the per-agent proposal limit holds across both; and the chain written by both verifies. The per-second call limit is shown to be per instance, as documented.
+- **Mandates read the database's clock** in every check: their validity at a grant (`now()`, and days counted as 24 hours), and the mandates live for an agent when it resolves, explains or lists them. The service no longer has a clock of its own; tests that faked it move the mandate's window in the database instead. Sessions now expire by the database's clock too. Only the issuing of agent tokens still takes the server's clock, which changes nothing but when a token expires; every check of an expiry reads the database's.
+- **The package is public by default:** published from a public repository's workflow, it takes the repository's visibility. The README no longer says to change it.
+
 ## 2026-11-25: one image and a ten-minute quickstart
 
 Built as [design-quickstart.md](design-quickstart.md) says, with its questions settled there.

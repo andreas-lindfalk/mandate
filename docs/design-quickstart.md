@@ -19,7 +19,7 @@ Today it does:
   - Tags `vX.Y.Z` and `latest`.
   - `linux/amd64` and `linux/arm64`.
   - Built with `VERSION` set to the tag, so the image reports its release.
-- **Permissions:** the workflow pushes with the repository's own token (`packages: write`), and nothing else needs a secret. The package is made public once, by hand, in GitHub's settings.
+- **Permissions:** the workflow pushes with the repository's own token (`packages: write`), and nothing else needs a secret. The package takes the public repository's visibility, so it is public from its first publish.
 - **Before the first release** there is no image to pull. The quickstart then builds from the clone (`--build`), which needs Docker only.
 
 ### 2. A setup link instead of dev login
@@ -104,7 +104,7 @@ That holds the "ten minutes with only Docker" promise in CI rather than in a REA
 
 ## Settled in review
 
-1. **The registry:** `ghcr.io/andreas-lindfalk/pgmandate`, built when a `v*` tag is pushed, by `git push` or by publishing a release on GitHub, for both architectures. The package is made public once, by hand, after its first publish.
+1. **The registry:** `ghcr.io/andreas-lindfalk/pgmandate`, built when a `v*` tag is pushed, by `git push` or by publishing a release on GitHub, for both architectures. The package turned out public from its first publish, as the repository is.
 2. **Lifetimes:** the setup link 30 minutes, a person's link 15 minutes, and a session from either one the usual week.
 3. **`pgmandate sign-in-link`** is built. Without it, a quickstart whose session has run out must start over.
 4. **The CI job** runs on every pull request that touches `deploy/`, the server, or the web app, and on `main`.

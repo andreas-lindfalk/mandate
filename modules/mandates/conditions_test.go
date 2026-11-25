@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -257,8 +256,8 @@ func (s *ConditionsSuite) validPlan(ctx context.Context, plan json.RawMessage) b
 	return valid
 }
 
-// Unmet explains with the mandates Resolve would use: live by the service's
-// clock, not yet valid ones left out.
+// Unmet explains with the mandates Resolve would use: live by the
+// database's clock, not yet valid ones left out.
 func (s *ConditionsSuite) Test_UnmetReadsTheMandatesResolveReads() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30, Condition: `payload.n <= 1`})
@@ -266,8 +265,10 @@ func (s *ConditionsSuite) Test_UnmetReadsTheMandatesResolveReads() {
 	lines, err := s.W.Kernel.Mandates.Unmet(t.Owner, t.AgentId, "test.low", mandates.RiskLow, json.RawMessage(`{"n": 2}`))
 	s.Require().NoError(err)
 	s.Require().Equal([]string{"mandate " + m.Id.String()[:8] + ": payload.n <= 1 (payload.n is 2)"}, lines)
-	s.W.SetNow(m.ValidFrom.Add(-time.Hour))
-	defer s.W.SetNow(time.Time{})
+	// Not yet valid, by the database's clock: the window moved an hour on.
+	_, err = s.W.Pg.Owner.Exec(context.Background(), `BEGIN; SET LOCAL session_replication_role = replica;
+		UPDATE mandate.mandates SET valid_from = valid_from + interval '1 hour', valid_until = valid_until + interval '1 hour' WHERE id = '`+m.Id.String()+`'; COMMIT;`)
+	s.Require().NoError(err)
 	lines, err = s.W.Kernel.Mandates.Unmet(t.Owner, t.AgentId, "test.low", mandates.RiskLow, json.RawMessage(`{"n": 2}`))
 	s.Require().NoError(err)
 	s.Require().Empty(lines, "a mandate not yet valid explains nothing")

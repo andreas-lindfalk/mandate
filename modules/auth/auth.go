@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/andreas-lindfalk/pgmandate/modules/auth/internal/repo"
@@ -78,7 +79,6 @@ type Membership struct {
 type Service struct {
 	pool   *pgxpool.Pool
 	config Config
-	now    func() time.Time
 	oidc   *oidcClient
 }
 
@@ -86,7 +86,7 @@ func NewService(pool *pgxpool.Pool, config Config) *Service {
 	if config.SessionTtl <= 0 {
 		config.SessionTtl = 7 * 24 * time.Hour
 	}
-	s := &Service{pool: pool, config: config, now: time.Now}
+	s := &Service{pool: pool, config: config}
 	if config.Oidc != nil {
 		s.oidc = newOidcClient(s, *config.Oidc)
 	}
@@ -363,7 +363,8 @@ func (s *Service) insertSession(ctx context.Context, q *repo.Queries, session Se
 		return "", err
 	}
 	if err := q.InsertSession(ctx, repo.InsertSessionParams{
-		TokenHash: hash, Email: email, Name: name, Issuer: issuer, Subject: subject, PersonId: session.PersonId, ExpiresAt: s.now().Add(s.config.SessionTtl),
+		TokenHash: hash, Email: email, Name: name, Issuer: issuer, Subject: subject, PersonId: session.PersonId,
+		Ttl: pgtype.Interval{Microseconds: s.config.SessionTtl.Microseconds(), Valid: true},
 	}); err != nil {
 		return "", err
 	}

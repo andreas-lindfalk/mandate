@@ -85,7 +85,7 @@ One binary and one Postgres, on your own machine, in your cloud or on-premise. A
 
 ```sh
 git clone https://github.com/andreas-lindfalk/pgmandate && cd pgmandate
-docker compose -f deploy/quickstart/compose.yaml up        # add --build until the first release is published
+docker compose -f deploy/quickstart/compose.yaml up        # pulls the published image; --build builds this clone instead
 ```
 
 The server prints a setup link: `http://localhost:8585/setup#…`. Open it, name your organisation and yourself, and you are signed in as its owner. Then, in the UI:
@@ -264,7 +264,7 @@ Push a tag, or publish a release on GitHub with a new tag:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-The `release` workflow builds the image for amd64 and arm64 and publishes it as `ghcr.io/andreas-lindfalk/pgmandate:v0.1.0` and `:latest`, reporting `v0.1.0` as its version. After the very first publish, make the package public once: your profile's *Packages* tab, *pgmandate*, *Package settings*, *Danger Zone*, *Change visibility* to public.
+The `release` workflow builds the image for amd64 and arm64 and publishes it as `ghcr.io/andreas-lindfalk/pgmandate:v0.1.0` and `:latest`, reporting `v0.1.0` as its version. The package takes the public repository's visibility, so anyone can pull it; its settings are under your profile's *Packages* tab, *pgmandate*, *Package settings*.
 
 ## Writing a receiver
 
