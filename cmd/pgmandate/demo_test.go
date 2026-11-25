@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/andreas-lindfalk/pgmandate"
@@ -349,4 +351,61 @@ func TestALinkedVersionIsReported(t *testing.T) {
 	printed, err := exec.Command(binary, "version").Output()
 	require.NoError(t, err)
 	require.Equal(t, "pgmandate v9.8.7-test\n", string(printed))
+}
+
+// The command line sets pgmandate up as a managed Postgres's admin, who is
+// no superuser, and refuses to set up or serve over an app role that could
+// get past the rules.
+func TestSetupAsAManagedAdmin(t *testing.T) {
+	ctx := context.Background()
+	pg, superuser, err := testkit.StartBarePostgres(ctx)
+	require.NoError(t, err)
+	defer pg.Close()
+	conn, err := pgx.Connect(ctx, superuser)
+	require.NoError(t, err)
+	defer conn.Close(ctx) //nolint:errcheck
+	for _, statement := range []string{
+		`CREATE ROLE cloud_admin LOGIN CREATEROLE CREATEDB NOSUPERUSER PASSWORD 'admin'`,
+		`CREATE DATABASE managed OWNER cloud_admin`,
+	} {
+		_, err := conn.Exec(ctx, statement)
+		require.NoError(t, err)
+	}
+	parsed, err := url.Parse(superuser)
+	require.NoError(t, err)
+	parsed.User, parsed.Path = url.UserPassword("cloud_admin", "admin"), "/managed"
+	t.Setenv("MANDATE_DATABASE_URL", parsed.String())
+	t.Setenv("MANDATE_APP_PASSWORD", "app-secret")
+
+	var out bytes.Buffer
+	t.Setenv("MANDATE_CREATE_APP_ROLE", "no")
+	require.ErrorContains(t, run(ctx, "migrate", nil, &out), "MANDATE_CREATE_APP_ROLE is true or false", "a word that is not a boolean is refused, not read as yes")
+	t.Setenv("MANDATE_CREATE_APP_ROLE", "true")
+	require.NoError(t, run(ctx, "migrate", nil, &out))
+	require.NoError(t, run(ctx, "tenant", []string{"create", "-name", "Managed Co", "-owner", "a@managed.example", "-owner-name", "A"}, &out))
+	require.Contains(t, out.String(), "tenant ")
+	cfg, err := loadConfig()
+	require.NoError(t, err)
+	pool, err := openServingApp(ctx, cfg)
+	require.NoError(t, err, "the server's own check passes")
+	pool.Close()
+
+	// A DBA later lets the app role bypass row level security: setup and
+	// the server both refuse.
+	_, err = conn.Exec(ctx, `ALTER ROLE mandate_app BYPASSRLS`)
+	require.NoError(t, err)
+	require.ErrorIs(t, run(ctx, "migrate", nil, &out), db.ErrAppRole)
+	_, err = openServingApp(ctx, cfg)
+	require.ErrorIs(t, err, db.ErrAppRole)
+	require.ErrorContains(t, err, "bypasses row level security")
+
+	// Put right, and with a role the DBA keeps: setup leaves it alone.
+	_, err = conn.Exec(ctx, `ALTER ROLE mandate_app NOBYPASSRLS`)
+	require.NoError(t, err)
+	t.Setenv("MANDATE_CREATE_APP_ROLE", "false")
+	t.Setenv("MANDATE_APP_PASSWORD", "")
+	require.NoError(t, run(ctx, "migrate", nil, &out))
+	app, err := db.Open(ctx, func() string { u := *parsed; u.User = url.UserPassword("mandate_app", "app-secret"); return u.String() }())
+	require.NoError(t, err, "the password stays what it was")
+	app.Close()
 }
