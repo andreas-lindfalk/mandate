@@ -5,15 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
-	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,7 +28,6 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 	"github.com/andreas-lindfalk/pgmandate/pkg/actor"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
-	"github.com/andreas-lindfalk/pgmandate/pkg/events"
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
 	"github.com/andreas-lindfalk/pgmandate/pkg/jobs"
 	"github.com/andreas-lindfalk/pgmandate/sign"
@@ -45,26 +41,46 @@ func TestDeliveriesSuite(t *testing.T) {
 	suite.Run(t, new(DeliveriesSuite))
 }
 
+var ticketSchema = json.RawMessage(`{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`)
+
 type host struct {
 	receiver *webhook.Receiver
 	server   *httptest.Server
-	secret   string
+	audience string
 }
 
-// defineWebhook defines tickets.create as a webhook to a fresh receiver.
+// defineWebhook defines tickets.create as a webhook to a fresh reference
+// receiver that trusts the fixture's key and the action's audience.
 func (s *DeliveriesSuite) defineWebhook(t testfix.Tenant, mayExecute bool) host {
 	s.T().Helper()
-	receiver := webhook.NewReceiver("")
+	receiver := webhook.NewReceiver(testfix.Keys)
 	server := httptest.NewServer(receiver)
 	s.T().Cleanup(server.Close)
-	_, secret, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
+	defined, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
 		Key: "tickets.create", Description: "Open a ticket", Risk: mandates.RiskLow, MayExecute: mayExecute,
-		Schema:    json.RawMessage(`{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`),
-		Connector: actions.ConnectorWebhook, Url: server.URL + "/hooks",
+		Schema: ticketSchema, Connector: actions.ConnectorWebhook, Url: server.URL + "/hooks",
 	})
 	s.Require().NoError(err)
-	receiver.SetSecret(secret)
-	return host{receiver: receiver, server: server, secret: secret}
+	receiver.Trust(defined.ConnectorAudience, t.Id)
+	return host{receiver: receiver, server: server, audience: defined.ConnectorAudience}
+}
+
+// defineAt defines tickets.create as a webhook to any address.
+func (s *DeliveriesSuite) defineAt(t testfix.Tenant, url string) actions.Action {
+	s.T().Helper()
+	defined, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
+		Key: "tickets.create", Risk: mandates.RiskLow, Schema: ticketSchema, Connector: actions.ConnectorWebhook, Url: url,
+	})
+	s.Require().NoError(err)
+	return defined
+}
+
+// closedUrl is an address where nothing listens.
+func closedUrl() string {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	url := closed.URL
+	closed.Close()
+	return url
 }
 
 func (s *DeliveriesSuite) propose(t testfix.Tenant, subject string) proposals.Proposal {
@@ -74,7 +90,54 @@ func (s *DeliveriesSuite) propose(t testfix.Tenant, subject string) proposals.Pr
 	return p
 }
 
-func (s *DeliveriesSuite) Test_AnApprovalIsDelivered() {
+// approved proposes and approves a ticket, and returns its delivery.
+func (s *DeliveriesSuite) approved(t testfix.Tenant, subject string) deliveries.Delivery {
+	s.T().Helper()
+	p := s.propose(t, subject)
+	_, err := s.W.Kernel.Proposals.Approve(t.Reviewer, p.Id, proposals.Decision{Note: "ok"})
+	s.Require().NoError(err)
+	return s.delivery(t, p.Id)
+}
+
+func (s *DeliveriesSuite) delivery(t testfix.Tenant, proposalId uuid.UUID) deliveries.Delivery {
+	s.T().Helper()
+	d, found, err := s.W.Kernel.Deliveries.Get(t.Owner, proposalId)
+	s.Require().NoError(err)
+	s.Require().True(found)
+	return d
+}
+
+// backdate moves a delivery's times by the owner, with the triggers set
+// aside, so a test need not wait for a deadline.
+func (s *DeliveriesSuite) backdate(id uuid.UUID, set string) {
+	s.T().Helper()
+	_, err := s.W.Pg.Owner.Exec(context.Background(), `
+		BEGIN;
+		SET LOCAL session_replication_role = replica;
+		UPDATE mandate.deliveries SET `+set+` WHERE id = '`+id.String()+`';
+		COMMIT;`)
+	s.Require().NoError(err)
+}
+
+// openAttempt opens an attempt as the worker does, and leaves it open, as a
+// worker that crashed would.
+func (s *DeliveriesSuite) openAttempt(t testfix.Tenant, id uuid.UUID) {
+	s.T().Helper()
+	s.Require().NoError(s.exec(t.System, `UPDATE mandate.deliveries SET attempts_started = attempts_started + 1 WHERE id = $1`, id))
+}
+
+func (s *DeliveriesSuite) eventPayload(t testfix.Tenant, subject uuid.UUID, eventType string) map[string]any {
+	s.T().Helper()
+	var raw []byte
+	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(),
+		`SELECT payload::text FROM mandate.events WHERE tenant_id = $1 AND subject_id = $2 AND type = $3 ORDER BY seq DESC LIMIT 1`,
+		t.Id, subject, eventType).Scan(&raw))
+	var payload map[string]any
+	s.Require().NoError(json.Unmarshal(raw, &payload))
+	return payload
+}
+
+func (s *DeliveriesSuite) Test_AnApprovalIsDone() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	h := s.defineWebhook(t, false)
 	p := s.propose(t, "Printer jams")
@@ -84,74 +147,78 @@ func (s *DeliveriesSuite) Test_AnApprovalIsDelivered() {
 
 	approved, err := s.W.Kernel.Proposals.Approve(t.Reviewer, p.Id, proposals.Decision{Note: "ok"})
 	s.Require().NoError(err)
-	delivery, found, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().True(found, "the delivery is recorded in the approval's transaction")
+	delivery := s.delivery(t, p.Id)
 	s.Require().Equal(deliveries.StatusPending, delivery.Status)
-	s.Require().Empty(h.receiver.Received())
+	s.Require().Equal(h.audience, delivery.Audience)
+	decidedAt, err := time.Parse(time.RFC3339, *approved.DecidedAt)
+	s.Require().NoError(err)
+	s.Require().WithinDuration(decidedAt.Add(time.Hour), delivery.NotAfter, time.Second, "the decision's time plus the action's window")
+	s.Require().Zero(delivery.AttemptsStarted)
 
 	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, false))
 	received := h.receiver.Received()
 	s.Require().Len(received, 1)
 	s.Require().Equal(delivery.Id, received[0].DeliveryId)
 	s.Require().Equal(p.Id, received[0].Payload.Proposal.Id)
-	s.Require().Equal("tickets.create", received[0].Payload.Proposal.Action)
-	s.Require().JSONEq(`{"subject":"Printer jams"}`, string(received[0].Payload.Proposal.Payload))
-	s.Require().Equal(proposals.StatusApproved, received[0].Payload.Decision.Status)
-	s.Require().Equal(&t.ReviewerId, received[0].Payload.Decision.DecidedBy)
-	s.Require().Equal("ok", received[0].Payload.Decision.Note)
+	s.Require().Equal(h.audience, received[0].Payload.Audience)
 	s.Require().Equal(t.Id, received[0].Payload.TenantId)
-	s.Require().Equal(approved.Id, received[0].Payload.Proposal.Id)
+	s.Require().Equal(&t.ReviewerId, received[0].Payload.Decision.DecidedBy)
 
-	after, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(deliveries.StatusDelivered, after.Status)
-	s.Require().Equal(1, after.Attempts)
-	s.Require().NotNil(after.DeliveredAt)
-	s.Require().JSONEq(`{"reference":"REF-`+p.Id.String()[:8]+`","action":"tickets.create"}`, string(after.Result), "the connector's answer is kept as the result")
-	s.Require().Equal([]string{"proposal.created", "proposal.approved", "delivery.delivered"}, s.eventTypes(t.Owner, p.Id))
-	history, err := s.W.Kernel.Proposals.History(t.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().Contains(string(history[2].Payload), "resultSha256", "the chain holds the result's hash")
-	s.Require().NotContains(string(history[2].Payload), "REF-", "and not the result")
-	var deliveredEvent map[string]any
-	s.Require().NoError(json.Unmarshal(history[2].Payload, &deliveredEvent))
-	bodySum := sha256.Sum256(received[0].Body)
-	s.Require().Equal(hex.EncodeToString(bodySum[:]), deliveredEvent["bodySha256"], "the chain names the exact body that was signed and sent")
-	resultDigest, err := events.Digest(after.Result)
-	s.Require().NoError(err)
-	s.Require().Equal(resultDigest, deliveredEvent["resultSha256"])
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, false), "a delivered delivery is left alone")
+	after := s.delivery(t, p.Id)
+	s.Require().Equal(deliveries.StatusDone, after.Status)
+	s.Require().Equal(1, after.AttemptsStarted)
+	s.Require().Zero(after.AttemptsUnsent)
+	s.Require().Nil(after.AttemptOpenAt)
+	s.Require().NotNil(after.FinishedAt)
+	var result map[string]any
+	s.Require().NoError(json.Unmarshal(after.Result, &result))
+	s.Require().Equal("REF-"+p.Id.String()[:8], result["reference"], "the receiver's result is kept")
+	s.Require().Equal([]string{"proposal.created", "proposal.approved", "delivery.done"}, s.eventTypes(t.Owner, p.Id))
+	sum := sha256.Sum256(received[0].Body)
+	done := s.eventPayload(t, p.Id, "delivery.done")
+	s.Require().Equal(hex.EncodeToString(sum[:]), done["bodySha256"], "the log names the exact body sent")
+	s.Require().Equal(h.audience, done["audience"])
+
+	// Once done, nothing more is sent.
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, false))
 	s.Require().Len(h.receiver.Received(), 1)
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, uuid.New(), false), "an unknown id is not a failure")
 }
 
-// bodies records the raw body of each delivery to a connector that accepts
-// everything.
-type bodies struct {
-	mu       sync.Mutex
-	list     [][]byte
-	failNext bool
+// recorder records the raw body and headers of each delivery, and answers
+// as it is told.
+type recorder struct {
+	mu      sync.Mutex
+	bodies  [][]byte
+	headers []http.Header
+	answer  func() (int, string)
 }
 
-func (b *bodies) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+func (r *recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	body, _ := io.ReadAll(req.Body)
-	b.mu.Lock()
-	b.list = append(b.list, body)
-	fail := b.failNext
-	b.failNext = false
-	b.mu.Unlock()
-	if fail {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return
+	r.mu.Lock()
+	r.bodies = append(r.bodies, body)
+	r.headers = append(r.headers, req.Header.Clone())
+	answer := r.answer
+	r.mu.Unlock()
+	status, text := http.StatusOK, `{"outcome":"done","result":{}}`
+	if answer != nil {
+		status, text = answer()
 	}
-	w.WriteHeader(http.StatusNoContent)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(text))
 }
 
-func (b *bodies) all() [][]byte {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return slices.Clone(b.list)
+func (r *recorder) all() ([][]byte, []http.Header) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.bodies), slices.Clone(r.headers)
+}
+
+func (r *recorder) setAnswer(answer func() (int, string)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.answer = answer
 }
 
 // undeclared lists the fields of a value that a schema's properties do not
@@ -174,41 +241,32 @@ func undeclared(path string, value, schema map[string]any) []string {
 
 func (s *DeliveriesSuite) Test_TheBodyIsThePublishedContract() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	recorded := &bodies{}
+	recorded := &recorder{}
 	server := httptest.NewServer(recorded)
 	defer server.Close()
-	_, _, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
-		Key: "tickets.create", Risk: mandates.RiskLow, MayExecute: true, Connector: actions.ConnectorWebhook, Url: server.URL,
-		Schema: json.RawMessage(`{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`),
+	defined, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
+		Key: "tickets.create", Risk: mandates.RiskLow, MayExecute: true, Connector: actions.ConnectorWebhook, Url: server.URL, Schema: ticketSchema,
 	})
 	s.Require().NoError(err)
-	raw, err := os.ReadFile("../../docs/delivery-v1.schema.json")
+	raw, err := os.ReadFile("../../docs/delivery-v2.schema.json")
 	s.Require().NoError(err)
 	contract, err := actions.Compile(raw)
 	s.Require().NoError(err)
 	var contractDoc map[string]any
 	s.Require().NoError(json.Unmarshal(raw, &contractDoc))
-	// The times are the database's, whose clock may be a little off ours.
-	started := time.Now().UTC().Add(-10 * time.Second)
 
-	// An approval, with no run id: the proposal's id correlates.
-	approved := s.propose(t, "Printer jams")
-	_, err = s.W.Kernel.Proposals.Approve(t.Reviewer, approved.Id, proposals.Decision{Note: "ok"})
-	s.Require().NoError(err)
-	// An execution under a mandate, in a run the agent named.
+	approved := s.approved(t, "Printer jams")
 	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P-1", Days: 30, Condition: `payload.subject != ""`})
 	s.Require().NoError(err)
 	inRun, _, err := s.W.Kernel.Proposals.Propose(actor.WithRun(t.Agent, "run-42"), proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: "Toner", Payload: json.RawMessage(`{"subject":"Toner"}`)})
 	s.Require().NoError(err)
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, inRun.Id))
-
-	for _, id := range []uuid.UUID{approved.Id, inRun.Id} {
-		delivery, found, err := s.W.Kernel.Deliveries.Get(t.Owner, id)
-		s.Require().NoError(err)
-		s.Require().True(found)
-		s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, false))
+	executed := s.delivery(t, inRun.Id)
+	for _, d := range []deliveries.Delivery{approved, executed} {
+		s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false))
 	}
-	got := recorded.all()
+
+	got, headers := recorded.all()
 	s.Require().Len(got, 2)
 	payloads := make([]webhook.Payload, len(got))
 	for i, body := range got {
@@ -217,473 +275,405 @@ func (s *DeliveriesSuite) Test_TheBodyIsThePublishedContract() {
 		s.Require().NoError(contract.Validate(value), string(body))
 		s.Require().Empty(undeclared("", value, contractDoc), "every field of the body is in the published schema")
 		s.Require().NoError(json.Unmarshal(body, &payloads[i]), "the reference receiver reads it")
+		// Signed by the fixture's key, over the raw body, and for this
+		// action's audience and tenant.
+		s.Require().NoError(sign.Verify(testfix.Keys, headers[i].Get(sign.HeaderTimestamp), headers[i].Get(sign.HeaderSignature), body, time.Now()))
+		_, err := sign.CheckEnvelope(body, headers[i].Get(sign.HeaderDeliveryId), defined.ConnectorAudience, t.Id.String())
+		s.Require().NoError(err)
 	}
-
 	first, second := payloads[0], payloads[1]
-	s.Require().Equal(deliveries.PayloadVersion, first.Version)
-	s.Require().Equal(webhook.Version, first.Version)
-	s.Require().Equal(approved.Id.String(), first.CorrelationId, "without a run, the proposal's id correlates")
-	s.Require().Empty(first.Proposal.RunId)
+	s.Require().Equal(2, first.Version)
+	s.Require().Equal("delivery", first.Kind)
+	s.Require().Equal(approved.Id, first.DeliveryId)
+	s.Require().WithinDuration(approved.NotAfter, first.NotAfter, time.Second)
+	s.Require().Equal(first.Proposal.Id.String(), first.CorrelationId, "without a run, the proposal's id correlates")
 	s.Require().NotContains(string(got[0]), "runId", "no run id is left out, not sent empty")
-	s.Require().Equal("run-42", second.CorrelationId, "the agent's run id correlates")
-	s.Require().Equal("run-42", second.Proposal.RunId)
-	s.Require().Equal(proposals.StatusApproved, first.Decision.Status)
-	s.Require().Equal(&t.ReviewerId, first.Decision.DecidedBy)
+	s.Require().Equal("run-42", second.CorrelationId)
 	s.Require().Nil(first.Decision.ExecutionBasis)
-	s.Require().Equal(proposals.StatusExecuted, second.Decision.Status)
-	s.Require().Nil(second.Decision.DecidedBy)
 	s.Require().NotNil(second.Decision.ExecutionBasis)
-	s.Require().Equal("P-1", second.Decision.ExecutionBasis.PolicyRef)
 	s.Require().Equal(`payload.subject != ""`, second.Decision.ExecutionBasis.Condition, "the receiver sees the condition that held")
-	for _, p := range payloads {
-		for name, at := range map[string]time.Time{"createdAt": p.CreatedAt, "proposedAt": p.Proposal.ProposedAt, "decidedAt": p.Decision.DecidedAt} {
-			s.Require().False(at.Before(started), name)
-			s.Require().WithinDuration(time.Now(), at, time.Minute, name)
-			s.Require().Equal(time.UTC, at.Location(), name)
-		}
-		s.Require().False(p.Decision.DecidedAt.Before(p.Proposal.ProposedAt), "decided after it was proposed")
-		s.Require().False(p.CreatedAt.Before(p.Decision.DecidedAt.Truncate(time.Second)), "recorded with the decision")
-	}
+	s.Require().Len(second.Decision.ExecutionBasis.Budgets, 1)
 
-	// The body is the same on every attempt: a retry repeats it.
-	retried := s.propose(t, "Again")
-	_, err = s.W.Kernel.Proposals.Approve(t.Owner, retried.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	again, _, err := s.W.Kernel.Deliveries.Get(t.Owner, retried.Id)
-	s.Require().NoError(err)
-	recorded.mu.Lock()
-	recorded.failNext = true
-	recorded.mu.Unlock()
-	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, again.Id, false), "the first attempt is refused")
+	// Within one audience the body is the same on every attempt; only the
+	// timestamp and the signature change.
+	again := s.approved(t, "Again")
+	calls := 0
+	recorded.setAnswer(func() (int, string) {
+		calls++
+		if calls == 1 {
+			return http.StatusServiceUnavailable, ``
+		}
+		return http.StatusOK, `{"outcome":"done"}`
+	})
+	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, again.Id, false))
 	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, again.Id, false))
-	got = recorded.all()
+	got, _ = recorded.all()
 	s.Require().Len(got, 4)
 	s.Require().Equal(string(got[2]), string(got[3]))
 }
 
-func (s *DeliveriesSuite) Test_TheReceiverRefusesWhatItShouldNot() {
-	receiver := webhook.NewReceiver("mws_0123456789abcdef0123456789abcdef")
-	server := httptest.NewServer(receiver)
-	defer server.Close()
-	post := func(body string) int {
-		return s.postSigned(server.URL, "mws_0123456789abcdef0123456789abcdef", body)
-	}
-	s.Require().Equal(http.StatusOK, post(`{"version":1,"deliveryId":"ID","proposal":{"id":"ID","action":"a.b"},"decision":{"status":"approved"}}`))
-	s.Require().Equal(http.StatusBadRequest, post(`{"version":2,"deliveryId":"ID","proposal":{"id":"ID","action":"a.b"},"decision":{"status":"approved"}}`))
-	s.Require().Equal(http.StatusBadRequest, post(`{"deliveryId":"ID","proposal":{"id":"ID","action":"a.b"},"decision":{"status":"approved"}}`), "a body with no version is not version 1")
-	s.Require().Equal(http.StatusForbidden, post(`{"version":1,"deliveryId":"ID","proposal":{"id":"ID","action":"a.b"},"decision":{"status":"pending"}}`), "only a decision is carried out")
-	s.Require().Len(receiver.Received(), 1)
-
-	// A secret bound to one tenant's action signs for nothing else.
-	tenantId := uuid.New()
-	bound := webhook.NewReceiver("")
-	bound.AddSecretFor("mws_bound_secret_0123456789abcdef", tenantId, "tickets.create")
-	boundServer := httptest.NewServer(bound)
-	defer boundServer.Close()
-	body := func(tenant uuid.UUID, action string) string {
-		return `{"version":1,"deliveryId":"ID","tenantId":"` + tenant.String() + `","proposal":{"id":"ID","action":"` + action + `"},"decision":{"status":"executed"}}`
-	}
-	s.Require().Equal(http.StatusOK, s.postSigned(boundServer.URL, "mws_bound_secret_0123456789abcdef", body(tenantId, "tickets.create")))
-	s.Require().Equal(http.StatusForbidden, s.postSigned(boundServer.URL, "mws_bound_secret_0123456789abcdef", body(tenantId, "refunds.issue")))
-	s.Require().Equal(http.StatusForbidden, s.postSigned(boundServer.URL, "mws_bound_secret_0123456789abcdef", body(uuid.New(), "tickets.create")))
-	s.Require().Len(bound.Received(), 1)
-}
-
-// postSigned posts a body signed with the secret under a fresh delivery id,
-// which replaces every ID in the body, and returns the status.
-func (s *DeliveriesSuite) postSigned(url, secret, body string) int {
-	s.T().Helper()
-	id := uuid.New()
-	body = strings.ReplaceAll(body, "ID", id.String())
-	now := time.Now().Unix()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, strings.NewReader(body))
-	s.Require().NoError(err)
-	req.Header.Set(sign.HeaderDeliveryId, id.String())
-	req.Header.Set(sign.HeaderTimestamp, strconv.FormatInt(now, 10))
-	req.Header.Set(sign.HeaderSignature, sign.Signature([]byte(secret), now, []byte(body)))
-	res, err := http.DefaultClient.Do(req)
-	s.Require().NoError(err)
-	defer func() { _ = res.Body.Close() }()
-	return res.StatusCode
-}
-
-func (s *DeliveriesSuite) Test_AnExecutionIsDeliveredWithItsBasis() {
-	t := s.W.NewTenant(s.T(), "Acme")
-	h := s.defineWebhook(t, true)
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P", Days: 30})
-	s.Require().NoError(err)
-	p := s.propose(t, "Keyboard missing")
-	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, p.Id))
-	delivery, found, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().True(found)
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, false))
-	received := h.receiver.Received()
-	s.Require().Len(received, 1)
-	s.Require().Equal(proposals.StatusExecuted, received[0].Payload.Decision.Status)
-	s.Require().Nil(received[0].Payload.Decision.DecidedBy)
-	s.Require().NotNil(received[0].Payload.Decision.ExecutionBasis)
-	s.Require().Equal(m.Id, received[0].Payload.Decision.ExecutionBasis.MandateId)
-	byProposal, err := s.W.Kernel.Deliveries.ByProposals(t.Owner, []uuid.UUID{p.Id, uuid.New()})
-	s.Require().NoError(err)
-	s.Require().Len(byProposal, 1)
-}
-
-func (s *DeliveriesSuite) Test_FailuresRetryAndFinallyFail() {
+// A delivery for another audience does nothing at the receiver, which says
+// so; it is never acted on by a receiver it was not meant for.
+func (s *DeliveriesSuite) Test_AReceiverAcceptsOnlyItsOwn() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	h := s.defineWebhook(t, false)
-	p := s.propose(t, "Monitor flickers")
-	_, err := s.W.Kernel.Proposals.Approve(t.Owner, p.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	delivery, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-
-	h.receiver.FailNext(1)
-	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, false))
-	after, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
+	stale := webhook.NewReceiver(testfix.Keys)
+	stale.Trust(h.audience, t.Id)
+	staleServer := httptest.NewServer(stale)
+	defer staleServer.Close()
+	// The action now points at a receiver still configured with the old
+	// audience: it acts on nothing, and the delivery is retried rather than
+	// refused, since the receiver may simply not be told the new one yet.
+	moved := s.defineAt(t, staleServer.URL)
+	s.Require().NotEqual(h.audience, moved.ConnectorAudience, "a move draws a new audience")
+	d := s.approved(t, "Printer jams")
+	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false), "no outcome: tried again")
+	after := s.delivery(t, d.ProposalId)
 	s.Require().Equal(deliveries.StatusPending, after.Status)
-	s.Require().Equal(1, after.Attempts)
-	s.Require().Equal(500, *after.LastStatus)
-	s.Require().Contains(after.LastError, "500")
-	s.Require().Equal([]string{"proposal.created", "proposal.approved"}, s.eventTypes(t.Owner, p.Id), "a retryable failure is not in the chain")
+	s.Require().Contains(after.LastError, "403 without an outcome")
+	s.Require().Empty(stale.Received())
 
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, false), "the retry succeeds")
-	after, _, err = s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(deliveries.StatusDelivered, after.Status)
-	s.Require().Equal(2, after.Attempts)
+	// Once told the new audience, it accepts the same delivery.
+	stale.Trust(moved.ConnectorAudience, t.Id)
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false))
+	after = s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusDone, after.Status)
+	s.Require().Len(stale.Received(), 1)
+	s.Require().Equal(moved.ConnectorAudience, stale.Received()[0].Payload.Audience)
+}
 
-	// A wrong secret is refused by the receiver; the last attempt fails for good.
-	other := s.propose(t, "Coffee machine")
-	_, err = s.W.Kernel.Proposals.Approve(t.Owner, other.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	otherDelivery, _, err := s.W.Kernel.Deliveries.Get(t.Owner, other.Id)
-	s.Require().NoError(err)
-	// A 401 is retried, since a receiver answers it while a rotated secret
-	// reaches it; it fails for good only on the last attempt.
-	h.receiver.SetSecret("mws_somethingelse_somethingelse")
-	err = s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, otherDelivery.Id, false)
-	s.Require().Error(err)
-	var notCancelled *river.JobCancelError
-	s.Require().False(errors.As(err, &notCancelled), "a 401 leaves the job to retry")
-	retrying, _, err := s.W.Kernel.Deliveries.Get(t.Owner, other.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(deliveries.StatusPending, retrying.Status)
-	s.Require().Equal(401, *retrying.LastStatus)
-	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, otherDelivery.Id, true))
-	failed, _, err := s.W.Kernel.Deliveries.Get(t.Owner, other.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(deliveries.StatusFailed, failed.Status)
-	s.Require().Equal(401, *failed.LastStatus)
-	s.Require().NotNil(failed.FailedAt)
-	s.Require().Equal([]string{"proposal.created", "proposal.approved", "delivery.failed"}, s.eventTypes(t.Owner, other.Id))
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, otherDelivery.Id, false), "final is final")
-	decided, err := s.W.Kernel.Proposals.Get(t.Owner, other.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(proposals.StatusApproved, decided.Status, "the decision stands whatever the connector did")
+// Only an explicit answer is final. Without one the delivery is retried,
+// and when the attempts run out it ends unknown if an attempt may have
+// reached the receiver, and not sent if none did.
+func (s *DeliveriesSuite) Test_WithoutAnAnswerItEndsUnknownOrNotSent() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	recorded := &recorder{answer: func() (int, string) { return http.StatusNotFound, `<html>a proxy</html>` }}
+	server := httptest.NewServer(recorded)
+	defer server.Close()
+	s.defineAt(t, server.URL)
+	d := s.approved(t, "Printer jams")
+	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false), "a 404 without an outcome is retried, never read as refused")
+	s.Require().Equal(deliveries.StatusPending, s.delivery(t, d.ProposalId).Status)
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, true))
+	after := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusUnknown, after.Status, "it reached something that may have acted")
+	s.Require().Equal(2, after.AttemptsStarted)
+	s.Require().Contains(s.eventTypes(t.Owner, d.ProposalId), "delivery.unknown")
 
-	// A person sends the failed delivery again, once the receiver is right.
-	_, err = s.W.Kernel.Deliveries.Redeliver(t.Agent, other.Id)
-	s.code(err, fault.PermissionDenied)
-	_, err = s.W.Kernel.Deliveries.Redeliver(t.Reviewer, p.Id)
+	// Nothing listening: proven never sent, on every attempt.
+	s.defineAt(t, closedUrl())
+	never := s.approved(t, "Toner")
+	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, never.Id, false))
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, never.Id, true))
+	after = s.delivery(t, never.ProposalId)
+	s.Require().Equal(deliveries.StatusNotSent, after.Status)
+	s.Require().Equal(2, after.AttemptsStarted)
+	s.Require().Equal(2, after.AttemptsUnsent)
+	s.Require().Contains(s.eventTypes(t.Owner, never.ProposalId), "delivery.not_sent")
+}
+
+// A refusal is final: nothing was done, and it is never sent again.
+func (s *DeliveriesSuite) Test_ARefusalIsFinal() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	h := s.defineWebhook(t, false)
+	h.receiver.Handle = func(webhook.Received) (any, error) {
+		return nil, fmt.Errorf("%w: the ticket queue is closed", webhook.ErrRefused)
+	}
+	d := s.approved(t, "Printer jams")
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false))
+	after := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusRefused, after.Status)
+	s.Require().JSONEq(`{"reason":"refused: the ticket queue is closed"}`, string(after.Result))
+	_, err := s.W.Kernel.Deliveries.SendAgain(t.Owner, d.ProposalId)
 	s.code(err, fault.Conflict)
-	h.receiver.SetSecret(h.secret)
-	again, err := s.W.Kernel.Deliveries.Redeliver(t.Reviewer, other.Id)
+	s.refused(t.Owner, `UPDATE mandate.deliveries SET status = 'pending' WHERE id = $1`, d.Id)
+}
+
+// A delivery never sent may be sent again by a person, the same delivery,
+// before its deadline; after the deadline, not.
+func (s *DeliveriesSuite) Test_ANeverSentDeliveryIsSentAgainBeforeItsDeadline() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	url := closedUrl()
+	s.defineAt(t, url)
+	d := s.approved(t, "Printer jams")
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, true))
+	s.Require().Equal(deliveries.StatusNotSent, s.delivery(t, d.ProposalId).Status)
+
+	_, err := s.W.Kernel.Deliveries.SendAgain(t.Agent, d.ProposalId)
+	s.code(err, fault.PermissionDenied)
+	h := s.defineWebhook(t, false)
+	again, err := s.W.Kernel.Deliveries.SendAgain(t.Reviewer, d.ProposalId)
 	s.Require().NoError(err)
 	s.Require().Equal(deliveries.StatusPending, again.Status)
-	s.Require().Nil(again.FailedAt)
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, otherDelivery.Id, false))
-	resent, _, err := s.W.Kernel.Deliveries.Get(t.Owner, other.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(deliveries.StatusDelivered, resent.Status)
-	s.Require().Equal(3, resent.Attempts, "the attempts keep counting")
-	s.Require().Equal([]string{"proposal.created", "proposal.approved", "delivery.failed", "delivery.retried", "delivery.delivered"}, s.eventTypes(t.Owner, other.Id))
+	s.Require().Equal(d.Id, again.Id, "the same delivery")
+	s.Require().Equal(h.audience, again.Audience, "to the action's address and audience as they are now")
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false))
+	s.Require().Equal(deliveries.StatusDone, s.delivery(t, d.ProposalId).Status)
 
-	// The receiver saw a delivery twice in the retry above and did it once.
-	seen := 0
-	for _, r := range h.receiver.Received() {
-		if r.Payload.Proposal.Id == p.Id {
-			seen++
-		}
-	}
-	s.Require().Equal(1, seen)
-
-	// A delivery that cannot even be prepared fails the same way: here the
-	// action was redefined as builtin and lost its secret.
-	stranded := s.propose(t, "Door squeaks")
-	_, err = s.W.Kernel.Proposals.Approve(t.Owner, stranded.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	strandedDelivery, _, err := s.W.Kernel.Deliveries.Get(t.Owner, stranded.Id)
-	s.Require().NoError(err)
-	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "tickets.create", Risk: mandates.RiskLow, Connector: actions.ConnectorBuiltin})
-	s.Require().NoError(err)
-	err = s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, strandedDelivery.Id, false)
-	var strandedCancel *river.JobCancelError
-	s.Require().ErrorAs(err, &strandedCancel, "a connector that is gone fails for good at once, and the job leaves the queue")
-	strandedAfter, _, err := s.W.Kernel.Deliveries.Get(t.Owner, stranded.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(deliveries.StatusFailed, strandedAfter.Status)
-	s.Require().Contains(strandedAfter.LastError, "no longer has a webhook connector")
-	s.Require().Equal([]string{"proposal.created", "proposal.approved", "delivery.failed"}, s.eventTypes(t.Owner, stranded.Id))
-	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "tickets.create", Risk: mandates.RiskLow, Connector: actions.ConnectorWebhook, Url: h.server.URL + "/hooks", Schema: json.RawMessage(`{"type":"object"}`)})
-	s.Require().NoError(err)
-
-	// A final refusal takes the job out of the queue, so sending again is
-	// not held up behind a retry with nothing left to do.
-	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "not for this action", http.StatusForbidden)
-	}))
-	defer refusing.Close()
-	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "refused.always", Risk: mandates.RiskLow, Connector: actions.ConnectorWebhook, Url: refusing.URL, Schema: json.RawMessage(`{"type":"object"}`)})
-	s.Require().NoError(err)
-	final, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "refused.always", Title: "Refused for good", Payload: json.RawMessage(`{}`)})
-	s.Require().NoError(err)
-	_, err = s.W.Kernel.Proposals.Approve(t.Owner, final.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	finalDelivery, _, err := s.W.Kernel.Deliveries.Get(t.Owner, final.Id)
-	s.Require().NoError(err)
-	err = s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, finalDelivery.Id, false)
-	var cancelled *river.JobCancelError
-	s.Require().ErrorAs(err, &cancelled, "a 403 before the last attempt cancels the job")
-
-	// An answer that is large as text but small as JSON text is kept; one
-	// that cannot be kept still counts as delivered.
-	big := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"a":[` + strings.TrimSuffix(strings.Repeat("1,", 2000), ",") + `]}`))
-	}))
-	defer big.Close()
-	_, bigSecret, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "numbers.add", Risk: mandates.RiskLow, Connector: actions.ConnectorWebhook, Url: big.URL, Schema: json.RawMessage(`{"type":"object"}`)})
-	s.Require().NoError(err)
-	s.Require().NotEmpty(bigSecret)
-	numbers, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "numbers.add", Title: "numbers", Payload: json.RawMessage(`{}`)})
-	s.Require().NoError(err)
-	_, err = s.W.Kernel.Proposals.Approve(t.Owner, numbers.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	numbersDelivery, _, err := s.W.Kernel.Deliveries.Get(t.Owner, numbers.Id)
-	s.Require().NoError(err)
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, numbersDelivery.Id, false))
-	kept, _, err := s.W.Kernel.Deliveries.Get(t.Owner, numbers.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(deliveries.StatusDelivered, kept.Status)
-	s.Require().NotEmpty(kept.Result, "four thousand bytes of numbers fit")
-
-	// An unreachable connector is a failure without a status.
-	h.server.Close()
-	gone := s.propose(t, "Lamp broken")
-	_, err = s.W.Kernel.Proposals.Approve(t.Owner, gone.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	goneDelivery, _, err := s.W.Kernel.Deliveries.Get(t.Owner, gone.Id)
-	s.Require().NoError(err)
-	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, goneDelivery.Id, false))
-	unreachable, _, err := s.W.Kernel.Deliveries.Get(t.Owner, gone.Id)
-	s.Require().NoError(err)
-	s.Require().Nil(unreachable.LastStatus)
-	s.Require().NotEmpty(unreachable.LastError)
+	// Past the last moment an attempt may open, it cannot be sent again.
+	s.defineAt(t, url)
+	late := s.approved(t, "Toner")
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, late.Id, true))
+	s.backdate(late.Id, `not_after = now() + interval '10 seconds'`)
+	_, err = s.W.Kernel.Deliveries.SendAgain(t.Reviewer, late.ProposalId)
+	s.code(err, fault.Conflict)
+	s.refused(t.Owner, `UPDATE mandate.deliveries SET status = 'pending' WHERE id = $1`, late.Id)
 }
 
-// A receiver's reason for refusing is kept with the failed delivery, named
-// in the log by digest, for the person and the agent to read. A reason sent
-// with an answer that will be retried is not kept: nothing is settled yet.
-func (s *DeliveriesSuite) Test_ARefusalKeepsItsReason() {
+// An unknown delivery is settled by a person, and only once the work can
+// no longer happen.
+func (s *DeliveriesSuite) Test_AnUnknownDeliveryIsSettledOnlyWhenTheWorkCannotHappen() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	status := http.StatusUnprocessableEntity
-	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(`{"refused":"refused: no such order"}`))
-	}))
-	defer refusing.Close()
-	_, _, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "refunds.issue", Risk: mandates.RiskLow, Connector: actions.ConnectorWebhook, Url: refusing.URL, Schema: json.RawMessage(`{"type":"object"}`)})
-	s.Require().NoError(err)
-	deliver := func() deliveries.Delivery {
-		p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Why.", IdempotencyKey: uuid.NewString(), Action: "refunds.issue", Title: "Refund", Payload: json.RawMessage(`{}`)})
-		s.Require().NoError(err)
-		_, err = s.W.Kernel.Proposals.Approve(t.Owner, p.Id, proposals.Decision{})
-		s.Require().NoError(err)
-		d, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-		s.Require().NoError(err)
-		s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false))
-		after, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-		s.Require().NoError(err)
-		return after
-	}
-	refused := deliver()
-	s.Require().Equal(deliveries.StatusFailed, refused.Status)
-	s.Require().JSONEq(`{"refused":"refused: no such order"}`, string(refused.Result))
-	var failed map[string]any
-	s.Require().NoError(db.InTx(t.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
-		event, ok, err := events.Last(t.Owner, tx, refused.ProposalId, "delivery.failed")
-		s.Require().True(ok)
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(event.Payload, &failed)
-	}))
-	digest, err := events.Digest(refused.Result)
-	s.Require().NoError(err)
-	s.Require().Equal(digest, failed["resultSha256"])
-	s.Require().NotContains(fmt.Sprint(failed), "no such order", "the log holds the reason's digest, not its text")
+	recorded := &recorder{answer: func() (int, string) { return http.StatusOK, `{"outcome":"unknown","reason":"the bank did not answer"}` }}
+	server := httptest.NewServer(recorded)
+	defer server.Close()
+	s.defineAt(t, server.URL)
+	d := s.approved(t, "Refund")
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false))
+	unknown := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusUnknown, unknown.Status)
+	s.Require().Contains(string(unknown.Result), "the bank did not answer")
 
-	status = http.StatusServiceUnavailable
-	retried := deliver()
-	s.Require().Equal(deliveries.StatusPending, retried.Status)
-	s.Require().Empty(retried.Result, "an answer to an attempt that will be retried settles nothing")
+	_, err := s.W.Kernel.Deliveries.Settle(t.Reviewer, d.ProposalId, false)
+	s.code(err, fault.Conflict)
+	s.Require().Contains(err.Error(), "not yet")
+	s.refused(t.Owner, `UPDATE mandate.deliveries SET status = 'settled_not_done' WHERE id = $1`, d.Id)
+
+	// The work can no longer happen once notAfter, the request timeout and
+	// the allowance for clocks have passed.
+	s.backdate(d.Id, `not_after = now() - interval '5 minutes 20 seconds'`)
+	_, err = s.W.Kernel.Deliveries.Settle(t.Agent, d.ProposalId, false)
+	s.code(err, fault.PermissionDenied)
+	s.refused(t.System, `UPDATE mandate.deliveries SET status = 'settled_not_done' WHERE id = $1`, d.Id)
+	settled, err := s.W.Kernel.Deliveries.Settle(t.Reviewer, d.ProposalId, false)
+	s.Require().NoError(err)
+	s.Require().Equal(deliveries.StatusSettledNotDone, settled.Status)
+	s.Require().Equal(&t.ReviewerId, settled.SettledBy)
+	types := s.eventTypes(t.Owner, d.ProposalId)
+	s.Require().Equal("delivery.settled", types[len(types)-1])
+	_, err = s.W.Kernel.Deliveries.Settle(t.Owner, d.ProposalId, true)
+	s.code(err, fault.Conflict)
+	s.refused(t.Owner, `UPDATE mandate.deliveries SET status = 'settled_done' WHERE id = $1`, d.Id)
 }
 
-func (s *DeliveriesSuite) Test_DatabaseGuardsDeliveries() {
-	a := s.W.NewTenant(s.T(), "A")
-	b := s.W.NewTenant(s.T(), "B")
-	s.defineWebhook(a, false)
-	p := s.propose(a, "Printer jams")
-	_, err := s.W.Kernel.Proposals.Approve(a.Owner, p.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	delivery, _, err := s.W.Kernel.Deliveries.Get(a.Owner, p.Id)
-	s.Require().NoError(err)
-	s.refused(a.Owner, `UPDATE mandate.deliveries SET status = 'delivered' WHERE id = $1`, delivery.Id)
-	s.refused(a.Agent, `UPDATE mandate.deliveries SET status = 'delivered' WHERE id = $1`, delivery.Id)
-	s.refused(a.Agent, `INSERT INTO mandate.deliveries (id, tenant_id, proposal_id, action_key, url) VALUES (gen_random_uuid(), $1, $2, 'x.y', 'https://x')`, a.Id, p.Id)
-	s.refused(a.Owner, `DELETE FROM mandate.deliveries WHERE id = $1`, delivery.Id)
-	// A delivery is for a decided proposal, to its action's own connector.
-	waiting := s.propose(a, "Still waiting")
-	insert := `INSERT INTO mandate.deliveries (id, tenant_id, proposal_id, action_key, url) VALUES (gen_random_uuid(), $1, $2, 'tickets.create', $3)`
-	s.refused(a.Owner, insert, a.Id, waiting.Id, delivery.Url)
-	s.refused(a.System, insert, a.Id, waiting.Id, delivery.Url)
-	_, err = s.W.Kernel.Proposals.Approve(a.Owner, waiting.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	other := s.propose(a, "Somewhere else")
-	_, err = s.W.Kernel.Proposals.Reject(a.Owner, other.Id, "no")
-	s.Require().NoError(err)
-	s.refused(a.Owner, insert, a.Id, other.Id, delivery.Url)
-	// Decided, but to somewhere that is not its action's connector.
-	second := s.propose(a, "Decided, wrong address")
-	_, err = s.W.Kernel.Proposals.Reject(a.Owner, second.Id, "set up")
-	s.Require().NoError(err)
-	s.refused(a.Owner, insert, a.Id, waiting.Id, "https://attacker.example/x")
-	s.refused(a.System, insert, a.Id, waiting.Id, "https://attacker.example/x")
-	s.refused(a.System, `UPDATE mandate.deliveries SET url = 'https://attacker.example/x' WHERE id = $1`, delivery.Id)
-	s.refused(a.Owner, `UPDATE mandate.deliveries SET status = 'pending' WHERE id = $1`, delivery.Id)
-	_, found, err := s.W.Kernel.Deliveries.Get(b.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().False(found)
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), b.Id, delivery.Id, false), "B's system cannot see A's delivery")
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), a.Id, delivery.Id, false))
-	done, _, err := s.W.Kernel.Deliveries.Get(a.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(deliveries.StatusDelivered, done.Status)
-	s.refused(a.System, `UPDATE mandate.deliveries SET status = 'failed' WHERE id = $1`, delivery.Id)
-	s.code(s.W.Kernel.Actions.Remove(b.Owner, "tickets.create"), fault.NotFound)
-}
-
-// A delivery still waiting when its action moves goes to the new address,
-// signed with the new secret: the old receiver no longer holds it.
-func (s *DeliveriesSuite) Test_WaitingDeliveriesMoveWithTheirAction() {
-	t := s.W.NewTenant(s.T(), "Acme")
-	old := s.defineWebhook(t, false)
-	p := s.propose(t, "Printer jams")
-	_, err := s.W.Kernel.Proposals.Approve(t.Owner, p.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	waiting, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(old.server.URL+"/hooks", waiting.Url)
-
-	// A reviewer cannot point a delivery anywhere, nor an owner at an
-	// address that is not the action's.
-	s.refused(t.Reviewer, `UPDATE mandate.deliveries SET url = 'https://elsewhere.example/hooks' WHERE id = $1`, waiting.Id)
-	s.refused(t.Owner, `UPDATE mandate.deliveries SET url = 'https://elsewhere.example/hooks' WHERE id = $1`, waiting.Id)
-
-	moved := webhook.NewReceiver("")
-	movedServer := httptest.NewServer(moved)
-	defer movedServer.Close()
-	_, secret, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
-		Key: "tickets.create", Description: "Open a ticket", Risk: mandates.RiskLow,
-		Schema:    json.RawMessage(`{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`),
-		Connector: actions.ConnectorWebhook, Url: movedServer.URL + "/hooks",
-	})
-	s.Require().NoError(err)
-	s.Require().NotEmpty(secret, "a moved connector gets a new secret")
-	moved.SetSecret(secret)
-
-	after, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(movedServer.URL+"/hooks", after.Url, "the waiting delivery moved with its action")
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, waiting.Id, false))
-	s.Require().Len(moved.Received(), 1, "it arrives at the new receiver, which verifies the new secret")
-	s.Require().Empty(old.receiver.Received())
-	s.Require().Equal([]string{"proposal.created", "proposal.approved", "delivery.retargeted", "delivery.delivered"}, s.eventTypes(t.Owner, p.Id))
-	history, err := s.W.Kernel.Proposals.History(t.Owner, p.Id)
-	s.Require().NoError(err)
-	var approved map[string]any
-	s.Require().NoError(json.Unmarshal(history[1].Payload, &approved))
-	sum := sha256.Sum256([]byte(old.server.URL + "/hooks"))
-	s.Require().Equal(hex.EncodeToString(sum[:]), approved["connectorUrlSha256"], "the approval names the connector it was made against")
-}
-
-// A delivery recorded at the old address while the owner moved the action
-// is found behind when it is sent: it goes to the new address, signed with
-// the new secret, and the chain says so.
-func (s *DeliveriesSuite) Test_ADeliveryLeftBehindIsSentWhereTheActionIsNow() {
-	t := s.W.NewTenant(s.T(), "Acme")
-	old := s.defineWebhook(t, false)
-	p := s.propose(t, "Printer jams")
-	_, err := s.W.Kernel.Proposals.Approve(t.Owner, p.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	waiting, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-
-	// The move as the race leaves it: the action points elsewhere with a new
-	// secret, and the delivery was not moved with it.
-	moved := webhook.NewReceiver("mws_moved_secret_0123456789abcdef")
-	movedServer := httptest.NewServer(moved)
-	defer movedServer.Close()
-	s.Require().NoError(s.exec(t.Owner, `UPDATE mandate.actions SET connector_url = $1, connector_secret = 'mws_moved_secret_0123456789abcdef'::bytea WHERE key = 'tickets.create'`, movedServer.URL+"/hooks"))
-	still, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(old.server.URL+"/hooks", still.Url)
-
-	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, waiting.Id, false))
-	s.Require().Empty(old.receiver.Received(), "nothing goes to the old address")
-	s.Require().Len(moved.Received(), 1, "the new receiver verifies the new secret")
-	after, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-	s.Require().Equal(deliveries.StatusDelivered, after.Status)
-	s.Require().Equal(movedServer.URL+"/hooks", after.Url)
-	s.Require().Equal([]string{"proposal.created", "proposal.approved", "delivery.retargeted", "delivery.delivered"}, s.eventTypes(t.Owner, p.Id))
-	history, err := s.W.Kernel.Proposals.History(t.Owner, p.Id)
-	s.Require().NoError(err)
-	var delivered map[string]any
-	s.Require().NoError(json.Unmarshal(history[3].Payload, &delivered))
-	sum := sha256.Sum256([]byte(movedServer.URL + "/hooks"))
-	s.Require().Equal(hex.EncodeToString(sum[:]), delivered["connectorUrlSha256"], "the chain names the address it was sent to")
-}
-
-// Sending a failed delivery again always gets a job of its own, even while
-// the job that failed is still finishing in the queue: a duplicate check
-// would drop it and leave the delivery waiting with nothing to send it.
-func (s *DeliveriesSuite) Test_SendingAgainIsNeverDroppedAsADuplicate() {
+// No attempt opens too late: a delivery whose deadline is near ends before
+// anything is sent.
+func (s *DeliveriesSuite) Test_NoAttemptOpensTooLate() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	h := s.defineWebhook(t, false)
-	p := s.propose(t, "Printer jams")
-	_, err := s.W.Kernel.Proposals.Approve(t.Owner, p.Id, proposals.Decision{})
-	s.Require().NoError(err)
-	delivery, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
-	s.Require().NoError(err)
-	h.receiver.FailNext(1)
-	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, true))
+	d := s.approved(t, "Printer jams")
+	s.backdate(d.Id, `not_after = now() + interval '10 seconds'`)
+	s.refused(t.System, `UPDATE mandate.deliveries SET attempts_started = attempts_started + 1 WHERE id = $1`, d.Id)
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false))
+	s.Require().Empty(h.receiver.Received())
+	after := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusNotSent, after.Status)
+	s.Require().Zero(after.AttemptsStarted)
+}
 
-	// A queue that is set up but not run: the failed attempt's job is
-	// still there, as it is while River finishes it.
+// An attempt left open by a crash counts as possibly sent: a retry that
+// then fails to connect still ends unknown, never not sent.
+func (s *DeliveriesSuite) Test_ACrashLeavesAnAttemptPossiblySent() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	s.defineAt(t, closedUrl())
+	d := s.approved(t, "Printer jams")
+	s.openAttempt(t, d.Id)
+	s.Require().ErrorContains(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, true), "still open", "a young open attempt is waited for")
+	s.backdate(d.Id, `attempt_open_at = now() - interval '1 minute'`)
+	finished, err := s.W.Kernel.Deliveries.FinishDue(t.System)
+	s.Require().NoError(err)
+	s.Require().Zero(finished, "the sweep closes the attempt, but the deadline is not near")
+	s.Require().Nil(s.delivery(t, d.ProposalId).AttemptOpenAt)
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, true))
+	after := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusUnknown, after.Status, "the crashed attempt may have reached the receiver")
+	s.Require().Equal(2, after.AttemptsStarted)
+	s.Require().Equal(1, after.AttemptsUnsent)
+}
+
+// A job that finds an attempt left open by a crash closes it itself, still
+// counted as possibly sent, and goes on: past the deadline it finishes the
+// delivery at once rather than failing until its attempts run out.
+func (s *DeliveriesSuite) Test_AJobClosesAStaleAttemptItself() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	s.defineAt(t, closedUrl())
+
+	// Before the deadline: closed, and a new attempt is made.
+	d := s.approved(t, "Printer jams")
+	s.openAttempt(t, d.Id)
+	s.backdate(d.Id, `attempt_open_at = now() - interval '1 minute'`)
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, true))
+	after := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusUnknown, after.Status, "the crashed attempt may have reached the receiver")
+	s.Require().Equal(2, after.AttemptsStarted)
+	s.Require().Equal(1, after.AttemptsUnsent)
+
+	// Past the last moment an attempt may open: finished at once, with no
+	// new attempt and no error for the queue to retry.
+	late := s.approved(t, "Keyboard")
+	s.openAttempt(t, late.Id)
+	s.backdate(late.Id, `attempt_open_at = now() - interval '1 minute', not_after = now() + interval '5 seconds'`)
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, late.Id, false))
+	after = s.delivery(t, late.ProposalId)
+	s.Require().Equal(deliveries.StatusUnknown, after.Status)
+	s.Require().Equal(1, after.AttemptsStarted, "no attempt opens too late")
+	s.Require().Nil(after.AttemptOpenAt)
+
+	// Its action removed: finished at once too.
+	gone := s.approved(t, "Monitor")
+	s.openAttempt(t, gone.Id)
+	s.backdate(gone.Id, `attempt_open_at = now() - interval '1 minute'`)
+	s.Require().NoError(s.W.Kernel.Actions.Remove(t.Owner, "tickets.create"))
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, gone.Id, false))
+	after = s.delivery(t, gone.ProposalId)
+	s.Require().Equal(deliveries.StatusUnknown, after.Status)
+	s.Require().Equal(1, after.AttemptsStarted)
+}
+
+// A receiver that answers after its attempt was closed does not change the
+// delivery: the answer is recorded as a conflict for a person.
+func (s *DeliveriesSuite) Test_ALateAnswerIsAConflict() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	h := s.defineWebhook(t, false)
+	started, release := make(chan struct{}), make(chan struct{})
+	h.receiver.Handle = func(webhook.Received) (any, error) {
+		close(started)
+		<-release
+		return map[string]any{"done": true}, nil
+	}
+	d := s.approved(t, "Printer jams")
+	result := make(chan error, 1)
+	go func() { result <- s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false) }()
+	select {
+	case <-started:
+	case err := <-result:
+		close(release)
+		s.Require().FailNow("the delivery ended before the receiver was called", "%v", err)
+	case <-time.After(10 * time.Second):
+		close(release)
+		s.Require().FailNow("the receiver was never called")
+	}
+	s.backdate(d.Id, `attempt_open_at = now() - interval '1 minute'`)
+	_, err := s.W.Kernel.Deliveries.FinishDue(t.System)
+	s.Require().NoError(err)
+	close(release)
+	s.Require().ErrorContains(<-result, "answered done after its attempt was closed", "the job says what happened, not that no outcome came")
+	after := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusPending, after.Status, "the late answer changes nothing")
+	s.Require().Contains(s.eventTypes(t.Owner, d.ProposalId), "delivery.conflict")
+}
+
+// The sweep finishes deliveries past the last moment an attempt may open,
+// and never one with an attempt open.
+func (s *DeliveriesSuite) Test_TheSweepFinishesWhatIsDue() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	s.defineWebhook(t, false)
+	due := s.approved(t, "Due")
+	open := s.approved(t, "Open")
+	s.openAttempt(t, open.Id)
+	waiting := s.approved(t, "Waiting")
+	s.backdate(due.Id, `not_after = now() + interval '5 seconds'`)
+	s.backdate(open.Id, `not_after = now() + interval '5 seconds'`)
+
+	_, err := s.W.Kernel.Deliveries.FinishDue(t.Owner)
+	s.code(err, fault.PermissionDenied)
+	finished, err := s.W.Kernel.Deliveries.FinishDue(t.System)
+	s.Require().NoError(err)
+	s.Require().Equal(1, finished)
+	s.Require().Equal(deliveries.StatusNotSent, s.delivery(t, due.ProposalId).Status)
+	s.Require().Equal(deliveries.StatusPending, s.delivery(t, open.ProposalId).Status, "an attempt is open")
+	s.Require().Equal(deliveries.StatusPending, s.delivery(t, waiting.ProposalId).Status)
+
+	// Across tenants, through the kernel.
+	other := s.W.NewTenant(s.T(), "Bolt")
+	s.defineWebhook(other, false)
+	theirs := s.approved(other, "Theirs")
+	s.backdate(theirs.Id, `not_after = now() + interval '5 seconds'`)
+	total, err := s.W.Kernel.FinishDue(context.Background())
+	s.Require().NoError(err)
+	s.Require().Equal(1, total)
+	s.Require().Equal(deliveries.StatusNotSent, s.delivery(other, theirs.ProposalId).Status)
+}
+
+// A waiting delivery moves with its action, to the new address and
+// audience, only while nothing was possibly sent.
+func (s *DeliveriesSuite) Test_AWaitingDeliveryMovesOnlyBeforeAnythingWasSent() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	old := s.defineWebhook(t, false)
+	fresh := s.approved(t, "Fresh")
+	sent := s.approved(t, "Sent")
+	s.openAttempt(t, sent.Id)
+	s.Require().NoError(s.exec(t.System, `UPDATE mandate.deliveries SET attempt_open_at = NULL WHERE id = $1`, sent.Id))
+
+	moved := s.defineWebhook(t, false)
+	s.Require().NotEqual(old.audience, moved.audience)
+	got := s.delivery(t, fresh.ProposalId)
+	s.Require().Equal(moved.server.URL+"/hooks", got.Url)
+	s.Require().Equal(moved.audience, got.Audience)
+	s.Require().Contains(s.eventTypes(t.Owner, fresh.ProposalId), "delivery.retargeted")
+	stayed := s.delivery(t, sent.ProposalId)
+	s.Require().Equal(old.server.URL+"/hooks", stayed.Url, "possibly sent: it stays where it went")
+	s.Require().Equal(old.audience, stayed.Audience)
+
+	// The database holds it too.
+	s.refused(t.Owner, `UPDATE mandate.deliveries SET url = $2, audience = $3 WHERE id = $1`, sent.Id, moved.server.URL+"/hooks", moved.audience)
+	s.refused(t.Reviewer, `UPDATE mandate.deliveries SET url = 'https://elsewhere.example' WHERE id = $1`, fresh.Id)
+}
+
+func (s *DeliveriesSuite) Test_TheDatabaseHoldsTheTransitions() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	s.defineWebhook(t, false)
+	d := s.approved(t, "Printer jams")
+	for name, c := range map[string]struct {
+		ctx       context.Context
+		statement string
+	}{
+		"a person marks it done":               {t.Owner, `UPDATE mandate.deliveries SET status = 'done' WHERE id = $1`},
+		"done without an open attempt":         {t.System, `UPDATE mandate.deliveries SET status = 'done' WHERE id = $1`},
+		"two attempts at once":                 {t.System, `UPDATE mandate.deliveries SET attempts_started = attempts_started + 2 WHERE id = $1`},
+		"unsent without an open attempt":       {t.System, `UPDATE mandate.deliveries SET attempts_unsent = attempts_unsent + 1 WHERE id = $1`},
+		"a result while it waits":              {t.System, `UPDATE mandate.deliveries SET result = '{"x":1}' WHERE id = $1`},
+		"another deadline":                     {t.System, `UPDATE mandate.deliveries SET not_after = now() + interval '1 year' WHERE id = $1`},
+		"unknown with nothing possibly sent":   {t.System, `UPDATE mandate.deliveries SET status = 'unknown' WHERE id = $1`},
+		"settled while it waits":               {t.Owner, `UPDATE mandate.deliveries SET status = 'settled_done' WHERE id = $1`},
+		"to an address that is not the action": {t.System, `UPDATE mandate.deliveries SET url = 'https://elsewhere.example' WHERE id = $1`},
+	} {
+		err := s.exec(c.ctx, c.statement, d.Id)
+		s.Require().Error(err, name)
+		s.Require().Equal(fault.Name(fault.PermissionDenied), fault.Name(fault.CodeOf(fault.FromDb(err))), name+": "+err.Error())
+	}
+	// Opened: no second attempt over it, no not_sent with it possibly sent,
+	// and an answer closes it.
+	s.openAttempt(t, d.Id)
+	s.refused(t.System, `UPDATE mandate.deliveries SET attempts_started = attempts_started + 1 WHERE id = $1`, d.Id)
+	s.refused(t.System, `UPDATE mandate.deliveries SET status = 'not_sent', attempt_open_at = NULL WHERE id = $1`, d.Id)
+	s.Require().NoError(s.exec(t.System, `UPDATE mandate.deliveries SET status = 'done', attempt_open_at = NULL WHERE id = $1`, d.Id))
+	s.refused(t.System, `UPDATE mandate.deliveries SET status = 'pending' WHERE id = $1`, d.Id)
+	s.refused(t.Owner, `DELETE FROM mandate.deliveries WHERE id = $1`, d.Id)
+
+	// A delivery is recorded only in the transaction that decides, to the
+	// action's own address and audience.
+	p := s.propose(t, "Undecided")
+	s.refused(t.Owner, `INSERT INTO mandate.deliveries (id, tenant_id, proposal_id, action_key, url, audience, not_after)
+		VALUES (gen_random_uuid(), $1, $2, 'tickets.create', 'https://x.example', 'pgm:x', now())`, t.Id, p.Id)
+}
+
+// Sending again is never dropped as a duplicate of the job that gave up.
+func (s *DeliveriesSuite) Test_SendingAgainIsNeverDroppedAsADuplicate() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	s.defineAt(t, closedUrl())
+	d := s.approved(t, "Printer jams")
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, true))
 	queue := jobs.NewQueue(s.W.Pg.App)
-	service := deliveries.New(s.W.Pg.App, queue, s.W.Kernel.Proposals, deliveries.Options{AllowPrivate: true})
+	service := deliveries.New(s.W.Pg.App, queue, s.W.Kernel.Proposals, deliveries.Options{AllowPrivate: true, Signer: testfix.Signer})
 	s.Require().NoError(queue.Init(1))
 	s.Require().NoError(db.InTx(t.System, s.W.Pg.App, func(tx pgx.Tx) error {
-		return queue.InsertTx(t.System, tx, deliveries.DeliverArgs{TenantId: t.Id, DeliveryId: delivery.Id},
+		return queue.InsertTx(t.System, tx, deliveries.DeliverArgs{TenantId: t.Id, DeliveryId: d.Id, NotAfter: d.NotAfter},
 			&river.InsertOpts{Queue: jobs.QueueDeliveries, UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: jobs.InFlight}})
 	}))
-	_, err = service.Redeliver(t.Owner, p.Id)
+	_, err := service.SendAgain(t.Owner, d.ProposalId)
 	s.Require().NoError(err)
 	var count int
-	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(), `SELECT count(*) FROM mandate_river.river_job WHERE args->>'deliveryId' = $1`, delivery.Id.String()).Scan(&count))
+	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(), `SELECT count(*) FROM mandate_river.river_job WHERE args->>'deliveryId' = $1`, d.Id.String()).Scan(&count))
 	s.Require().Equal(2, count, "the resend has its own job")
 }

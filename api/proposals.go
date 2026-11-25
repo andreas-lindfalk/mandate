@@ -31,8 +31,10 @@ func toBasis(b *proposals.ExecutionBasis) *mandatev1.ExecutionBasis {
 
 func toDelivery(d deliveries.Delivery) *mandatev1.Delivery {
 	return &mandatev1.Delivery{
-		Id: d.Id.String(), Status: d.Status, Attempts: int32(d.Attempts), Url: d.Url, LastError: d.LastError, //nolint:gosec // a small count
-		DeliveredAt: tsPtr(d.DeliveredAt), FailedAt: tsPtr(d.FailedAt), ResultJson: jsonText(d.Result), MaxAttempts: deliveries.MaxAttempts,
+		Id: d.Id.String(), Status: d.Status, Attempts: int32(d.AttemptsStarted), AttemptsUnsent: int32(d.AttemptsUnsent), //nolint:gosec // small counts
+		Url: d.Url, Audience: d.Audience, LastError: d.LastError, FinishedAt: tsPtr(d.FinishedAt), NotAfter: ts(d.NotAfter),
+		ResultJson: jsonText(d.Result), MaxAttempts: deliveries.MaxAttempts,
+		SendAgainBefore: ts(d.SendAgainBefore()), SettleAfter: ts(d.SettleAfter()), SettledBy: idText(d.SettledBy),
 	}
 }
 
@@ -193,7 +195,7 @@ func (h *proposalHandler) RedeliverProposal(ctx context.Context, req *mandatev1.
 	if err != nil {
 		return nil, err
 	}
-	if _, err := h.kernel.Deliveries.Redeliver(ctx, id); err != nil {
+	if _, err := h.kernel.Deliveries.SendAgain(ctx, id); err != nil {
 		return nil, fault.ToConnect(err)
 	}
 	p, err := h.kernel.Proposals.Get(ctx, id)
@@ -205,6 +207,25 @@ func (h *proposalHandler) RedeliverProposal(ctx context.Context, req *mandatev1.
 		return nil, fault.ToConnect(err)
 	}
 	return &mandatev1.RedeliverProposalResponse{Proposal: out[0]}, nil
+}
+
+func (h *proposalHandler) SettleDelivery(ctx context.Context, req *mandatev1.SettleDeliveryRequest) (*mandatev1.SettleDeliveryResponse, error) {
+	id, err := parseId(req.GetId(), "proposal id")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := h.kernel.Deliveries.Settle(ctx, id, req.GetDone()); err != nil {
+		return nil, fault.ToConnect(err)
+	}
+	p, err := h.kernel.Proposals.Get(ctx, id)
+	if err != nil {
+		return nil, fault.ToConnect(err)
+	}
+	out, err := h.enrich(ctx, []proposals.Proposal{p})
+	if err != nil {
+		return nil, fault.ToConnect(err)
+	}
+	return &mandatev1.SettleDeliveryResponse{Proposal: out[0]}, nil
 }
 
 func (h *proposalHandler) RejectProposal(ctx context.Context, req *mandatev1.RejectProposalRequest) (*mandatev1.RejectProposalResponse, error) {

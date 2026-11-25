@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/andreas-lindfalk/pgmandate"
 	"github.com/andreas-lindfalk/pgmandate/examples/webhook"
+	"github.com/andreas-lindfalk/pgmandate/internal/testfix"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/testkit"
 )
@@ -76,7 +79,7 @@ func TestDemoAndCommandLine(t *testing.T) {
 	defer pg.Close()
 
 	var out bytes.Buffer
-	require.NoError(t, Demo(ctx, pg.AppUrl, "127.0.0.1:0", &out))
+	require.NoError(t, Demo(ctx, pg.AppUrl, "127.0.0.1:0", testfix.Signer, &out))
 	text := out.String()
 	t.Log(text)
 	require.NotContains(t, text, "HOLE")
@@ -84,13 +87,14 @@ func TestDemoAndCommandLine(t *testing.T) {
 	require.Contains(t, text, "result: ", "the agent is shown what the helpdesk answered")
 	require.Contains(t, text, "a repeat, nothing new was done", "the same request twice is done once")
 	require.Contains(t, text, "go run ./cmd/pgmandate receiver -addr 127.0.0.1:")
+	require.Regexp(t, `receiver -addr \S+ -tenant [0-9a-f-]{36} -audience pgm:[0-9a-f-]{36}:[a-z.]+:[0-9a-f]{16}`, text, "the receiver is told its tenant and audiences")
 	require.Contains(t, text, "above what your mandate allows")
 	require.Contains(t, text, "flags steering_text")
 	require.Contains(t, text, "budget for this month is spent")
 	require.Contains(t, text, "tickets.close → approved")
 	require.Contains(t, text, "flagged ticket → rejected")
-	require.Equal(t, 3, strings.Count(text, "signature verified; decision executed"), "three executions and")
-	require.Equal(t, 1, strings.Count(text, "signature verified; decision approved"), "one approval are delivered")
+	require.Equal(t, 3, strings.Count(text, "signature, audience and tenant checked; decision executed"), "three executions and")
+	require.Equal(t, 1, strings.Count(text, "signature, audience and tenant checked; decision approved"), "one approval are delivered")
 	require.Contains(t, text, "after 2 attempt(s)", "the failed delivery was retried")
 	require.Equal(t, 5, strings.Count(text, "refused: "), "five statements the database refuses")
 	require.Contains(t, text, "verified: ")
@@ -129,7 +133,8 @@ func TestDemoAndCommandLine(t *testing.T) {
 
 	out.Reset()
 	require.NoError(t, run(ctx, "action", []string{"define", "-tenant", tenantId, "-as", "cli@test.example", "-key", "tickets.create", "-risk", "low", "-may-execute", "-url", "https://helpdesk.example/hooks", "-schema", `{"type":"object"}`}, &out))
-	require.Contains(t, out.String(), "secret mws_")
+	require.Regexp(t, `audience pgm:`+tenantId+`:tickets\.create:[0-9a-f]{16}`, out.String(), "the webhook's audience is printed for its receiver")
+	require.NotContains(t, out.String(), "mws_", "there is no secret any more")
 	out.Reset()
 	require.NoError(t, run(ctx, "actions", []string{"-tenant", tenantId}, &out))
 	require.Contains(t, out.String(), "action tickets.create")
@@ -236,4 +241,36 @@ func TestTheDefaultAppPasswordStaysOnThisMachine(t *testing.T) {
 
 	err := serve(context.Background(), config{appUrl: "postgres://mandate_app:app@127.0.0.1:1/mandate", httpAddr: "0.0.0.0:8585"})
 	require.ErrorContains(t, err, "default app password is refused")
+}
+
+// The receiver trusts the keys it is given, or the set the server
+// publishes, and refuses to start trusting nothing.
+func TestReceiverKeys(t *testing.T) {
+	previous := newTestKey(t, 7)
+	published := httptest.NewServer(keysHandler(testfix.Signer, []ed25519.PublicKey{previous}))
+	defer published.Close()
+	keys, err := receiverKeys(context.Background(), "", published.URL)
+	require.NoError(t, err)
+	require.Len(t, keys, 2, "the signing key and the previous one")
+	require.Equal(t, testfix.Signer.PublicKey(), keys[testfix.Signer.KeyId()])
+
+	given, err := receiverKeys(context.Background(), base64.StdEncoding.EncodeToString(previous), "http://unused.invalid")
+	require.NoError(t, err)
+	require.Len(t, given, 1)
+
+	missing := httptest.NewServer(http.NotFoundHandler())
+	defer missing.Close()
+	_, err = receiverKeys(context.Background(), "", missing.URL)
+	require.ErrorContains(t, err, "-keys", "a server without the set is not read as one with no keys")
+	_, err = receiverKeys(context.Background(), "not base64", "")
+	require.Error(t, err)
+}
+
+func newTestKey(t *testing.T, fill byte) ed25519.PublicKey {
+	t.Helper()
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = fill + byte(i)
+	}
+	return ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
 }

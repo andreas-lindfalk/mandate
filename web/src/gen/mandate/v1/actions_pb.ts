@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file mandate/v1/actions.proto.
  */
 export const file_mandate_v1_actions: GenFile = /*@__PURE__*/
-  fileDesc("ChhtYW5kYXRlL3YxL2FjdGlvbnMucHJvdG8SCm1hbmRhdGUudjEilQMKBkFjdGlvbhIKCgJpZBgBIAEoCRILCgNrZXkYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSDAoEcmlzaxgEIAEoCRIUCgx3YWl0X3NlY29uZHMYBSABKAMSEwoLbWF5X2V4ZWN1dGUYBiABKAgSEwoLc2NoZW1hX2pzb24YByABKAkSEQoJY29ubmVjdG9yGAggASgJEhUKDWNvbm5lY3Rvcl91cmwYCSABKAkSEgoKaGFzX3NlY3JldBgKIAEoCBISCgpkZXBhcnRtZW50GAsgASgJEi4KCmNyZWF0ZWRfYXQYDCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnVwZGF0ZWRfYXQYDSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnJlbW92ZWRfYXQYDiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhQKDGJ1aWx0aW5fb25seRgPIAEoCBIXCg9kZWxpdmVyX3NlY29uZHMYECABKAMiLQoSTGlzdEFjdGlvbnNSZXF1ZXN0EhcKD2luY2x1ZGVfcmVtb3ZlZBgBIAEoCCI6ChNMaXN0QWN0aW9uc1Jlc3BvbnNlEiMKB2FjdGlvbnMYASADKAsyEi5tYW5kYXRlLnYxLkFjdGlvbiLzAQoTRGVmaW5lQWN0aW9uUmVxdWVzdBILCgNrZXkYASABKAkSEwoLZGVzY3JpcHRpb24YAiABKAkSDAoEcmlzaxgDIAEoCRIUCgx3YWl0X3NlY29uZHMYBCABKAMSEwoLbWF5X2V4ZWN1dGUYBSABKAgSEwoLc2NoZW1hX2pzb24YBiABKAkSEQoJY29ubmVjdG9yGAcgASgJEhUKDWNvbm5lY3Rvcl91cmwYCCABKAkSFQoNcm90YXRlX3NlY3JldBgJIAEoCBISCgpkZXBhcnRtZW50GAogASgJEhcKD2RlbGl2ZXJfc2Vjb25kcxgLIAEoAyJKChREZWZpbmVBY3Rpb25SZXNwb25zZRIiCgZhY3Rpb24YASABKAsyEi5tYW5kYXRlLnYxLkFjdGlvbhIOCgZzZWNyZXQYAiABKAkiIgoTUmVtb3ZlQWN0aW9uUmVxdWVzdBILCgNrZXkYASABKAkiFgoUUmVtb3ZlQWN0aW9uUmVzcG9uc2UyhQIKDUFjdGlvblNlcnZpY2USTgoLTGlzdEFjdGlvbnMSHi5tYW5kYXRlLnYxLkxpc3RBY3Rpb25zUmVxdWVzdBofLm1hbmRhdGUudjEuTGlzdEFjdGlvbnNSZXNwb25zZRJRCgxEZWZpbmVBY3Rpb24SHy5tYW5kYXRlLnYxLkRlZmluZUFjdGlvblJlcXVlc3QaIC5tYW5kYXRlLnYxLkRlZmluZUFjdGlvblJlc3BvbnNlElEKDFJlbW92ZUFjdGlvbhIfLm1hbmRhdGUudjEuUmVtb3ZlQWN0aW9uUmVxdWVzdBogLm1hbmRhdGUudjEuUmVtb3ZlQWN0aW9uUmVzcG9uc2VCQ1pBZ2l0aHViLmNvbS9hbmRyZWFzLWxpbmRmYWxrL3BnbWFuZGF0ZS9nZW4vZ28vbWFuZGF0ZS92MTttYW5kYXRldjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
+  fileDesc("ChhtYW5kYXRlL3YxL2FjdGlvbnMucHJvdG8SCm1hbmRhdGUudjEikwMKBkFjdGlvbhIKCgJpZBgBIAEoCRILCgNrZXkYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSDAoEcmlzaxgEIAEoCRIUCgx3YWl0X3NlY29uZHMYBSABKAMSEwoLbWF5X2V4ZWN1dGUYBiABKAgSEwoLc2NoZW1hX2pzb24YByABKAkSEQoJY29ubmVjdG9yGAggASgJEhUKDWNvbm5lY3Rvcl91cmwYCSABKAkSEAoIYXVkaWVuY2UYCiABKAkSEgoKZGVwYXJ0bWVudBgLIAEoCRIuCgpjcmVhdGVkX2F0GAwgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgp1cGRhdGVkX2F0GA0gASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgpyZW1vdmVkX2F0GA4gASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIUCgxidWlsdGluX29ubHkYDyABKAgSFwoPZGVsaXZlcl9zZWNvbmRzGBAgASgDIi0KEkxpc3RBY3Rpb25zUmVxdWVzdBIXCg9pbmNsdWRlX3JlbW92ZWQYASABKAgiOgoTTGlzdEFjdGlvbnNSZXNwb25zZRIjCgdhY3Rpb25zGAEgAygLMhIubWFuZGF0ZS52MS5BY3Rpb24i3AEKE0RlZmluZUFjdGlvblJlcXVlc3QSCwoDa2V5GAEgASgJEhMKC2Rlc2NyaXB0aW9uGAIgASgJEgwKBHJpc2sYAyABKAkSFAoMd2FpdF9zZWNvbmRzGAQgASgDEhMKC21heV9leGVjdXRlGAUgASgIEhMKC3NjaGVtYV9qc29uGAYgASgJEhEKCWNvbm5lY3RvchgHIAEoCRIVCg1jb25uZWN0b3JfdXJsGAggASgJEhIKCmRlcGFydG1lbnQYCiABKAkSFwoPZGVsaXZlcl9zZWNvbmRzGAsgASgDIjoKFERlZmluZUFjdGlvblJlc3BvbnNlEiIKBmFjdGlvbhgBIAEoCzISLm1hbmRhdGUudjEuQWN0aW9uIiIKE1JlbW92ZUFjdGlvblJlcXVlc3QSCwoDa2V5GAEgASgJIhYKFFJlbW92ZUFjdGlvblJlc3BvbnNlMoUCCg1BY3Rpb25TZXJ2aWNlEk4KC0xpc3RBY3Rpb25zEh4ubWFuZGF0ZS52MS5MaXN0QWN0aW9uc1JlcXVlc3QaHy5tYW5kYXRlLnYxLkxpc3RBY3Rpb25zUmVzcG9uc2USUQoMRGVmaW5lQWN0aW9uEh8ubWFuZGF0ZS52MS5EZWZpbmVBY3Rpb25SZXF1ZXN0GiAubWFuZGF0ZS52MS5EZWZpbmVBY3Rpb25SZXNwb25zZRJRCgxSZW1vdmVBY3Rpb24SHy5tYW5kYXRlLnYxLlJlbW92ZUFjdGlvblJlcXVlc3QaIC5tYW5kYXRlLnYxLlJlbW92ZUFjdGlvblJlc3BvbnNlQkNaQWdpdGh1Yi5jb20vYW5kcmVhcy1saW5kZmFsay9wZ21hbmRhdGUvZ2VuL2dvL21hbmRhdGUvdjE7bWFuZGF0ZXYxYgZwcm90bzM", [file_google_protobuf_timestamp]);
 
 /**
  * @generated from message mandate.v1.Action
@@ -70,9 +70,12 @@ export type Action = Message<"mandate.v1.Action"> & {
   connectorUrl: string;
 
   /**
-   * @generated from field: bool has_secret = 10;
+   * Who a webhook's deliveries are for: the receiver is configured with
+   * it, and accepts nothing else. A new one is drawn when the webhook moves.
+   *
+   * @generated from field: string audience = 10;
    */
-  hasSecret: boolean;
+  audience: string;
 
   /**
    * @generated from field: string department = 11;
@@ -201,11 +204,6 @@ export type DefineActionRequest = Message<"mandate.v1.DefineActionRequest"> & {
   connectorUrl: string;
 
   /**
-   * @generated from field: bool rotate_secret = 9;
-   */
-  rotateSecret: boolean;
-
-  /**
    * @generated from field: string department = 10;
    */
   department: string;
@@ -234,11 +232,6 @@ export type DefineActionResponse = Message<"mandate.v1.DefineActionResponse"> & 
    * @generated from field: mandate.v1.Action action = 1;
    */
   action?: Action | undefined;
-
-  /**
-   * @generated from field: string secret = 2;
-   */
-  secret: string;
 };
 
 /**

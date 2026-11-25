@@ -16,3 +16,4 @@ AGENTS.local.md
 .idea/
 .vscode/
 /mandate
+.local/

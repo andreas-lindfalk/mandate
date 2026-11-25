@@ -55,7 +55,7 @@ func (s *ExpirySuite) status(t testfix.Tenant, id uuid.UUID) string {
 
 func (s *ExpirySuite) Test_TheDeadlineComesFromTheAction() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	_, _, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
+	_, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
 		Key: "notes.add", Risk: mandates.RiskLow, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
 		Schema: json.RawMessage(`{"type":"object"}`), WaitLimit: 2 * time.Hour, DeliverWithin: 10 * time.Minute,
 	})
@@ -66,7 +66,7 @@ func (s *ExpirySuite) Test_TheDeadlineComesFromTheAction() {
 
 	// A later change to the action changes nothing for a proposal made
 	// before it.
-	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{
+	_, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{
 		Key: "notes.add", Risk: mandates.RiskLow, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
 		Schema: json.RawMessage(`{"type":"object"}`), WaitLimit: 24 * time.Hour, DeliverWithin: time.Hour,
 	})

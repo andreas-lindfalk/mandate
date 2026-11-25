@@ -34,14 +34,16 @@ type Action struct {
 	MayExecute  bool  `protobuf:"varint,6,opt,name=may_execute,json=mayExecute,proto3" json:"may_execute,omitempty"`
 	// The payload schema as JSON text, empty for none. A webhook action
 	// always has one.
-	SchemaJson   string                 `protobuf:"bytes,7,opt,name=schema_json,json=schemaJson,proto3" json:"schema_json,omitempty"`
-	Connector    string                 `protobuf:"bytes,8,opt,name=connector,proto3" json:"connector,omitempty"`
-	ConnectorUrl string                 `protobuf:"bytes,9,opt,name=connector_url,json=connectorUrl,proto3" json:"connector_url,omitempty"`
-	HasSecret    bool                   `protobuf:"varint,10,opt,name=has_secret,json=hasSecret,proto3" json:"has_secret,omitempty"`
-	Department   string                 `protobuf:"bytes,11,opt,name=department,proto3" json:"department,omitempty"`
-	CreatedAt    *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt    *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	RemovedAt    *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=removed_at,json=removedAt,proto3" json:"removed_at,omitempty"`
+	SchemaJson   string `protobuf:"bytes,7,opt,name=schema_json,json=schemaJson,proto3" json:"schema_json,omitempty"`
+	Connector    string `protobuf:"bytes,8,opt,name=connector,proto3" json:"connector,omitempty"`
+	ConnectorUrl string `protobuf:"bytes,9,opt,name=connector_url,json=connectorUrl,proto3" json:"connector_url,omitempty"`
+	// Who a webhook's deliveries are for: the receiver is configured with
+	// it, and accepts nothing else. A new one is drawn when the webhook moves.
+	Audience   string                 `protobuf:"bytes,10,opt,name=audience,proto3" json:"audience,omitempty"`
+	Department string                 `protobuf:"bytes,11,opt,name=department,proto3" json:"department,omitempty"`
+	CreatedAt  *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt  *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	RemovedAt  *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=removed_at,json=removedAt,proto3" json:"removed_at,omitempty"`
 	// Builtin actions registered in code and not defined by the tenant.
 	BuiltinOnly bool `protobuf:"varint,15,opt,name=builtin_only,json=builtinOnly,proto3" json:"builtin_only,omitempty"`
 	// How long after a decision its delivery may still be carried out, in
@@ -144,11 +146,11 @@ func (x *Action) GetConnectorUrl() string {
 	return ""
 }
 
-func (x *Action) GetHasSecret() bool {
+func (x *Action) GetAudience() string {
 	if x != nil {
-		return x.HasSecret
+		return x.Audience
 	}
-	return false
+	return ""
 }
 
 func (x *Action) GetDepartment() string {
@@ -294,7 +296,6 @@ type DefineActionRequest struct {
 	SchemaJson   string `protobuf:"bytes,6,opt,name=schema_json,json=schemaJson,proto3" json:"schema_json,omitempty"`
 	Connector    string `protobuf:"bytes,7,opt,name=connector,proto3" json:"connector,omitempty"`
 	ConnectorUrl string `protobuf:"bytes,8,opt,name=connector_url,json=connectorUrl,proto3" json:"connector_url,omitempty"`
-	RotateSecret bool   `protobuf:"varint,9,opt,name=rotate_secret,json=rotateSecret,proto3" json:"rotate_secret,omitempty"`
 	Department   string `protobuf:"bytes,10,opt,name=department,proto3" json:"department,omitempty"`
 	// How long after a decision its delivery may still be carried out, in
 	// seconds: 120 to 604800 (7 days). 0 means the default, 1 hour.
@@ -389,13 +390,6 @@ func (x *DefineActionRequest) GetConnectorUrl() string {
 	return ""
 }
 
-func (x *DefineActionRequest) GetRotateSecret() bool {
-	if x != nil {
-		return x.RotateSecret
-	}
-	return false
-}
-
 func (x *DefineActionRequest) GetDepartment() string {
 	if x != nil {
 		return x.Department
@@ -413,7 +407,6 @@ func (x *DefineActionRequest) GetDeliverSeconds() int64 {
 type DefineActionResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Action        *Action                `protobuf:"bytes,1,opt,name=action,proto3" json:"action,omitempty"`
-	Secret        string                 `protobuf:"bytes,2,opt,name=secret,proto3" json:"secret,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -453,13 +446,6 @@ func (x *DefineActionResponse) GetAction() *Action {
 		return x.Action
 	}
 	return nil
-}
-
-func (x *DefineActionResponse) GetSecret() string {
-	if x != nil {
-		return x.Secret
-	}
-	return ""
 }
 
 type RemoveActionRequest struct {
@@ -547,7 +533,7 @@ var File_mandate_v1_actions_proto protoreflect.FileDescriptor
 const file_mandate_v1_actions_proto_rawDesc = "" +
 	"\n" +
 	"\x18mandate/v1/actions.proto\x12\n" +
-	"mandate.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc4\x04\n" +
+	"mandate.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc1\x04\n" +
 	"\x06Action\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12 \n" +
@@ -559,10 +545,9 @@ const file_mandate_v1_actions_proto_rawDesc = "" +
 	"\vschema_json\x18\a \x01(\tR\n" +
 	"schemaJson\x12\x1c\n" +
 	"\tconnector\x18\b \x01(\tR\tconnector\x12#\n" +
-	"\rconnector_url\x18\t \x01(\tR\fconnectorUrl\x12\x1d\n" +
-	"\n" +
-	"has_secret\x18\n" +
-	" \x01(\bR\thasSecret\x12\x1e\n" +
+	"\rconnector_url\x18\t \x01(\tR\fconnectorUrl\x12\x1a\n" +
+	"\baudience\x18\n" +
+	" \x01(\tR\baudience\x12\x1e\n" +
 	"\n" +
 	"department\x18\v \x01(\tR\n" +
 	"department\x129\n" +
@@ -577,7 +562,7 @@ const file_mandate_v1_actions_proto_rawDesc = "" +
 	"\x12ListActionsRequest\x12'\n" +
 	"\x0finclude_removed\x18\x01 \x01(\bR\x0eincludeRemoved\"C\n" +
 	"\x13ListActionsResponse\x12,\n" +
-	"\aactions\x18\x01 \x03(\v2\x12.mandate.v1.ActionR\aactions\"\xf3\x02\n" +
+	"\aactions\x18\x01 \x03(\v2\x12.mandate.v1.ActionR\aactions\"\xce\x02\n" +
 	"\x13DefineActionRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x12\n" +
@@ -588,16 +573,14 @@ const file_mandate_v1_actions_proto_rawDesc = "" +
 	"\vschema_json\x18\x06 \x01(\tR\n" +
 	"schemaJson\x12\x1c\n" +
 	"\tconnector\x18\a \x01(\tR\tconnector\x12#\n" +
-	"\rconnector_url\x18\b \x01(\tR\fconnectorUrl\x12#\n" +
-	"\rrotate_secret\x18\t \x01(\bR\frotateSecret\x12\x1e\n" +
+	"\rconnector_url\x18\b \x01(\tR\fconnectorUrl\x12\x1e\n" +
 	"\n" +
 	"department\x18\n" +
 	" \x01(\tR\n" +
 	"department\x12'\n" +
-	"\x0fdeliver_seconds\x18\v \x01(\x03R\x0edeliverSeconds\"Z\n" +
+	"\x0fdeliver_seconds\x18\v \x01(\x03R\x0edeliverSeconds\"B\n" +
 	"\x14DefineActionResponse\x12*\n" +
-	"\x06action\x18\x01 \x01(\v2\x12.mandate.v1.ActionR\x06action\x12\x16\n" +
-	"\x06secret\x18\x02 \x01(\tR\x06secret\"'\n" +
+	"\x06action\x18\x01 \x01(\v2\x12.mandate.v1.ActionR\x06action\"'\n" +
 	"\x13RemoveActionRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\"\x16\n" +
 	"\x14RemoveActionResponse2\x85\x02\n" +

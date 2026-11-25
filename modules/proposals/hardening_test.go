@@ -30,7 +30,7 @@ func TestHardeningSuite(t *testing.T) {
 
 func (s *HardeningSuite) define(ctx context.Context, key, risk string, mayExecute bool) {
 	s.T().Helper()
-	_, _, err := s.W.Kernel.Actions.Define(ctx, actions.Input{
+	_, err := s.W.Kernel.Actions.Define(ctx, actions.Input{
 		Key: key, Risk: risk, MayExecute: mayExecute, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
 		Schema: json.RawMessage(`{"type":"object"}`),
 	})
@@ -365,7 +365,7 @@ func (s *HardeningSuite) Test_ADecisionHoldsThePayloadToTheSchemaOfToday() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	strict := func() {
 		s.T().Helper()
-		_, _, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
+		_, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
 			Key: "notes.add", Risk: mandates.RiskLow, MayExecute: true, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
 			Schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["text"],"properties":{"text":{"type":"string"}}}`),
 		})

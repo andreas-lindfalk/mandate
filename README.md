@@ -22,7 +22,7 @@ flowchart LR
 > **Status: early, a working demonstration (0.0.1, Apache-2.0).**
 > - It runs, it is tested against a real Postgres, and the demo below shows the core loop.
 > - It has no production users and no external security review.
-> - Connector secrets are stored unencrypted, and every system it protects needs a receiver written for it.
+> - Every system it protects needs a receiver written for it.
 > - Nothing is kept compatible until 0.1.0: the schema and the delivery contract will change. Try it locally now, and [pilot on 0.1.0](docs/scope.md#piloting-it).
 >
 > Read [the threat model](docs/threat-model.md) before relying on it.
@@ -69,7 +69,7 @@ people ◀──web UI / API──▶ inbox, mandates, agents and actions, peopl
 ```
 
 - **Agents** connect over MCP with a token. Five tools: `list_actions`, `propose`, `get_proposal`, `list_proposals`, `withdraw_proposal`. Any MCP client works: Claude Code, an SDK, a script.
-- **Systems** receive decided proposals at the webhook URL of each action, signed with the action's secret. Deliveries are retried, and a person can send a failed one again.
+- **Systems** receive decided proposals at the webhook URL of each action, signed with the server's Ed25519 key and addressed to the action's audience. A receiver answers *done*, *refused* or *unknown*; anything else is retried until the delivery's deadline. One that never reached the receiver can be sent again, and one whose outcome is unknown is settled by a person.
 - **People** sign in (OpenID Connect, or dev login on localhost). Reviewers decide in the inbox; owners also run the tenant: the inbox, the mandates with their budget, the agents and their tokens, the actions and their connectors, the people, and the evidence with exports.
 
 One binary and one Postgres, on your own machine, in your cloud or on-premise. A Go service can also embed it and share its database (see [the scope](docs/scope.md#where-it-fits)). How the parts fit is in [docs/design.md](docs/design.md).
@@ -107,7 +107,7 @@ make run     # the UI, the API and MCP on http://127.0.0.1:8585  also needs Node
 It ends with the commands for what to do next. In short:
 
 - `make run`, open http://127.0.0.1:8585, sign in as `alice@acme.example`, and you are in the inbox the demo left behind.
-- The demo's receiver stops with the demo. Start the one it prints (`go run ./cmd/pgmandate receiver ...`) in another terminal, so that what you approve has somewhere to land. Without it a delivery retries and then shows as not delivered, and you can send it again later.
+- The demo's receiver stops with the demo. Start the one it prints (`go run ./cmd/pgmandate receiver ...`) in another terminal, so that what you approve has somewhere to land. Without it a delivery retries and then shows as not delivered, and you can send it again before its deadline.
 - The token the demo prints connects your own agent (next section). Its budget is spent, so grant a new mandate in the UI to see proposals go through by themselves.
 
 Each `make demo` adds another tenant with the same name; `make reset` starts clean.
@@ -158,17 +158,18 @@ go build -o pgmandate ./cmd/pgmandate      # the command line, as ./pgmandate in
 # owner  …
 T=<the tenant id it printed>
 
-# What the agent may ask for, and where it goes. The secret is printed once.
+# What the agent may ask for, and where it goes. It prints the action's audience.
 ./pgmandate action define -tenant $T -as alice@acme.example -key tickets.create -risk low -may-execute \
   -url http://127.0.0.1:8586/ -schema '{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}'
-
-./pgmandate receiver -secrets mws_...      # in another terminal, in this directory: your system, for now
 
 ./pgmandate agent create -tenant $T -as alice@acme.example -name helpdesk-bot      # prints the agent id and its token
 ./pgmandate grant -tenant $T -as alice@acme.example -agent <agent id> -actions 'tickets.*' -max-risk low -budget 20 -policy "AI policy v1"
 
 make run                                   # then connect the agent as above
+./pgmandate receiver -tenant $T -audience pgm:...   # in another terminal, once the server runs: your system, for now
 ```
+
+Locally the server makes its signing key once, in `.local/signing-key`, and the receiver fetches its public half from the running server.
 
 The agent's `tickets.create` proposals are now allowed and delivered, twenty a month; everything else waits in the inbox at http://127.0.0.1:8585. Without `-may-execute` a person always decides, and without `-agent` a mandate covers every agent of the tenant. `action define` sets the whole definition each time: a flag left out goes back to its default. Replace the receiver with your own (below).
 
@@ -178,11 +179,12 @@ One image, one Postgres. A one-off `migrate` container holds the database owner'
 
 ```sh
 export MANDATE_APP_PASSWORD=$(openssl rand -hex 16) MANDATE_OWNER_PASSWORD=$(openssl rand -hex 16)
+export MANDATE_SIGNING_KEY=$(openssl rand -base64 32)
 export MANDATE_OIDC_ISSUER=... MANDATE_OIDC_CLIENT_ID=... MANDATE_OIDC_CLIENT_SECRET=...
 docker compose -f deploy/compose.yaml -f deploy/compose.server.yaml up -d --build
 ```
 
-Keep both passwords, in an `.env` file next to the compose files or a secret store: the owner password is fixed when the database volume is first created, and each start of `migrate` sets the app role's password again. This stack has its own database volume, apart from the one `make up` uses. Nobody can sign in until the provider is set, since dev login answers only on loopback. A receiver on the same machine is `http://host.docker.internal:<port>` from inside the container, a private address that needs `MANDATE_ALLOW_PRIVATE_CONNECTORS=true`; on Linux the receiver must listen on `0.0.0.0` (`-addr 0.0.0.0:8586`) to be reached that way. Then create a tenant with its first owner:
+Keep both passwords and the signing key, in an `.env` file next to the compose files or a secret store: the owner password is fixed when the database volume is first created, and each start of `migrate` sets the app role's password again. This stack has its own database volume, apart from the one `make up` uses. Nobody can sign in until the provider is set, since dev login answers only on loopback. A receiver on the same machine is `http://host.docker.internal:<port>` from inside the container, a private address that needs `MANDATE_ALLOW_PRIVATE_CONNECTORS=true`; on Linux the receiver must listen on `0.0.0.0` (`-addr 0.0.0.0:8586`) to be reached that way. Then create a tenant with its first owner:
 
 ```sh
 docker compose -f deploy/compose.yaml -f deploy/compose.server.yaml run --rm \
@@ -206,47 +208,62 @@ From there the owner works in the UI. Locally the same command is `go run ./cmd/
 | `MANDATE_OIDC_REDIRECT_URL` | default `<public url>/auth/oidc/callback` |
 | `MANDATE_DEV_LOGIN` | `true` lets anyone sign in with an email. Refused unless the server listens on loopback, and then it answers only to requests for localhost |
 | `MANDATE_SESSION_TTL` | default `168h` |
-| `MANDATE_ALLOW_PRIVATE_CONNECTORS` | `true` lets webhook connectors live on local and private addresses, for development and for an on-premise install. Off, a delivery to such an address is refused and marked failed |
+| `MANDATE_ALLOW_PRIVATE_CONNECTORS` | `true` lets webhook connectors live on local and private addresses, for development and for an on-premise install. Off, a delivery to such an address is never sent, and ends *not sent* |
+| `MANDATE_SIGNING_KEY` | the Ed25519 seed deliveries are signed with, 32 bytes in standard base64 (`openssl rand -base64 32`). Never stored in the database. Required unless the server listens only on loopback, where one is made once in `.local/signing-key` |
+| `MANDATE_SIGNING_KEY_FILE` | the same, read from a file |
+| `MANDATE_SIGNING_KEYS_PREVIOUS` | comma separated public keys, in standard base64, that are still published but no longer sign: how a key is rotated |
 | `MANDATE_RECEIVER_ADDR` | where `pgmandate receiver` and the demo's receiver listen, default `127.0.0.1:8586` |
 
 ## Writing a receiver
 
-A decided proposal is posted to its action's URL:
+A decided proposal is posted to its action's URL, under delivery contract v2:
 
 ```
 POST <url>
 Content-Type: application/json
 User-Agent: pgmandate
 Mandate-Delivery-Id: <uuid>
-Mandate-Timestamp: <unix seconds>
-Mandate-Signature: v1=<hex hmac-sha256(secret, timestamp + "." + body)>
+Mandate-Timestamp: <unix seconds, by the database's clock>
+Mandate-Signature: v2 kid=<key id> sig=<standard base64 Ed25519 signature>
 
-{ "version": 1, "deliveryId", "correlationId", "tenantId", "createdAt",
+{ "version": 2, "kind": "delivery", "audience", "tenantId", "deliveryId", "correlationId", "createdAt", "notAfter",
   "proposal": { "id", "action", "title", "payload", "risk", "agentId", "runId"?, "proposedAt" },
   "decision": { "status": "approved" | "executed", "decidedAt", "edited", "decidedBy"?, "note"?, "executionBasis"? } }
 ```
 
-The body is described field by field in [docs/delivery-v1.schema.json](docs/delivery-v1.schema.json), a JSON Schema to validate against or generate types from in any language. A test holds the server to it.
+The body is described field by field in [docs/delivery-v2.schema.json](docs/delivery-v2.schema.json), a JSON Schema to validate against or generate types from in any language. A test holds the server to it. A receiver is configured with two things, neither of them secret: the action's **audience**, which `action define` prints and the UI shows, with its tenant id; and the **keys** it trusts, fetched from `<server>/.well-known/pgmandate-keys` or given by hand. It does these in order:
 
-- **Verify the signature** before anything else. It is HMAC-SHA256 with the secret's UTF-8 bytes, exactly as shown (`mws_...`), as the key, over the timestamp header's digits, a `.`, and the raw body bytes as received; the hex is lower case. Read the raw body, not a parsed one: `express.raw({ type: "application/json" })` in Express, `request.get_data()` in Flask. Compare in constant time, and refuse a timestamp more than five minutes off. In Go, `sign.Verify` does both. To check your own code: the secret `mws_example_secret_0123456789abcdef`, the timestamp `1767225600` and the body `{"version":1,"deliveryId":"00000000-0000-0000-0000-000000000001"}` give `v1=7d1b37c2f39b25a83f48808b5326479a4ad2265ee5b7fc034352bb047355f0d9`.
-- **Check it is for you.** Each action has its own secret. A receiver that serves several actions keeps which tenant and action each secret belongs to, and refuses a body whose `tenantId` and `proposal.action` do not match the secret that signed it. Act only on `decision.status` `approved` or `executed`.
+1. **Verify the signature** over the raw bytes, before parsing anything. The signed bytes are `pgmandate-v2.`, the timestamp header's digits, a `.`, and the raw body as received; the signature is Ed25519 with the public key whose id is `kid`. Read the raw body, not a parsed one: `express.raw({ type: "application/json" })` in Express, `request.get_data()` in Flask. Refuse a key id you do not trust, and a timestamp more than five minutes from your clock. Answer 401 for a signature you cannot verify. In Go, `sign.Verify` does all of it, and `sign.Fetch` reads the published set.
+2. **Check it is for you.** `kind` is `delivery`, `audience` and `tenantId` are the ones you were configured with (never taken from the request), and `deliveryId` equals the header's. Otherwise do nothing and answer 403 without an outcome, so it is retried: an action just moved to you has a new audience you may not have been given yet. In Go, `sign.CheckEnvelope`.
+3. **Claim the delivery id, atomically.** A delivery you finished before is answered exactly as then. One still in progress is answered 503, which is retried. Keep the ids where a restart cannot lose them, until at least `notAfter` plus five minutes.
+4. **Refuse what comes too late.** A delivery you never started that arrives after `notAfter` by your clock is answered `{"outcome":"refused","refusal":{"reason":"too_late"}}`, and nothing is done.
+5. **Check the facts and act, and never commit after `notAfter`.** Abort work still under way at `notAfter`; answer `refused` if you are sure nothing took effect, and `unknown` if you are not.
+6. **Answer explicitly**, with a JSON object of at most 4 kB, within 15 seconds:
+
+| Answer | What pgmandate records |
+|---|---|
+| 2xx `{"outcome":"done","result":{…}}` | done. The result is kept and shown to the agent, so return what it needs, such as the id of what you created |
+| any status `{"outcome":"refused","refusal":{…}}` | refused: you did nothing, and that is final. A refusal is always this shape |
+| 2xx `{"outcome":"unknown","reason":"…"}` | unknown: you cannot tell, as when your own call timed out. A person settles it |
+| anything else: other bodies, redirects (never followed), other 4xx, 5xx, a timeout | nothing final: retried, up to eight attempts and never later than `notAfter` minus 15 seconds |
+
+A proxy's 404 is never read as a refusal. When the attempts run out, a delivery that was possibly sent becomes *unknown*, and one that provably never reached you (it failed before its headers were written) becomes *not sent*. A person may send a delivery that was never sent again, with the same delivery id, until `notAfter` minus 15 seconds. A person settles an unknown one as done or not done, but only from `notAfter` plus 15 seconds plus five minutes, when you can no longer carry it out. After a refusal, or one settled as not done, the agent may propose the same thing again under a new key.
+
+- **Check your verification against a known answer.** The seed `AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=` has the public key `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=` and the key id `56475aa75463474c` (the first 16 hex digits of the SHA-256 of the public key). With the timestamp `1767225600` and the body `{"version":2,"kind":"delivery","deliveryId":"00000000-0000-0000-0000-000000000001"}` it gives `v2 kid=56475aa75463474c sig=RQk5h/yRhlTstIABLiW11fXXFg/5FmlDJtWnmdagCNPieC5C5ZCfUVsT9eXzRY9JlMdqEz1R0g3MLLC7gergCQ==`.
+- **Keys and rotation.** The published set holds the key that signs and any previous ones still trusted. A fetched set replaces what you cached; it never adds to it, so dropping a key from the set revokes it. Fetch it over https from an address you were configured with. When the server starts signing with a new key, a receiver that has not fetched it answers 401 and the attempt is retried, so fetch the set again when you meet a key id you do not know (at most once a minute).
+- **The audience changes** when an action is defined, defined again after removal, or moved to a new URL, so an audience never repeats. Deliveries still waiting, and never possibly sent, move to the new URL and audience; the receiver at the old one gets nothing more, apart from an attempt already under way. A receiver that serves several actions trusts each audience.
 - **Check the version.** A field can be added within a version, so ignore fields you do not know. A removed field or a changed meaning is a new version: refuse a version you do not know.
 - **Log the correlation id.** It is the run id the agent gave when it proposed, otherwise the proposal's id, so the agent's logs, pgmandate's log and yours can be joined on one value. A run id is the agent's own word: use it to group, and use `proposal.id` and `agentId` to identify.
-- **Times** are RFC 3339 in UTC. `createdAt`, `proposedAt` and `decidedAt` are the same on every attempt; the time of an attempt is the `Mandate-Timestamp` header.
-- **Do it once.** Delivery is at least once: the same delivery can arrive again after a timeout. Remember the `deliveryId`, somewhere that survives a restart, and answer the same way.
-- **Answer 2xx** to accept. If the answer is a JSON object of at most 4 kB, it is kept as the proposal's result and shown to the agent, so return what it needs, such as the id of what you created.
-- **Answer within 15 seconds**, or the attempt counts as failed. Do slow work after answering, keyed by the delivery id.
-- **Other answers.** A 401 is retried, as are 408, 429, 5xx and no answer at all; any other 4xx means the request is wrong and is not retried. Retries go up to eight attempts, waiting about attempt⁴ seconds after each (1 s, 16 s, 81 s, and so on, with some jitter: about 80 minutes in all). After that the delivery is marked failed, and a person can send it again. Answer 401 for a signature you cannot verify, and 403 for a delivery you will never accept.
-- **Redirects are not followed.** A 3xx counts as a failure and is retried until it fails. Give the exact URL, with `https` and the path your server expects.
+- **Times** are RFC 3339 in UTC. The body is the same on every attempt for one audience; the time of an attempt is the `Mandate-Timestamp` header.
+- **Act only on** `decision.status` `approved` or `executed`.
 - **Plain http only on private addresses.** Unless the operator allows local and private connectors, a connector must be `https`.
-- **Rotating the secret.** Each attempt is signed with the action's secret as it is at that moment, read together with its address. After a rotation a receiver that does not yet have the new secret answers 401, and the delivery is tried again until it does, for up to the 80 minutes above. When an action's URL changes it gets a new secret, and the deliveries still waiting move to the new URL with it; apart from an attempt already in flight at that moment, the receiver at the old address gets nothing more.
 - **No ordering.** Two deliveries from the same agent may arrive in either order.
 - **The payload fits the action's schema** as the schema was when the decision was made. If the schema changed after the agent proposed and the payload no longer fits, an approval needs an edit that fits and a mandate does not allow it.
 - Fields marked `?` are left out when empty: `runId` when the agent gave none, `decidedBy` for an execution, `executionBasis` for an approval.
 
 `examples/webhook` is a reference handler to mount in your own server, and `pgmandate receiver` runs it locally.
 
-**Check the claims before you act.** The payload is what the agent says, and a mandate's condition decides on what the agent says: `payload.daysSinceDelivery <= 14` is true when the agent wrote 3, whatever the order shows. For an action that moves value, read every fact the payload states from your own records, refuse with a 4xx when one does not match (nothing happens, the delivery is not retried, and a person sees your answer), and carry it out once per proposal. [examples/refunds](examples/refunds/refunds.go) does that for a refund.
+**Check the claims before you act.** The payload is what the agent says, and a mandate's condition decides on what the agent says: `payload.daysSinceDelivery <= 14` is true when the agent wrote 3, whatever the order shows. For an action that moves value, read every fact the payload states from your own records, answer `refused` when one does not match (nothing happens, the delivery is not retried, and a person sees your answer), and carry it out once per proposal. [examples/refunds](examples/refunds/refunds.go) does that for a refund.
 
 ## Doing it once
 

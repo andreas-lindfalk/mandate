@@ -6,9 +6,7 @@ package actions
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -32,11 +30,6 @@ import (
 const (
 	ConnectorWebhook = "webhook"
 	ConnectorBuiltin = "builtin"
-
-	// SecretPrefix marks connector secrets, so they are recognizable in
-	// config files and by secret scanners.
-	SecretPrefix = "mws_"
-	secretBytes  = 24
 )
 
 // How long a proposal may wait for a decision, and how long after a decision
@@ -65,18 +58,14 @@ type Action struct {
 	Schema        json.RawMessage
 	ConnectorKind string
 	ConnectorUrl  string
-	Department    string
-	CreatedBy     *uuid.UUID
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	RemovedAt     *time.Time
-}
-
-// HasSecret says whether the action has a signing secret: every webhook
-// action does. The secret itself is shown once, when it is issued, and
-// never read back by the application.
-func (e Action) HasSecret() bool {
-	return e.ConnectorKind == ConnectorWebhook
+	// ConnectorAudience is who a webhook's deliveries are for. The receiver
+	// is configured with it.
+	ConnectorAudience string
+	Department        string
+	CreatedBy         *uuid.UUID
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	RemovedAt         *time.Time
 }
 
 type Input struct {
@@ -92,10 +81,8 @@ type Input struct {
 	// Connector is webhook or builtin.
 	Connector string
 	// Url is the webhook's address; empty for builtin.
-	Url string
-	// RotateSecret makes a new signing secret for an existing webhook.
-	RotateSecret bool
-	Department   string
+	Url        string
+	Department string
 }
 
 type Service struct {
@@ -105,7 +92,7 @@ type Service struct {
 
 // OnMoved runs in the transaction that moves a webhook action to a new
 // URL. The kernel uses it to move the action's waiting deliveries along.
-type OnMoved func(ctx context.Context, tx pgx.Tx, actionKey, url string) error
+type OnMoved func(ctx context.Context, tx pgx.Tx, actionKey, url, audience string) error
 
 func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
@@ -117,10 +104,10 @@ func (s *Service) SetOnMoved(onMoved OnMoved) {
 }
 
 // Define creates or updates the action with the input's key, as an owner,
-// which the database enforces. A new webhook gets a signing secret, which
-// is returned once; so does a rotation. Defining a removed action again
-// restores it.
-func (s *Service) Define(ctx context.Context, input Input) (Action, string, error) {
+// which the database enforces. A webhook gets an audience, drawn by the
+// database: a new one when the webhook is new, moves, or is defined again
+// after removal. Defining a removed action again restores it.
+func (s *Service) Define(ctx context.Context, input Input) (Action, error) {
 	if input.WaitLimit == 0 {
 		input.WaitLimit = DefaultWaitLimit
 	}
@@ -129,65 +116,52 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, string, erro
 	}
 	tenantId, ok := actor.TenantFrom(ctx)
 	if !ok {
-		return Action{}, "", fault.New(fault.InvalidArgument, "no tenant in scope")
+		return Action{}, fault.New(fault.InvalidArgument, "no tenant in scope")
 	}
 	input.Description = strings.TrimSpace(input.Description)
 	input.Url = strings.TrimSpace(input.Url)
 	input.Department = strings.TrimSpace(input.Department)
 	switch {
 	case !mandates.ValidKey(input.Key):
-		return Action{}, "", fault.New(fault.InvalidArgument, "the key is dotted lower case, such as tickets.create")
+		return Action{}, fault.New(fault.InvalidArgument, "the key is dotted lower case, such as tickets.create")
 	case utf8.RuneCountInString(input.Description) > 1000:
-		return Action{}, "", fault.New(fault.InvalidArgument, "the description can be at most 1000 characters")
+		return Action{}, fault.New(fault.InvalidArgument, "the description can be at most 1000 characters")
 	case mandates.RiskRank(input.Risk) < 0:
-		return Action{}, "", fault.New(fault.InvalidArgument, "the risk is low, medium or high")
+		return Action{}, fault.New(fault.InvalidArgument, "the risk is low, medium or high")
 	case input.WaitLimit != 0 && (input.WaitLimit < MinWaitLimit || input.WaitLimit > MaxWaitLimit || input.WaitLimit%time.Second != 0):
-		return Action{}, "", fault.New(fault.InvalidArgument, "a proposal may wait between 1 minute and 30 days, in whole seconds")
+		return Action{}, fault.New(fault.InvalidArgument, "a proposal may wait between 1 minute and 30 days, in whole seconds")
 	case input.DeliverWithin != 0 && (input.DeliverWithin < MinDeliverWithin || input.DeliverWithin > MaxDeliverWithin || input.DeliverWithin%time.Second != 0):
-		return Action{}, "", fault.New(fault.InvalidArgument, "a decision may be delivered within 2 minutes to 7 days, in whole seconds")
+		return Action{}, fault.New(fault.InvalidArgument, "a decision may be delivered within 2 minutes to 7 days, in whole seconds")
 	case input.Connector != ConnectorWebhook && input.Connector != ConnectorBuiltin:
-		return Action{}, "", fault.New(fault.InvalidArgument, "the connector is webhook or builtin")
+		return Action{}, fault.New(fault.InvalidArgument, "the connector is webhook or builtin")
 	case input.Connector == ConnectorWebhook && !validUrl(input.Url):
-		return Action{}, "", fault.New(fault.InvalidArgument, "a webhook needs an http(s) URL of at most 2000 characters")
+		return Action{}, fault.New(fault.InvalidArgument, "a webhook needs an http(s) URL of at most 2000 characters")
 	case input.Connector == ConnectorWebhook && input.MayExecute && input.Risk == mandates.RiskHigh:
 		// A mandate never allows high risk, and a webhook action's
 		// proposals are never below its risk: the flag could not take
 		// effect, and would read as if it did.
-		return Action{}, "", fault.New(fault.InvalidArgument, "a high risk webhook action is always decided by a person, so it cannot be one a mandate may allow")
+		return Action{}, fault.New(fault.InvalidArgument, "a high risk webhook action is always decided by a person, so it cannot be one a mandate may allow")
 	case input.Connector == ConnectorWebhook && len(input.Schema) == 0:
 		// What reaches another system is held to a shape someone wrote
 		// down. Accepting anything is possible, and then it is stated.
-		return Action{}, "", fault.New(fault.InvalidArgument, "a webhook action needs a payload schema")
+		return Action{}, fault.New(fault.InvalidArgument, "a webhook action needs a payload schema")
 	case input.Connector == ConnectorBuiltin && input.Url != "":
-		return Action{}, "", fault.New(fault.InvalidArgument, "a builtin action has no URL")
+		return Action{}, fault.New(fault.InvalidArgument, "a builtin action has no URL")
 	case utf8.RuneCountInString(input.Department) > 100:
-		return Action{}, "", fault.New(fault.InvalidArgument, "the department can be at most 100 characters")
+		return Action{}, fault.New(fault.InvalidArgument, "the department can be at most 100 characters")
 	}
 	if len(input.Schema) > 0 {
 		if _, err := Compile(input.Schema); err != nil {
-			return Action{}, "", fault.Wrap(fault.InvalidArgument, "the schema is not valid: "+err.Error(), err)
+			return Action{}, fault.Wrap(fault.InvalidArgument, "the schema is not valid: "+err.Error(), err)
 		}
 	}
 	var result Action
-	secret := ""
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		q := repo.New(tx)
 		existing, err := q.GetActionByKey(ctx, input.Key)
 		created := errors.Is(err, pgx.ErrNoRows)
 		if err != nil && !created {
 			return err
-		}
-		var secretBytes []byte
-		// A new URL gets a new secret: the receiver at the old one holds
-		// the old secret and must not be able to sign for the new one.
-		moved := !created && (existing.ConnectorUrl == nil || *existing.ConnectorUrl != input.Url)
-		// A webhook always has a secret (the table requires it), so one that
-		// was a webhook before and stays at its address keeps its secret.
-		if input.Connector == ConnectorWebhook && (created || moved || input.RotateSecret || existing.ConnectorKind != ConnectorWebhook) {
-			if secret, err = newSecret(); err != nil {
-				return err
-			}
-			secretBytes = []byte(secret)
 		}
 		var url, department *string
 		if input.Url != "" {
@@ -206,41 +180,19 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, string, erro
 			if err := q.InsertAction(ctx, repo.InsertActionParams{
 				Id: id, TenantId: tenantId, Key: input.Key, Description: input.Description, Risk: input.Risk,
 				WaitSeconds: int64(input.WaitLimit / time.Second), DeliverSeconds: int64(input.DeliverWithin / time.Second),
-				MayExecute: input.MayExecute, Schema: schema, ConnectorKind: input.Connector, ConnectorUrl: url, ConnectorSecret: secretBytes, Department: department,
+				MayExecute: input.MayExecute, Schema: schema, ConnectorKind: input.Connector, ConnectorUrl: url, Department: department,
 			}); err != nil {
 				return err
 			}
 		} else {
 			id = existing.Id
 			eventType = "action.changed"
-			if input.Connector == ConnectorBuiltin {
-				// A builtin action has no secret; a stale one must not linger.
-				secretBytes = nil
-			}
-			// The secret is written when one is issued, and cleared for a
-			// builtin action; it is never read back.
-			if secretBytes != nil || input.Connector == ConnectorBuiltin {
-				err = q.UpdateActionWithSecret(ctx, repo.UpdateActionWithSecretParams{
-					Id: id, Description: input.Description, Risk: input.Risk, MayExecute: input.MayExecute,
-					WaitSeconds: int64(input.WaitLimit / time.Second), DeliverSeconds: int64(input.DeliverWithin / time.Second),
-					Schema: schema, ConnectorKind: input.Connector, ConnectorUrl: url, ConnectorSecret: secretBytes, Department: department,
-				})
-			} else {
-				err = q.UpdateAction(ctx, repo.UpdateActionParams{
-					Id: id, Description: input.Description, Risk: input.Risk, MayExecute: input.MayExecute,
-					WaitSeconds: int64(input.WaitLimit / time.Second), DeliverSeconds: int64(input.DeliverWithin / time.Second),
-					Schema: schema, ConnectorKind: input.Connector, ConnectorUrl: url, Department: department,
-				})
-			}
-			if err != nil {
+			if err := q.UpdateAction(ctx, repo.UpdateActionParams{
+				Id: id, Description: input.Description, Risk: input.Risk, MayExecute: input.MayExecute,
+				WaitSeconds: int64(input.WaitLimit / time.Second), DeliverSeconds: int64(input.DeliverWithin / time.Second),
+				Schema: schema, ConnectorKind: input.Connector, ConnectorUrl: url, Department: department,
+			}); err != nil {
 				return err
-			}
-			// Deliveries still waiting would go to the old address, signed
-			// with a secret the receiver there no longer holds.
-			if moved && input.Connector == ConnectorWebhook && s.onMoved != nil {
-				if err := s.onMoved(ctx, tx, input.Key, input.Url); err != nil {
-					return err
-				}
 			}
 		}
 		row, err := q.GetActionByKey(ctx, input.Key)
@@ -248,12 +200,20 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, string, erro
 			return err
 		}
 		result = toAction(row)
+		// A new audience means the receiver of the old one must get nothing
+		// more: deliveries still waiting, and never sent, move along.
+		if !created && result.ConnectorKind == ConnectorWebhook && s.onMoved != nil &&
+			(existing.ConnectorAudience == nil || *existing.ConnectorAudience != result.ConnectorAudience) {
+			if err := s.onMoved(ctx, tx, input.Key, result.ConnectorUrl, result.ConnectorAudience); err != nil {
+				return err
+			}
+		}
 		// Where an action delivers and what it accepts are what an auditor
 		// most needs to see change; the chain holds their digests.
 		payload := map[string]any{
 			"key": input.Key, "risk": input.Risk, "waitSeconds": int64(input.WaitLimit / time.Second),
 			"deliverSeconds": int64(input.DeliverWithin / time.Second), "mayExecute": input.MayExecute,
-			"connector": input.Connector, "secretRotated": secret != "", "department": department,
+			"connector": input.Connector, "audience": result.ConnectorAudience, "department": department,
 		}
 		if input.Url != "" {
 			sum := sha256.Sum256([]byte(input.Url))
@@ -268,9 +228,9 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, string, erro
 		return err
 	})
 	if err != nil {
-		return Action{}, "", fault.FromDb(err)
+		return Action{}, fault.FromDb(err)
 	}
-	return result, secret, nil
+	return result, nil
 }
 
 // Remove hides an action: agents can no longer propose it, old proposals
@@ -356,14 +316,6 @@ func validUrl(url string) bool {
 	return len(url) <= 2000 && (strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "http://")) && len(url) > 8
 }
 
-func newSecret() (string, error) {
-	raw := make([]byte, secretBytes)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	return SecretPrefix + base64.RawURLEncoding.EncodeToString(raw), nil
-}
-
 func toAction(row repo.GetActionByKeyRow) Action {
 	e := Action{
 		Id: row.Id, Key: row.Key, Description: row.Description, Risk: row.Risk, MayExecute: row.MayExecute,
@@ -375,6 +327,9 @@ func toAction(row repo.GetActionByKeyRow) Action {
 	}
 	if row.ConnectorUrl != nil {
 		e.ConnectorUrl = *row.ConnectorUrl
+	}
+	if row.ConnectorAudience != nil {
+		e.ConnectorAudience = *row.ConnectorAudience
 	}
 	if row.Department != nil {
 		e.Department = *row.Department

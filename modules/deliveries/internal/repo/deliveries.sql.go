@@ -7,40 +7,138 @@ package repo
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
+const closeOpen = `-- name: CloseOpen :execrows
+UPDATE mandate.deliveries
+SET attempt_open_at = NULL, last_status = $1, last_error = $2
+WHERE id = $3 AND status = 'pending' AND attempt_open_at IS NOT NULL
+`
+
+type CloseOpenParams struct {
+	LastStatus *int32
+	LastError  *string
+	Id         uuid.UUID
+}
+
+// The attempt ended without an answer that settles anything: it stays
+// counted as possibly sent.
+func (q *Queries) CloseOpen(ctx context.Context, arg CloseOpenParams) (int64, error) {
+	result, err := q.db.Exec(ctx, closeOpen, arg.LastStatus, arg.LastError, arg.Id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const closeStale = `-- name: CloseStale :many
+UPDATE mandate.deliveries SET attempt_open_at = NULL
+WHERE status = 'pending' AND attempt_open_at <= now() - mandate.delivery_stale()
+RETURNING id, proposal_id
+`
+
+type CloseStaleRow struct {
+	Id         uuid.UUID
+	ProposalId uuid.UUID
+}
+
+// Attempts left open by a crash: closed, and still counted as possibly sent.
+func (q *Queries) CloseStale(ctx context.Context) ([]CloseStaleRow, error) {
+	rows, err := q.db.Query(ctx, closeStale)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CloseStaleRow
+	for rows.Next() {
+		var i CloseStaleRow
+		if err := rows.Scan(&i.Id, &i.ProposalId); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const closeUnsent = `-- name: CloseUnsent :execrows
+UPDATE mandate.deliveries
+SET attempts_unsent = attempts_unsent + 1, attempt_open_at = NULL, last_status = $1, last_error = $2
+WHERE id = $3 AND status = 'pending' AND attempt_open_at IS NOT NULL
+`
+
+type CloseUnsentParams struct {
+	LastStatus *int32
+	LastError  *string
+	Id         uuid.UUID
+}
+
+// The attempt is proven never to have reached the receiver.
+func (q *Queries) CloseUnsent(ctx context.Context, arg CloseUnsentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, closeUnsent, arg.LastStatus, arg.LastError, arg.Id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const connectorOf = `-- name: ConnectorOf :one
-SELECT url::text, secret::bytea FROM mandate.connector_of($1::text)
+SELECT connector_url::text AS url, connector_audience::text AS audience FROM mandate.actions
+WHERE key = $1 AND connector_kind = 'webhook' AND removed_at IS NULL
 `
 
 type ConnectorOfRow struct {
-	Url    string
-	Secret []byte
+	Url      string
+	Audience string
 }
 
-func (q *Queries) ConnectorOf(ctx context.Context, actionKey string) (ConnectorOfRow, error) {
-	row := q.db.QueryRow(ctx, connectorOf, actionKey)
+// An action's address and audience as they are now.
+func (q *Queries) ConnectorOf(ctx context.Context, key string) (ConnectorOfRow, error) {
+	row := q.db.QueryRow(ctx, connectorOf, key)
 	var i ConnectorOfRow
-	err := row.Scan(&i.Url, &i.Secret)
+	err := row.Scan(&i.Url, &i.Audience)
 	return i, err
 }
 
-const connectorUrl = `-- name: ConnectorUrl :one
-SELECT connector_url FROM mandate.actions
-WHERE key = $1 AND connector_kind = 'webhook' AND removed_at IS NULL AND connector_url IS NOT NULL
+const dbNow = `-- name: DbNow :one
+SELECT now()::timestamptz
 `
 
-func (q *Queries) ConnectorUrl(ctx context.Context, key string) (*string, error) {
-	row := q.db.QueryRow(ctx, connectorUrl, key)
-	var connector_url *string
-	err := row.Scan(&connector_url)
-	return connector_url, err
+func (q *Queries) DbNow(ctx context.Context) (time.Time, error) {
+	row := q.db.QueryRow(ctx, dbNow)
+	var column_1 time.Time
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const finish = `-- name: Finish :one
+UPDATE mandate.deliveries
+SET status = CASE WHEN attempts_started > attempts_unsent THEN 'unknown' ELSE 'not_sent' END, last_error = $1
+WHERE id = $2 AND status = 'pending' AND attempt_open_at IS NULL
+RETURNING status
+`
+
+type FinishParams struct {
+	Reason *string
+	Id     uuid.UUID
+}
+
+// Ends a waiting delivery with no attempt open: unknown if an attempt was
+// possibly sent, otherwise not sent.
+func (q *Queries) Finish(ctx context.Context, arg FinishParams) (string, error) {
+	row := q.db.QueryRow(ctx, finish, arg.Reason, arg.Id)
+	var status string
+	err := row.Scan(&status)
+	return status, err
 }
 
 const getDelivery = `-- name: GetDelivery :one
-SELECT id, tenant_id, proposal_id, action_key, url, status, attempts, last_status, last_error, result, created_at, delivered_at, failed_at FROM mandate.deliveries WHERE id = $1
+SELECT id, tenant_id, proposal_id, action_key, url, audience, status, not_after, attempts_started, attempts_unsent, attempt_open_at, last_status, last_error, result, created_at, finished_at, settled_by FROM mandate.deliveries WHERE id = $1
 `
 
 func (q *Queries) GetDelivery(ctx context.Context, id uuid.UUID) (MandateDelivery, error) {
@@ -52,20 +150,24 @@ func (q *Queries) GetDelivery(ctx context.Context, id uuid.UUID) (MandateDeliver
 		&i.ProposalId,
 		&i.ActionKey,
 		&i.Url,
+		&i.Audience,
 		&i.Status,
-		&i.Attempts,
+		&i.NotAfter,
+		&i.AttemptsStarted,
+		&i.AttemptsUnsent,
+		&i.AttemptOpenAt,
 		&i.LastStatus,
 		&i.LastError,
 		&i.Result,
 		&i.CreatedAt,
-		&i.DeliveredAt,
-		&i.FailedAt,
+		&i.FinishedAt,
+		&i.SettledBy,
 	)
 	return i, err
 }
 
 const getDeliveryByProposal = `-- name: GetDeliveryByProposal :one
-SELECT id, tenant_id, proposal_id, action_key, url, status, attempts, last_status, last_error, result, created_at, delivered_at, failed_at FROM mandate.deliveries WHERE proposal_id = $1
+SELECT id, tenant_id, proposal_id, action_key, url, audience, status, not_after, attempts_started, attempts_unsent, attempt_open_at, last_status, last_error, result, created_at, finished_at, settled_by FROM mandate.deliveries WHERE proposal_id = $1
 `
 
 func (q *Queries) GetDeliveryByProposal(ctx context.Context, proposalID uuid.UUID) (MandateDelivery, error) {
@@ -77,20 +179,53 @@ func (q *Queries) GetDeliveryByProposal(ctx context.Context, proposalID uuid.UUI
 		&i.ProposalId,
 		&i.ActionKey,
 		&i.Url,
+		&i.Audience,
 		&i.Status,
-		&i.Attempts,
+		&i.NotAfter,
+		&i.AttemptsStarted,
+		&i.AttemptsUnsent,
+		&i.AttemptOpenAt,
 		&i.LastStatus,
 		&i.LastError,
 		&i.Result,
 		&i.CreatedAt,
-		&i.DeliveredAt,
-		&i.FailedAt,
+		&i.FinishedAt,
+		&i.SettledBy,
+	)
+	return i, err
+}
+
+const getDeliveryByProposalForUpdate = `-- name: GetDeliveryByProposalForUpdate :one
+SELECT id, tenant_id, proposal_id, action_key, url, audience, status, not_after, attempts_started, attempts_unsent, attempt_open_at, last_status, last_error, result, created_at, finished_at, settled_by FROM mandate.deliveries WHERE proposal_id = $1 FOR UPDATE
+`
+
+func (q *Queries) GetDeliveryByProposalForUpdate(ctx context.Context, proposalID uuid.UUID) (MandateDelivery, error) {
+	row := q.db.QueryRow(ctx, getDeliveryByProposalForUpdate, proposalID)
+	var i MandateDelivery
+	err := row.Scan(
+		&i.Id,
+		&i.TenantId,
+		&i.ProposalId,
+		&i.ActionKey,
+		&i.Url,
+		&i.Audience,
+		&i.Status,
+		&i.NotAfter,
+		&i.AttemptsStarted,
+		&i.AttemptsUnsent,
+		&i.AttemptOpenAt,
+		&i.LastStatus,
+		&i.LastError,
+		&i.Result,
+		&i.CreatedAt,
+		&i.FinishedAt,
+		&i.SettledBy,
 	)
 	return i, err
 }
 
 const getDeliveryForUpdate = `-- name: GetDeliveryForUpdate :one
-SELECT id, tenant_id, proposal_id, action_key, url, status, attempts, last_status, last_error, result, created_at, delivered_at, failed_at FROM mandate.deliveries WHERE id = $1 FOR UPDATE
+SELECT id, tenant_id, proposal_id, action_key, url, audience, status, not_after, attempts_started, attempts_unsent, attempt_open_at, last_status, last_error, result, created_at, finished_at, settled_by FROM mandate.deliveries WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetDeliveryForUpdate(ctx context.Context, id uuid.UUID) (MandateDelivery, error) {
@@ -102,21 +237,26 @@ func (q *Queries) GetDeliveryForUpdate(ctx context.Context, id uuid.UUID) (Manda
 		&i.ProposalId,
 		&i.ActionKey,
 		&i.Url,
+		&i.Audience,
 		&i.Status,
-		&i.Attempts,
+		&i.NotAfter,
+		&i.AttemptsStarted,
+		&i.AttemptsUnsent,
+		&i.AttemptOpenAt,
 		&i.LastStatus,
 		&i.LastError,
 		&i.Result,
 		&i.CreatedAt,
-		&i.DeliveredAt,
-		&i.FailedAt,
+		&i.FinishedAt,
+		&i.SettledBy,
 	)
 	return i, err
 }
 
-const insertDelivery = `-- name: InsertDelivery :exec
-INSERT INTO mandate.deliveries (id, tenant_id, proposal_id, action_key, url)
-VALUES ($1, $2, $3, $4, $5)
+const insertDelivery = `-- name: InsertDelivery :one
+INSERT INTO mandate.deliveries (id, tenant_id, proposal_id, action_key, url, audience, not_after)
+VALUES ($1, $2, $3, $4, $5, $6, now())
+RETURNING not_after
 `
 
 type InsertDeliveryParams struct {
@@ -125,21 +265,27 @@ type InsertDeliveryParams struct {
 	ProposalId uuid.UUID
 	ActionKey  string
 	Url        string
+	Audience   string
 }
 
-func (q *Queries) InsertDelivery(ctx context.Context, arg InsertDeliveryParams) error {
-	_, err := q.db.Exec(ctx, insertDelivery,
+// The trigger sets not_after from the proposal's decision and checks the
+// address and audience are the action's own.
+func (q *Queries) InsertDelivery(ctx context.Context, arg InsertDeliveryParams) (time.Time, error) {
+	row := q.db.QueryRow(ctx, insertDelivery,
 		arg.Id,
 		arg.TenantId,
 		arg.ProposalId,
 		arg.ActionKey,
 		arg.Url,
+		arg.Audience,
 	)
-	return err
+	var not_after time.Time
+	err := row.Scan(&not_after)
+	return not_after, err
 }
 
 const listDeliveriesByProposals = `-- name: ListDeliveriesByProposals :many
-SELECT id, tenant_id, proposal_id, action_key, url, status, attempts, last_status, last_error, result, created_at, delivered_at, failed_at FROM mandate.deliveries WHERE proposal_id = ANY($1::uuid[])
+SELECT id, tenant_id, proposal_id, action_key, url, audience, status, not_after, attempts_started, attempts_unsent, attempt_open_at, last_status, last_error, result, created_at, finished_at, settled_by FROM mandate.deliveries WHERE proposal_id = ANY($1::uuid[])
 `
 
 func (q *Queries) ListDeliveriesByProposals(ctx context.Context, proposalIds []uuid.UUID) ([]MandateDelivery, error) {
@@ -157,14 +303,18 @@ func (q *Queries) ListDeliveriesByProposals(ctx context.Context, proposalIds []u
 			&i.ProposalId,
 			&i.ActionKey,
 			&i.Url,
+			&i.Audience,
 			&i.Status,
-			&i.Attempts,
+			&i.NotAfter,
+			&i.AttemptsStarted,
+			&i.AttemptsUnsent,
+			&i.AttemptOpenAt,
 			&i.LastStatus,
 			&i.LastError,
 			&i.Result,
 			&i.CreatedAt,
-			&i.DeliveredAt,
-			&i.FailedAt,
+			&i.FinishedAt,
+			&i.SettledBy,
 		); err != nil {
 			return nil, err
 		}
@@ -176,101 +326,123 @@ func (q *Queries) ListDeliveriesByProposals(ctx context.Context, proposalIds []u
 	return items, nil
 }
 
-const markAttempt = `-- name: MarkAttempt :exec
-UPDATE mandate.deliveries SET attempts = attempts + 1, last_status = $1, last_error = $2
-WHERE id = $3
+const listDueToFinish = `-- name: ListDueToFinish :many
+SELECT id FROM mandate.deliveries
+WHERE status = 'pending' AND attempt_open_at IS NULL AND not_after - mandate.delivery_timeout() <= now()
+ORDER BY not_after, id
+LIMIT $1
+FOR UPDATE SKIP LOCKED
 `
 
-type MarkAttemptParams struct {
-	LastStatus *int32
-	LastError  *string
-	Id         uuid.UUID
-}
-
-func (q *Queries) MarkAttempt(ctx context.Context, arg MarkAttemptParams) error {
-	_, err := q.db.Exec(ctx, markAttempt, arg.LastStatus, arg.LastError, arg.Id)
-	return err
-}
-
-const markDelivered = `-- name: MarkDelivered :exec
-UPDATE mandate.deliveries SET status = 'delivered', attempts = attempts + 1, last_status = $1::int, last_error = NULL,
-    result = $2, delivered_at = now()
-WHERE id = $3
-`
-
-type MarkDeliveredParams struct {
-	LastStatus int32
-	Result     []byte
-	Id         uuid.UUID
-}
-
-func (q *Queries) MarkDelivered(ctx context.Context, arg MarkDeliveredParams) error {
-	_, err := q.db.Exec(ctx, markDelivered, arg.LastStatus, arg.Result, arg.Id)
-	return err
-}
-
-const markFailed = `-- name: MarkFailed :exec
-UPDATE mandate.deliveries SET status = 'failed', attempts = attempts + 1, last_status = $1, last_error = $2,
-    result = $3, failed_at = now()
-WHERE id = $4
-`
-
-type MarkFailedParams struct {
-	LastStatus *int32
-	LastError  *string
-	Result     []byte
-	Id         uuid.UUID
-}
-
-func (q *Queries) MarkFailed(ctx context.Context, arg MarkFailedParams) error {
-	_, err := q.db.Exec(ctx, markFailed,
-		arg.LastStatus,
-		arg.LastError,
-		arg.Result,
-		arg.Id,
-	)
-	return err
-}
-
-const moveDelivery = `-- name: MoveDelivery :exec
-UPDATE mandate.deliveries SET url = $1 WHERE id = $2
-`
-
-type MoveDeliveryParams struct {
-	Url string
-	Id  uuid.UUID
-}
-
-func (q *Queries) MoveDelivery(ctx context.Context, arg MoveDeliveryParams) error {
-	_, err := q.db.Exec(ctx, moveDelivery, arg.Url, arg.Id)
-	return err
-}
-
-const retargetPending = `-- name: RetargetPending :many
-UPDATE mandate.deliveries SET url = $1
-WHERE action_key = $2 AND status = 'pending' AND url <> $1
-RETURNING id, proposal_id
-`
-
-type RetargetPendingParams struct {
-	Url       string
-	ActionKey string
-}
-
-type RetargetPendingRow struct {
-	Id         uuid.UUID
-	ProposalId uuid.UUID
-}
-
-func (q *Queries) RetargetPending(ctx context.Context, arg RetargetPendingParams) ([]RetargetPendingRow, error) {
-	rows, err := q.db.Query(ctx, retargetPending, arg.Url, arg.ActionKey)
+// Waiting deliveries past the last moment an attempt may open, with none
+// open, locked for the sweep.
+func (q *Queries) ListDueToFinish(ctx context.Context, maxRows int32) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listDueToFinish, maxRows)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []RetargetPendingRow
+	var items []uuid.UUID
 	for rows.Next() {
-		var i RetargetPendingRow
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const moveDelivery = `-- name: MoveDelivery :exec
+UPDATE mandate.deliveries SET url = $1, audience = $2 WHERE id = $3
+`
+
+type MoveDeliveryParams struct {
+	Url      string
+	Audience string
+	Id       uuid.UUID
+}
+
+func (q *Queries) MoveDelivery(ctx context.Context, arg MoveDeliveryParams) error {
+	_, err := q.db.Exec(ctx, moveDelivery, arg.Url, arg.Audience, arg.Id)
+	return err
+}
+
+const openAttempt = `-- name: OpenAttempt :one
+UPDATE mandate.deliveries SET attempts_started = attempts_started + 1
+WHERE id = $1 AND status = 'pending'
+RETURNING attempt_open_at::timestamptz
+`
+
+// The guard refuses it too late, or over an attempt still open, and sets
+// attempt_open_at. The time returned is the database's, for the signature.
+func (q *Queries) OpenAttempt(ctx context.Context, id uuid.UUID) (time.Time, error) {
+	row := q.db.QueryRow(ctx, openAttempt, id)
+	var attempt_open_at time.Time
+	err := row.Scan(&attempt_open_at)
+	return attempt_open_at, err
+}
+
+const recordAnswer = `-- name: RecordAnswer :execrows
+UPDATE mandate.deliveries
+SET status = $1, result = $2, attempt_open_at = NULL, last_status = $3::int, last_error = NULL
+WHERE id = $4 AND status = 'pending' AND attempt_open_at IS NOT NULL
+`
+
+type RecordAnswerParams struct {
+	Status     string
+	Result     []byte
+	LastStatus int32
+	Id         uuid.UUID
+}
+
+// A receiver's explicit answer, with the attempt it answers. Nothing when
+// the attempt is no longer open: the answer came too late to count.
+func (q *Queries) RecordAnswer(ctx context.Context, arg RecordAnswerParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordAnswer,
+		arg.Status,
+		arg.Result,
+		arg.LastStatus,
+		arg.Id,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const retargetWaiting = `-- name: RetargetWaiting :many
+UPDATE mandate.deliveries SET url = $1, audience = $2
+WHERE action_key = $3 AND status = 'pending' AND attempts_started = attempts_unsent AND attempt_open_at IS NULL
+    AND (url <> $1 OR audience <> $2)
+RETURNING id, proposal_id
+`
+
+type RetargetWaitingParams struct {
+	Url       string
+	Audience  string
+	ActionKey string
+}
+
+type RetargetWaitingRow struct {
+	Id         uuid.UUID
+	ProposalId uuid.UUID
+}
+
+// An owner moved the action: its waiting deliveries that were never
+// possibly sent move along. One possibly sent stays where it was sent.
+func (q *Queries) RetargetWaiting(ctx context.Context, arg RetargetWaitingParams) ([]RetargetWaitingRow, error) {
+	rows, err := q.db.Query(ctx, retargetWaiting, arg.Url, arg.Audience, arg.ActionKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RetargetWaitingRow
+	for rows.Next() {
+		var i RetargetWaitingRow
 		if err := rows.Scan(&i.Id, &i.ProposalId); err != nil {
 			return nil, err
 		}
@@ -282,16 +454,31 @@ func (q *Queries) RetargetPending(ctx context.Context, arg RetargetPendingParams
 	return items, nil
 }
 
-const retryDelivery = `-- name: RetryDelivery :exec
-UPDATE mandate.deliveries SET status = 'pending', failed_at = NULL, url = $1 WHERE id = $2
+const sendAgain = `-- name: SendAgain :exec
+UPDATE mandate.deliveries SET status = 'pending', url = $1, audience = $2 WHERE id = $3
 `
 
-type RetryDeliveryParams struct {
-	Url string
-	Id  uuid.UUID
+type SendAgainParams struct {
+	Url      string
+	Audience string
+	Id       uuid.UUID
 }
 
-func (q *Queries) RetryDelivery(ctx context.Context, arg RetryDeliveryParams) error {
-	_, err := q.db.Exec(ctx, retryDelivery, arg.Url, arg.Id)
+func (q *Queries) SendAgain(ctx context.Context, arg SendAgainParams) error {
+	_, err := q.db.Exec(ctx, sendAgain, arg.Url, arg.Audience, arg.Id)
+	return err
+}
+
+const settle = `-- name: Settle :exec
+UPDATE mandate.deliveries SET status = $1 WHERE id = $2
+`
+
+type SettleParams struct {
+	Status string
+	Id     uuid.UUID
+}
+
+func (q *Queries) Settle(ctx context.Context, arg SettleParams) error {
+	_, err := q.db.Exec(ctx, settle, arg.Status, arg.Id)
 	return err
 }

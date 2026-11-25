@@ -1,6 +1,6 @@
 # Design note: what 0.1.0 freezes
 
-Status: accepted, 2026-11-26. Build step 1 (section 11) is built: the fresh schema, River's own schema, budgets as a count, expiry and the sweep. It covers roadmap items 5 (proposal expiry), 6 (dry run), 8 (delivery contract v2) and 9 (the agent contract). They are designed together because they share the proposal's states, the delivery's states and the contracts that 0.1.0 freezes. Everything is built on a fresh first migration: nothing before 0.1.0 is kept compatible ([decisions](decisions.md)).
+Status: accepted, 2026-11-26. Build steps 1 and 2 (section 11) are built: the fresh schema, River's own schema, budgets as a count, expiry and the sweep; then delivery contract v2, with the key, the audience, the answers, the attempt marker, the states, settling, and the receivers. It covers roadmap items 5 (proposal expiry), 6 (dry run), 8 (delivery contract v2) and 9 (the agent contract). They are designed together because they share the proposal's states, the delivery's states and the contracts that 0.1.0 freezes. Everything is built on a fresh first migration: nothing before 0.1.0 is kept compatible ([decisions](decisions.md)).
 
 This note sets out the states, the rules the database holds, the contracts, the jobs, the log events and the tests. When the code differs from this note, one of them is wrong.
 
@@ -147,7 +147,7 @@ The body:
 
 1. **Verifies** the signature over the raw header and the raw body, before parsing anything, with a key id it trusts.
 2. **Checks the timestamp** is within 5 minutes of its clock.
-3. **Parses, and checks** that `kind` is `delivery`, and that `audience` and `tenantId` are the ones it was configured with. It never takes them from the request. The delivery id it uses is the one in the body, which must equal the header's.
+3. **Parses, and checks** that `kind` is `delivery`, and that `audience` and `tenantId` are the ones it was configured with. It never takes them from the request. The delivery id it uses is the one in the body, which must equal the header's. When they are not its own, it does nothing and answers 403 without an outcome, which is retried: a delivery that moved with its action carries a new audience the receiver at the new address may not have been given yet.
 4. **Claims the delivery id atomically:**
    - If it finished this delivery before, it answers exactly as it did then.
    - If the delivery is still in progress, it answers 503, which is retried.
@@ -316,7 +316,7 @@ New events, each written in the transaction that makes the change:
 - `delivery.unknown`
 - `delivery.settled`, with who settled it and which way
 - `delivery.conflict`
-- `action.moved`, which now names the new audience
+- `action.changed` names the audience, so a move shows as a new one beside the address's digest; a separate `action.moved` was not needed. Deliveries that move with it write `delivery.retargeted`
 
 Events of a dry run carry `dryRun: true`.
 

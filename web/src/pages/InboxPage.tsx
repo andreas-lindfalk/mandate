@@ -24,6 +24,7 @@ import {
   skipLabel,
   statusLabel,
   executions,
+  toDate,
 } from "@/lib/format";
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
@@ -43,9 +44,20 @@ function RiskBadge({ risk }: { risk: string }) {
 
 function DeliveryBadge({ delivery }: { delivery?: Delivery }) {
   if (!delivery) return null;
-  if (delivery.status === "failed") return <Badge tone="danger">not delivered</Badge>;
-  if (delivery.status === "pending") return <Badge tone="neutral">delivering</Badge>;
-  return null;
+  switch (delivery.status) {
+    case "pending":
+      return <Badge tone="neutral">delivering</Badge>;
+    case "refused":
+      return <Badge tone="danger">refused</Badge>;
+    case "not_sent":
+      return <Badge tone="danger">not delivered</Badge>;
+    case "unknown":
+      return <Badge tone="warning">outcome unknown</Badge>;
+    case "settled_not_done":
+      return <Badge tone="danger">not carried out</Badge>;
+    default:
+      return null;
+  }
 }
 
 /** The order of setting a tenant up, shown to an owner until the first two steps are done. */
@@ -149,7 +161,14 @@ function History({ events }: { events: Event[] }) {
 }
 
 function DeliveryCard({ proposalId, delivery, onChanged }: { proposalId: string; delivery: Delivery; onChanged: () => void }) {
-  const redeliver = useMutation({
+  // The clock moves on while the card is open: sending again ends, and
+  // settling opens, at a moment the card must notice.
+  const [now, setNow] = React.useState(() => new Date());
+  React.useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 15_000);
+    return () => clearInterval(timer);
+  }, []);
+  const sendAgain = useMutation({
     mutationFn: () => api.proposals.redeliverProposal({ id: proposalId }),
     onSuccess: () => {
       toast.success("Sent again");
@@ -157,50 +176,118 @@ function DeliveryCard({ proposalId, delivery, onChanged }: { proposalId: string;
     },
     onError: (error) => toast.error("Could not send it again", { description: errorText(error) }),
   });
+  const settle = useMutation({
+    mutationFn: (done: boolean) => api.proposals.settleDelivery({ id: proposalId, done }),
+    onSuccess: () => {
+      toast.success("Settled");
+      onChanged();
+    },
+    onError: (error) => toast.error("Could not settle it", { description: errorText(error) }),
+  });
   const host = hostOf(delivery.url);
-  if (delivery.status === "failed") {
-    return (
-      <Card className="border-danger/30 bg-danger-soft p-4 text-[13.5px] text-danger-ink">
-        <p className="font-medium">{delivery.resultJson ? "Decided, but refused by the receiving system." : "Decided, but not delivered."}</p>
-        <p className="mt-1">
-          {host} did not accept it after {delivery.attempts} {delivery.attempts === 1 ? "attempt" : "attempts"}
-          {delivery.lastError ? `: ${delivery.lastError}` : ""}. The decision stands; the receiving system has not acted on it.
-        </p>
-        {delivery.resultJson ? (
-          <>
-            <p className="mt-2">Its reason, as it gave it:</p>
-            <pre className="mt-1 overflow-x-auto font-mono text-[12px]" aria-label="The receiving system's reason">
-              {prettyJson(delivery.resultJson)}
-            </pre>
-            <p className="mt-2">Sending it again helps only once the cause is fixed.</p>
-          </>
-        ) : null}
-        <Button variant="secondary" size="sm" className="mt-3" onClick={() => redeliver.mutate()} loading={redeliver.isPending}>
-          <RotateCw /> Send again
-        </Button>
-      </Card>
-    );
+  const attempts = `${delivery.attempts} ${delivery.attempts === 1 ? "attempt" : "attempts"}`;
+  const answer = delivery.resultJson ? (
+    <pre className="mt-2 overflow-x-auto font-mono text-[12px]" aria-label="What the receiving system answered">
+      {prettyJson(delivery.resultJson)}
+    </pre>
+  ) : null;
+  switch (delivery.status) {
+    case "pending":
+      return (
+        <Card className="bg-sunken p-4 text-[13.5px]">
+          Being delivered to {host}
+          {delivery.attempts ? ` (${delivery.attempts} of ${delivery.maxAttempts} attempts so far${delivery.lastError ? `: ${delivery.lastError}` : ""})` : ""}. It
+          must be carried out by {formatDateTime(delivery.notAfter)}, or not at all.
+        </Card>
+      );
+    case "done":
+      return (
+        <Card className="bg-sunken p-4 text-[13.5px]">
+          <p>
+            Carried out by {host} {formatDateTime(delivery.finishedAt)}.
+          </p>
+          {answer ? <div className="text-muted">{answer}</div> : null}
+        </Card>
+      );
+    case "refused":
+      return (
+        <Card className="border-danger/30 bg-danger-soft p-4 text-[13.5px] text-danger-ink">
+          <p className="font-medium">Decided, but refused by the receiving system.</p>
+          <p className="mt-1">{host} refused it and did nothing. The refusal is final: it is not sent again. If it is still needed, it must be proposed again.</p>
+          {answer ? (
+            <>
+              <p className="mt-2">Its reason, as it gave it:</p>
+              {answer}
+            </>
+          ) : null}
+        </Card>
+      );
+    case "not_sent": {
+      const deadline = toDate(delivery.sendAgainBefore);
+      const canSendAgain = !!deadline && deadline > now;
+      return (
+        <Card className="border-danger/30 bg-danger-soft p-4 text-[13.5px] text-danger-ink">
+          <p className="font-medium">Decided, but it never reached the receiving system.</p>
+          <p className="mt-1">
+            None of the {attempts} reached {host}
+            {delivery.lastError ? `: ${delivery.lastError}` : ""}. Nothing was done there.{" "}
+            {canSendAgain
+              ? `It may be sent again until ${formatDateTime(delivery.sendAgainBefore)}.`
+              : "It is too late to send it again; if it is still needed, it must be proposed again."}
+          </p>
+          {canSendAgain ? (
+            <Button variant="secondary" size="sm" className="mt-3" onClick={() => sendAgain.mutate()} loading={sendAgain.isPending}>
+              <RotateCw /> Send again
+            </Button>
+          ) : null}
+        </Card>
+      );
+    }
+    case "unknown": {
+      const from = toDate(delivery.settleAfter);
+      const canSettle = !!from && from <= now;
+      return (
+        <Card className="border-warning/30 bg-warning-soft p-4 text-[13.5px] text-warning-ink">
+          <p className="font-medium">Unknown whether it was carried out.</p>
+          <p className="mt-1">
+            {host} may or may not have acted on it after {attempts}
+            {delivery.lastError ? ` (${delivery.lastError})` : ""}. It is never sent again, since doing it twice could be worse than not at all. Check in{" "}
+            {host} whether it happened, and settle it here.
+          </p>
+          {answer ? (
+            <>
+              <p className="mt-2">What it said:</p>
+              {answer}
+            </>
+          ) : null}
+          {canSettle ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button variant="secondary" size="sm" onClick={() => settle.mutate(true)} loading={settle.isPending && settle.variables === true} disabled={settle.isPending}>
+                <Check /> It was carried out
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => settle.mutate(false)} loading={settle.isPending && settle.variables === false} disabled={settle.isPending}>
+                <X /> It was not
+              </Button>
+            </div>
+          ) : (
+            <p className="mt-2">It can be settled from {formatDateTime(delivery.settleAfter)}, once the receiving system can no longer carry it out.</p>
+          )}
+        </Card>
+      );
+    }
+    case "settled_done":
+    case "settled_not_done":
+      return (
+        <Card className="bg-sunken p-4 text-[13.5px]">
+          <p>
+            {delivery.status === "settled_done" ? "Carried out" : "Not carried out"}, as a person settled it after the outcome at {host} was unknown.
+          </p>
+          {answer ? <div className="text-muted">{answer}</div> : null}
+        </Card>
+      );
+    default:
+      return <Card className="bg-sunken p-4 text-[13.5px]">Delivery to {host}: {delivery.status}.</Card>;
   }
-  if (delivery.status === "pending") {
-    return (
-      <Card className="bg-sunken p-4 text-[13.5px]">
-        Being delivered to {host}
-        {delivery.attempts ? ` (${delivery.attempts} of ${delivery.maxAttempts} attempts so far${delivery.lastError ? `: ${delivery.lastError}` : ""})` : ""}.
-      </Card>
-    );
-  }
-  return (
-    <Card className="bg-sunken p-4 text-[13.5px]">
-      <p>
-        Delivered to {host} {formatDateTime(delivery.deliveredAt)}.
-      </p>
-      {delivery.resultJson ? (
-        <pre className="mt-2 overflow-x-auto font-mono text-[12px] text-muted" aria-label="What the receiving system answered">
-          {prettyJson(delivery.resultJson)}
-        </pre>
-      ) : null}
-    </Card>
-  );
 }
 
 /** What pgmandate itself checked, apart from what the agent claims. */

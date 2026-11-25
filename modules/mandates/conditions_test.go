@@ -144,7 +144,7 @@ func (s *ConditionsSuite) Test_GoAndPostgresAgree() {
 
 func (s *ConditionsSuite) Test_TheGrantChecksTheCondition() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	_, _, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
+	_, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
 		Key: "refunds.issue", Risk: mandates.RiskLow, MayExecute: true, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
 		Schema: json.RawMessage(`{"type":"object","properties":{"amount":{"type":"number"},"currency":{"type":"string"}}}`),
 	})
@@ -190,7 +190,7 @@ func (s *ConditionsSuite) Test_TheGrantChecksTheCondition() {
 	s.Require().NoError(err)
 	_, err = grant([]string{"refunds.*", "test.*"}, `payload.anything == 1`)
 	s.Require().NoError(err)
-	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "refunds.note", Risk: mandates.RiskLow, Connector: actions.ConnectorBuiltin})
+	_, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "refunds.note", Risk: mandates.RiskLow, Connector: actions.ConnectorBuiltin})
 	s.Require().NoError(err)
 	_, err = grant([]string{"refunds.*"}, `payload.anything == 1`)
 	s.Require().NoError(err, "a defined action without a schema takes any field")

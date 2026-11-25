@@ -25,7 +25,7 @@ An owner defines an action in the UI or on the command line:
 | `deliver_within` | how long after a decision its delivery may still be carried out, 2 minutes to 7 days; 1 hour by default |
 | `may_execute` | whether a mandate may ever allow it without a person |
 | `schema` | JSON schema of the payload, shown to agents, enforced on propose and on edit. Required for a webhook, so what reaches another system has a stated shape; `{"type":"object"}` states that anything goes |
-| `connector` | `webhook` with a URL and a signing secret, or `builtin` for an embedded host's code |
+| `connector` | `webhook` with a URL and an audience the database draws, or `builtin` for an embedded host's code |
 | `department` | an optional label; nothing is scoped by it yet |
 
 An embedded host can also register actions in code. A tenant's own definition of the same key takes precedence for everything except the code.
@@ -35,10 +35,10 @@ An embedded host can also register actions in code. A tenant's own definition of
 1. The agent calls `propose` with an idempotency key and its justification: a rationale (required), evidence (what it looked at: a source, a reference to find it again, what it showed) and provenance (the MCP client as it introduced itself, the model and its own version as it states them). The payload is checked against the schema, the risk is set, the text is scanned, including the justification, and the proposal is stored as waiting, unless the agent is past its limit for the minute or the hour, which the database refuses. The justification is not part of the request a key names: a retry in other words is the same request. If it could be allowed by a mandate, a job is inserted in the same transaction. The same key again returns this proposal and does nothing else.
 2. The job asks, in one transaction with the mandate rows locked: is there a live mandate for this agent that covers the action, at this risk, whose condition holds for the payload, with room left in its count for the month, and does the payload still fit the action's schema, and is the action's risk no higher than it was? If so, the proposal becomes allowed, with the basis recorded. If not, it stays waiting and the reason goes to the log.
 3. A person approves, edits and approves, or rejects what waits, reading the agent's justification beside the payload, and, when a condition stopped it, which comparison failed and what the payload had instead. When the tenant has a notifier, a Slack or Discord channel is told once that the proposal waits: the action, its risk, the agent's registered name, why it waits and a link, never the agent's text. An approval is held to the action as it is then: the payload to its schema, at its current risk if that is higher. The payload as the agent proposed it is kept beside an edit.
-4. For a webhook action, the deciding transaction also records a delivery and inserts its job, on a queue of its own so a slow connector does not hold up decisions. The job posts the decision, signed, and records the answer as the result, or retries, or marks it failed. A person can send a failed delivery again.
+4. For a webhook action, the deciding transaction also records a delivery, with its deadline (`notAfter`, the decision plus the action's delivery window), and inserts its job, on a queue of its own so a slow connector does not hold up decisions. The job opens an attempt in a committed transaction, posts the decision signed with the server's key, and records the receiver's explicit answer: *done* with its result, or *refused*, or *unknown*. Anything else is retried, never later than the deadline allows. When it gives up, the delivery is *unknown* if an attempt may have reached the receiver and *not sent* if none did. A person may send a delivery that was never sent again before the deadline, and settles an unknown one as done or not done once the receiver can no longer act. Delivery contract v2 is set out in [design-0.1.md](design-0.1.md) and the README.
 5. The agent reads the decision, the delivery state and the result with `get_proposal`, which can wait for them.
 
-The decision is final in the database whatever the connector does. "Allowed" and "delivered" are separate facts, and the agent is told both.
+The decision is final in the database whatever the connector does. "Allowed" and "carried out" are separate facts, and the agent is told both.
 
 ## Conditions
 
@@ -61,7 +61,7 @@ An agent may withdraw its own waiting proposal, with a reason the person reads, 
 
 ## A receiver's refusal
 
-A receiver that refuses a delivery with a 4xx answers once and for all. When its answer is a JSON object of at most 4 kB, it is kept with the failed delivery, named in the log by digest, shown in the inbox and given to the agent as `refusal`, with advice not to send the same request again. An answer to an attempt that will be retried is not kept.
+A receiver that refuses a delivery says so explicitly, `{"outcome":"refused","refusal":{…}}`, at any status, and that is final; a bare 4xx is not, since a proxy's 404 says nothing about what the receiver did. The refusal, a JSON object of at most 4 kB, is kept with the delivery, named in the log by digest, shown in the inbox and given to the agent as `refusal`, with advice not to send the same request again. An answer to an attempt that will be retried is not kept.
 
 ## Expiry
 
@@ -83,7 +83,7 @@ The log is one table per tenant, append-only, each event's hash covering the pre
 
 Hashes and digests are computed over a canonical JSON form, so they can be checked without the server: object keys sorted, no whitespace between tokens, numbers in plain decimal as Postgres's `jsonb` gives them back (`1.50e1` is `15.0`, never an exponent), strings as Go's `encoding/json` writes them (which escapes `<`, `>` and `&` as `\u003c`, `\u003e` and `\u0026`), and NUL characters, which `jsonb` refuses, replaced by U+FFFD. A digest is the lower-case hex SHA-256 of that form (`events.Digest`); a connector address's digest is the SHA-256 of the address as written.
 
-A connector's secret is written by an owner and never read by the application, except by a transaction scoped as the system, through the `connector_of` function, which returns the action's current address and its secret together. A delivery is sent there; one recorded at an older address is moved first, and the move is logged.
+Deliveries are signed with an Ed25519 key from the environment, never stored in the database, and published at `/.well-known/pgmandate-keys`. Each webhook action has an audience, `pgm:<tenant>:<key>:<random>`, drawn by the database when the action is defined, defined again after removal, or moved, and named in the signed body, so a receiver accepts only deliveries for its own action and tenant. A delivery is sent to the action's address and audience as recorded; when an owner moves the action, deliveries never possibly sent move with it in the same transaction, and the move is logged.
 
 ## People and sign-in
 
@@ -101,4 +101,4 @@ River's tables live in a schema of their own, `mandate_river`, which `migrate` c
 
 ## Not built
 
-Passkeys. Replay of a run. Conditions beyond comparisons with literal values, and budgets in money. Budgets per tenant across mandates. Encryption of connector secrets at rest (the roadmap replaces them with key-pair signing in delivery contract v2). Pagination and streaming exports. Self-service sign-up.
+Passkeys. Replay of a run. Conditions beyond comparisons with literal values, and budgets in money. Budgets per tenant across mandates. Pagination and streaming exports. Self-service sign-up.

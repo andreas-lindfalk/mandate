@@ -23,6 +23,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
 	"github.com/andreas-lindfalk/pgmandate/pkg/jobs"
 	"github.com/andreas-lindfalk/pgmandate/pkg/testkit"
+	"github.com/andreas-lindfalk/pgmandate/sign"
 )
 
 // World is one Postgres and one kernel for a suite.
@@ -47,7 +48,7 @@ func Start(ctx context.Context, withJobs bool) (*World, error) {
 		return nil, err
 	}
 	w := &World{Pg: pg, Chat: newChat()}
-	opts := pgmandate.Options{Now: w.Now, AllowPrivateConnectors: true, PublicUrl: PublicUrl, NotifyClient: w.Chat.Client()}
+	opts := pgmandate.Options{Now: w.Now, AllowPrivateConnectors: true, PublicUrl: PublicUrl, NotifyClient: w.Chat.Client(), Signer: Signer}
 	if withJobs {
 		w.Queue = jobs.NewQueue(pg.App)
 		opts.Queue = w.Queue
@@ -192,4 +193,23 @@ func (w *World) NewTenant(tb testing.TB, name string) Tenant {
 		tb.Fatalf("authenticate: %v", err)
 	}
 	return t
+}
+
+// Signer is the key the fixture's kernel signs deliveries with, and Keys
+// the set a receiver in a test trusts.
+var (
+	Signer = mustSigner()
+	Keys   = sign.NewKeySet(Signer.PublicKey())
+)
+
+func mustSigner() *sign.Signer {
+	seed := make([]byte, 32)
+	for i := range seed {
+		seed[i] = byte(100 + i)
+	}
+	s, err := sign.NewSigner(seed)
+	if err != nil {
+		panic(err)
+	}
+	return s
 }

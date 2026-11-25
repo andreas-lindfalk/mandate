@@ -41,7 +41,7 @@ It consists of three things:
    - a web UI built on that API
    - a notice to a Slack or Discord channel when something waits for a person
    - a worker that delivers decisions
-3. **A delivery contract**: signed webhooks with a versioned JSON schema ([delivery-v1](delivery-v1.schema.json)) and an id per delivery. A *receiver* is a small service next to the system it changes. It holds that system's credential, checks the facts in the payload against its own records, and does the write.
+3. **A delivery contract**: webhooks signed with a key pair, addressed to one receiver by an audience, with a versioned JSON schema ([delivery-v2](delivery-v2.schema.json)), an id per delivery, a deadline, and an explicit answer: done, refused or unknown. A *receiver* is a small service next to the system it changes. It holds that system's credential, checks the facts in the payload against its own records, and does the write.
 
 ### Rules on the payload
 
@@ -152,13 +152,13 @@ These hold in every version. A change that breaks one is a bug or a decision rec
 pgmandate means something only when these hold. The software cannot make them hold.
 
 - **The agent has no other way to act.** The credentials to the target system live with the receiver, not with the agent. Taking them away is the real work. It is an organisational change, not an install.
-- **A receiver per system.** It verifies the signature and the time window, does nothing twice for the same delivery id, and checks the facts in the payload against its own records before it writes. A condition decides on what the agent wrote; the receiver is where claims meet facts. See `examples/refunds`.
+- **A receiver per system.** It verifies the signature and the time window, accepts only its own audience and tenant, does nothing twice for the same delivery id, does nothing after the deadline, and checks the facts in the payload against its own records before it writes. A condition decides on what the agent wrote; the receiver is where claims meet facts. See `examples/refunds`.
 - **The agent is kept away from the admin path:**
   - the database
   - the command line, which can act as any person
   - dev login
-  - the connector secrets
-- **You trust whoever owns the database.** The rules, the log and the connector secrets are all theirs to change. If someone else runs pgmandate for you, that someone is the database owner. When pgmandate is embedded, you also trust the host's application, which acts with pgmandate's database role.
+  - the signing key
+- **You trust whoever owns the database.** The rules and the log are theirs to change. The signing key is not in the database, but whoever runs the server holds it. If someone else runs pgmandate for you, that someone is the database owner. When pgmandate is embedded, you also trust the host's application, which acts with pgmandate's database role.
 - **You trust your tenant's owners.** An owner can define actions, point them at any public address, and grant mandates up to medium risk.
 
 ## Piloting it
@@ -301,7 +301,7 @@ Others solve parts of this: gateways and cloud agent platforms, framework approv
 **What is particular to pgmandate:**
 
 - **The mandate as one bounded grant.** A named person grants an agent a set of actions with a risk limit, a [rule on the payload](#rules-on-the-payload), a budget, a policy reference and an end date. It is one row, and every decision it allows cites it. Each part exists elsewhere. Putting them in one row a person grants, on your own database, is what pgmandate does.
-- **The database as a second gate.** Postgres checks the rules again, and evaluates the payload rule itself on the payload actually executed. Gateways also apply rules to a call's arguments, but only in the gateway. Here a bug in the service cannot allow what the rules refuse. This guards against bugs, not against a compromised service. Whoever holds a connector's signing secret can make its receiver act, which is why the receiver checks the facts.
+- **The database as a second gate.** Postgres checks the rules again, and evaluates the payload rule itself on the payload actually executed. Gateways also apply rules to a call's arguments, but only in the gateway. Here a bug in the service cannot allow what the rules refuse. This guards against bugs, not against a compromised service. Whoever holds the server's signing key can make a receiver act, which is why the receiver checks the facts.
 - **The reasoning kept with the decision.** Every proposal must carry the agent's rationale, and may carry its evidence and provenance (the [justification](#the-agents-justification-kept-with-the-decision)). It is kept unchanged beside the decision and named in the log. In November 2026 we found no other approval tool that requires it.
 
 **What it shares with others,** without leading with it:
@@ -327,7 +327,7 @@ Version 0.0.1. pgmandate is an open-source project (Apache-2.0) with one maintai
 
 - No production users.
 - No external security review.
-- Connector secrets and notifier addresses are stored unencrypted.
-- Before 1.0 the APIs may change. Migrations only go forward, and a delivery whose meaning changes is a new contract version, as delivery-v1 says.
+- Notifier addresses are stored unencrypted.
+- Before 1.0 the APIs may change. Migrations only go forward, and a delivery whose meaning changes is a new contract version, as delivery-v2 says.
 
 The [threat model](threat-model.md) lists what holds and what does not. Read it before relying on pgmandate.

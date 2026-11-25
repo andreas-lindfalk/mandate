@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "pgmandate delivery, version 2",
+  "description": "The body pgmandate posts to a webhook action's URL when a proposal has been approved by a person or executed under a mandate, signed with Ed25519 over 'pgmandate-v2.' + the Mandate-Timestamp header + '.' + the raw body; the Mandate-Signature header is 'v2 kid=<key id> sig=<base64>'. Within one address and audience the body is the same on every attempt; the time of an attempt is in the Mandate-Timestamp header. A receiver checks, in this order: the signature, with a key it trusts; that kind is delivery and audience and tenantId are the ones it was configured with; that it has not seen deliveryId (a delivery it finished is answered as before, one in progress with 503); and that its clock is before notAfter. It answers with an explicit outcome: {\"outcome\":\"done\",\"result\":{...}}, {\"outcome\":\"refused\",\"refusal\":{...}} or {\"outcome\":\"unknown\",\"reason\":\"...\"}. Anything else is retried, and a delivery whose attempts may have reached the receiver without an outcome ends unknown, for a person to settle. Fields may be added within a version, so a receiver ignores fields it does not know. A removed field or a changed meaning is a new version, which a receiver refuses.",
+  "type": "object",
+  "required": [
+    "version",
+    "kind",
+    "audience",
+    "deliveryId",
+    "correlationId",
+    "tenantId",
+    "createdAt",
+    "notAfter",
+    "proposal",
+    "decision"
+  ],
+  "properties": {
+    "version": {
+      "description": "The version of this body.",
+      "const": 2
+    },
+    "kind": {
+      "description": "What this signed body is. A receiver of deliveries accepts delivery only.",
+      "const": "delivery"
+    },
+    "audience": {
+      "description": "Who this delivery is for: pgm:<tenant>:<action>:<16 hex digits>. The receiver is configured with its audience and refuses any other; it never takes it from the request. A new one is drawn when the action moves or is defined anew.",
+      "type": "string",
+      "pattern": "^pgm:[0-9a-f-]{36}:[a-z0-9._-]+:[0-9a-f]{16}$"
+    },
+    "deliveryId": {
+      "description": "The id of this delivery, the same on every attempt and equal to the Mandate-Delivery-Id header. Claim it before acting, and do the work once.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "correlationId": {
+      "description": "One value to join logs on across every system: the run id the agent gave when it proposed, otherwise the proposal's id. The agent knows it either way, and several deliveries of one run share it. A run id is chosen by the agent, so this is a label, not an identity: the proposal's id and the agent's id are what identify the work.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,100}$"
+    },
+    "tenantId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "createdAt": {
+      "description": "When the delivery was recorded, in the transaction of the decision. RFC 3339, UTC.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "notAfter": {
+      "description": "When the receiver must no longer carry this delivery out: the decision's time plus the action's delivery window. A delivery the receiver never started that arrives after it is refused without acting, and work under way is never committed after it. RFC 3339, UTC.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "proposal": {
+      "type": "object",
+      "required": [
+        "id",
+        "action",
+        "title",
+        "payload",
+        "risk",
+        "agentId",
+        "proposedAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "action": {
+          "description": "The key of the action, such as tickets.create.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+          "maxLength": 100
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "payload": {
+          "description": "What the agent proposed, or what a person edited it to. It fits the action's own payload schema as that schema was when the decision was made.",
+          "type": "object"
+        },
+        "risk": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "agentId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "runId": {
+          "description": "The agent's own id for a chain of work, when it gave one. Left out otherwise.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,100}$"
+        },
+        "proposedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": [
+        "status",
+        "decidedAt",
+        "edited"
+      ],
+      "properties": {
+        "status": {
+          "description": "approved: a person decided. executed: a mandate allowed it without a person.",
+          "enum": [
+            "approved",
+            "executed"
+          ]
+        },
+        "decidedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "decidedBy": {
+          "description": "The person who approved. Left out for an execution.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "edited": {
+          "description": "Whether a person changed the title or the payload on approval.",
+          "type": "boolean"
+        },
+        "executionBasis": {
+          "description": "What allowed an execution without a person. Left out for an approval.",
+          "type": "object",
+          "required": [
+            "mandateId",
+            "policyRef",
+            "maxRisk",
+            "budgets"
+          ],
+          "properties": {
+            "mandateId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "policyRef": {
+              "type": "string"
+            },
+            "maxRisk": {
+              "enum": [
+                "low",
+                "medium"
+              ]
+            },
+            "budgets": {
+              "description": "The mandate's budgets as this execution saw them. Today one, of kind count: how many executions the mandate may allow per UTC calendar month (limit), and how many it had allowed this month before this one (spent).",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "limit",
+                  "spent"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "count"
+                    ]
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "spent": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "condition": {
+              "description": "The mandate's condition on the payload, which held for it, for the record. Left out when the mandate has none. Do not evaluate it again: check the facts in the payload against your own records.",
+              "type": "string",
+              "maxLength": 2000
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "status": {
+            "const": "approved"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "decidedBy"
+        ]
+      },
+      "else": {
+        "required": [
+          "executionBasis"
+        ]
+      }
+    }
+  }
+}

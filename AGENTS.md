@@ -50,12 +50,12 @@ proto/ gen/             The Connect contract and its generated Go and TypeScript
 web/                    The UI (React, Vite, Tailwind); embed.go serves the build
 internal/testfix/       The shared fixture of the integration tests
 examples/helpdesk/      An embedded host: a ticket table guarded by mandate.may_write_for and builtin actions
-examples/webhook/       A receiver of deliveries that verifies signatures
+examples/webhook/       A reference receiver of deliveries (contract v2): signature, audience, once, deadline, explicit answer
 examples/refunds/       A receiver that checks each claim in the payload against its own records
 cmd/pgmandate/          The service binary and the operator's command line, with the demo
 deploy/                 Compose and Dockerfile
 docs/                   scope.md (canonical), landscape.md, design.md, design-0.1.md, threat-model.md, roadmap.md, decisions.md,
-                        delivery-v1.schema.json (the delivery contract)
+                        delivery-v2.schema.json (the delivery contract)
 ```
 
 - A module never imports another module's `internal/` (Go stops it). Modules reach each other through their root packages; the kernel wires what would otherwise be a cycle.
@@ -73,7 +73,7 @@ docs/                   scope.md (canonical), landscape.md, design.md, design-0.
 - **Logs:** `log/slog` with fields. Never log payloads, tokens or secrets.
 - **Generation:** `make gen` (buf and sqlc). Generated code (`gen/`, `web/src/gen/`, `sqlc_*.go`) is checked in.
 - **Frontend:** English text, the design tokens in `web/src/index.css`, no raw colour values. `make web` builds it into the binary; `make web-dev` gives hot reload on :5173 against the server on :8585. Checked with `tsc`, oxlint and `pnpm build`.
-- **Secrets:** agent tokens, connector secrets and notifier addresses are stored as hashes or, for connector secrets and notifier addresses, as the values the server uses. None of them is ever logged or returned after the moment it is shown.
+- **Secrets:** agent tokens and sessions are stored as hashes, notifier addresses as the values the server uses, read only by the system. The signing key is never in the database: it comes from the environment, or from `.local/signing-key` on loopback. None of them is ever logged or returned after the moment it is shown. An action's audience is not a secret.
 
 ## Tests
 
