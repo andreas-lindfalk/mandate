@@ -1,16 +1,16 @@
 # Design
 
-How pgmandate is put together. The reasons behind the choices are in [decisions.md](decisions.md); what it does not protect against is in [threat-model.md](threat-model.md).
+How pgmandate is put together. What it is and is not is in [scope.md](scope.md). The reasons behind the choices are in [decisions.md](decisions.md); what it does not protect against is in [threat-model.md](threat-model.md).
 
 ## The shape
 
-One service and one Postgres, run locally, hosted or on-premise. Three doors:
+One service and one Postgres, on your own machine, in your cloud or on-premise. Three doors:
 
 - **Agents** connect over MCP with a token and propose.
 - **Systems** receive what was decided through connectors: a signed webhook per action.
 - **People** sign in to a web UI: the inbox, the mandates, the agents and actions, the people, and the evidence.
 
-A host that shares the database can also embed the Go library and carry actions out with its own code inside the deciding transaction. `examples/helpdesk` shows that form; it is not the main one.
+A host that shares the database can also embed the Go library and carry actions out with its own code inside the deciding transaction. `examples/helpdesk` shows that form; the service is the main one. The shapes are described in [scope.md](scope.md#where-it-fits).
 
 ## Actions are data
 
@@ -31,9 +31,9 @@ An embedded host can also register actions in code. A tenant's own definition of
 
 ## The life of a proposal
 
-1. The agent calls `propose` with an idempotency key and its account: a rationale (required), evidence (what it looked at: a source, a reference to find it again, what it showed) and provenance (the MCP client as it introduced itself, the model and its own version as it states them). The payload is checked against the schema, the risk is set, the text is scanned, including the account, and the proposal is stored as waiting, unless the agent is past its limit for the minute or the hour, which the database refuses. The account is not part of the request a key names: a retry in other words is the same request. If it could be allowed by a mandate, a job is inserted in the same transaction. The same key again returns this proposal and does nothing else.
-2. The job asks, in one transaction with the mandate rows locked: is there a live mandate for this agent that covers the action, at this risk, whose condition holds for the payload, with budget left, and is the action still as it was (its schema, cost and risk)? If so, the proposal becomes allowed, with the basis recorded. If not, it stays waiting and the reason goes to the log.
-3. A person approves, edits and approves, or rejects what waits, reading the agent's account beside the payload, and, when a condition stopped it, which comparison failed and what the payload had instead. When the tenant has a notifier, a Slack or Discord channel is told once that the proposal waits: the action, its risk, the agent's registered name, why it waits and a link, never the agent's text. An approval is held to the action as it is then: the payload to its schema, at its current risk if that is higher. The payload as the agent proposed it is kept beside an edit.
+1. The agent calls `propose` with an idempotency key and its justification: a rationale (required), evidence (what it looked at: a source, a reference to find it again, what it showed) and provenance (the MCP client as it introduced itself, the model and its own version as it states them). The payload is checked against the schema, the risk is set, the text is scanned, including the justification, and the proposal is stored as waiting, unless the agent is past its limit for the minute or the hour, which the database refuses. The justification is not part of the request a key names: a retry in other words is the same request. If it could be allowed by a mandate, a job is inserted in the same transaction. The same key again returns this proposal and does nothing else.
+2. The job asks, in one transaction with the mandate rows locked: is there a live mandate for this agent that covers the action, at this risk, whose condition holds for the payload, with budget left, and does the payload still fit the action's schema, and are the action's cost and risk as they were (a raised risk counts)? If so, the proposal becomes allowed, with the basis recorded. If not, it stays waiting and the reason goes to the log.
+3. A person approves, edits and approves, or rejects what waits, reading the agent's justification beside the payload, and, when a condition stopped it, which comparison failed and what the payload had instead. When the tenant has a notifier, a Slack or Discord channel is told once that the proposal waits: the action, its risk, the agent's registered name, why it waits and a link, never the agent's text. An approval is held to the action as it is then: the payload to its schema, at its current risk if that is higher. The payload as the agent proposed it is kept beside an edit.
 4. For a webhook action, the deciding transaction also records a delivery and inserts its job, on a queue of its own so a slow connector does not hold up decisions. The job posts the decision, signed, and records the answer as the result, or retries, or marks it failed. A person can send a failed delivery again.
 5. The agent reads the decision, the delivery state and the result with `get_proposal`, which can wait for them.
 
@@ -50,9 +50,9 @@ At the grant the service parses and type-checks the condition with cel-go, compi
 
 The execution's basis records the condition, and the delivery carries it to the receiver.
 
-## The agent's account
+## The agent's justification
 
-The rationale, the evidence and the provenance are kept on the proposal as the agent gave them, and no update can change them, a person's included; the person's view goes in the decision note. The proposal event in the log holds their digests, the provenance labels, which are short names in a narrow alphabet, and the digest of the action's schema the proposal was made against, so the record says which version of the agent, the model and the action were involved without holding prose. The account is evidence about the agent's reasoning, not about the world: a mandate never reads it, and a receiver that acts on facts checks them in its own records (see `examples/refunds`).
+The rationale, the evidence and the provenance are kept on the proposal as the agent gave them, and no update can change them, a person's included; the person's view goes in the decision note. The proposal event in the log holds their digests, the provenance labels, which are short names in a narrow alphabet, and the digest of the action's schema the proposal was made against, so the record says which version of the agent, the model and the action were involved without holding prose. The justification is evidence about the agent's reasoning, not about the world: a mandate never reads it, and a receiver that acts on facts checks them in its own records (see `examples/refunds`).
 
 ## Taking a proposal back
 
@@ -68,7 +68,7 @@ Each agent may make at most so many proposals a minute and an hour, 30 and 300 u
 
 ## Enforcement
 
-Every transaction declares its scope: tenant, actor kind, actor id, the agent's task id, and, for an execution, the one proposal being executed. Row level security and triggers read that scope. The service checks the rules first and gives readable errors; the database checks them again. Which rules live where is listed in the threat model.
+Every transaction declares its scope: tenant, actor kind, actor id, the agent's run id, and, for an execution, the one proposal being executed. Row level security and triggers read that scope. The service checks the rules first and gives readable errors; the database checks them again. Which rules live where is listed in the threat model.
 
 The log is one table per tenant, append-only, each event's hash covering the previous hash and a canonical encoding of the event. Its times come from the database's clock, read under the tenant's log lock, so several server instances write it in order. The database fixes the actor and requires each event to continue the chain. Events name what they are about by digest (the payload proposed, the payload decided, the body delivered, an action's URL and schema) rather than by content. Verification recomputes the chain, in the server or from an export (`verify-export`).
 
@@ -82,7 +82,7 @@ A session is a random token; only its hash is stored. It reaches the server as a
 
 A person is a row per tenant, identified by email. The tenant a call acts in is chosen with the `Mandate-Tenant` header, and an interceptor checks that the signed-in email is a person there. Owners add and remove people. An operator creates tenants from the command line.
 
-The API is Connect: Auth, Persons, Agents, Actions, Mandates, Proposals, Evidence.
+The API is Connect: Auth, Persons, Agents, Actions, Mandates, Proposals, Notifiers, Evidence. The web UI uses only this API, except for sign-in, which is an OpenID Connect redirect, so another UI or an admin tool can do everything else it does.
 
 ## Deployment
 
@@ -90,4 +90,4 @@ One image, built in two stages so the web app is embedded in the binary. Configu
 
 ## Not built
 
-Passkeys. Expiry of proposals. Replay of a task. Conditions beyond comparisons with literal values, and a cost taken from the payload. Budgets per tenant across mandates. Encryption of connector secrets at rest. Pagination and streaming exports. Self-service sign-up.
+Passkeys. Expiry of proposals. Replay of a run. Conditions beyond comparisons with literal values, and a cost taken from the payload. Budgets per tenant across mandates. Encryption of connector secrets at rest (the roadmap replaces them with key-pair signing in delivery contract v2). Pagination and streaming exports. Self-service sign-up.

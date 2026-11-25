@@ -6,24 +6,24 @@ Personal instructions go in `AGENTS.local.md`, which git ignores. It overrides t
 
 ## What pgmandate is
 
-pgmandate is a reference implementation of one idea: **an AI agent holds no credentials; it proposes, and a person or a person's standing permission decides.**
+**A write authority layer between AI agents and the systems they change: agents propose actions, a person or a mandate a person granted decides, and Postgres enforces the rules a second time and keeps the record.**
 
-An agent proposes an *action* with a payload. Either a person approves, edits or rejects the proposal, or a *mandate* that a person granted allows it at once. A mandate is data, not prompt text: which agent, which actions, up to which risk, within which budget per month, resting on which adopted policy document, until when. The decided proposal is delivered, signed, to the system that carries it out, and the answer comes back to the agent. Every proposal, decision, delivery and refusal is a row in a hash linked log: the evidence.
+[docs/scope.md](docs/scope.md) is the canonical description: what it is and is not, the terms, where it fits (its own service, embedded in a Go service, behind a gateway or framework, and hosted as a door kept open), and what it brings. When code, UI text or another document says otherwise, fix one of them in the same change. A change that moves the scope changes `docs/scope.md` and gets an entry in `docs/decisions.md`.
 
-pgmandate runs as a service: one binary with one Postgres, locally, hosted or on-premise. Agents connect over MCP, systems receive decisions through signed webhooks, and people sign in to a web UI. Embedding the Go library is an option for a host that shares the database.
+In short: an agent proposes an *action* with a payload and its justification. A person approves, edits or rejects it, or a *mandate* allows it at once. A mandate is a row: which agent, which actions, up to which risk, under which condition, within which budget per month, resting on which policy reference, until when. The decided proposal is delivered, signed, to a receiver next to the system that carries it out, and the answer comes back to the agent. Every proposal, decision, delivery and refusal is a row in a hash linked log.
 
-It is not an agent framework, an LLM gateway or an orchestrator, and it is small on purpose.
+It is not a gateway, an identity provider, a policy engine, an agent framework or an orchestrator, and it is small on purpose. It is an open-source project, not a product. Nothing may tie it to one deployment shape: no new assumption of a single tenant, of being the only user of its Postgres, or of one way to run it.
 
 ## Fixed principles
 
-- **Opt-in in every layer.** Nothing is allowed without a person unless the action is defined as delegable, a person has granted a live mandate that covers the agent and the action, the proposal's risk is within the mandate, the mandate's condition, if it has one, is true for the payload, nothing is flagged, and the month's budget has room. Any of these missing leaves the proposal for a person, and the log says why.
+- **Opt-in in every layer.** Nothing is allowed without a person unless the action is defined as delegable, a person has granted a live mandate that covers the agent and the action, the proposal's risk is within the mandate, the mandate's condition, if it has one, is true for the payload, nothing is flagged, and the month's budget has room. Any of these missing leaves the proposal for a person, and the agent and the inbox are told why (the log records it when a mandate was tried; see the threat model).
 - **High risk is never delegated.** A mandate allows low or medium risk.
 - **An agent explains itself.** Every proposal carries the agent's rationale, kept as written; it informs a person and is never read by a mandate. What a chat channel is told carries nothing the agent wrote.
 - **A condition is one text with one meaning.** It is written in CEL and only the part the database can evaluate is accepted; the service and the database evaluate the same compiled plan, a test keeps them in step, and anything that cannot be evaluated does not allow.
 - **The rules are enforced twice.** The service checks them and explains refusals; the database checks them again with policies and triggers. A rule that lives only in the service is listed as such in `docs/threat-model.md`. Do not claim more than that document says.
 - **Agents are principals of their own.** They act as actor kind `agent`, and the database writes the actor of every log event from the session.
 - **The log is append-only**, hash linked, and verifiable without the database. It is tamper-evident, not tamper-proof. An event names what it is about by digest (`events.Digest`) rather than by content, so payloads stay off the permanent record and a later change to them still shows.
-- **Done once.** Every request that changes something carries a name for itself: an idempotency key from the agent, the proposal's id for the decision, the delivery id to the receiver. A repeat returns the first answer and says it is a repeat.
+- **Done once.** Every request that changes something carries a name for itself: an idempotency key from the agent, the proposal's id for the decision, the delivery id to the receiver. A repeat returns the first answer and says it is a repeat. The people API has no such key yet (threat model).
 - **Tenancy is row level security** per tenant on every table with tenant data, with the application role that never bypasses it. Sessions are global, by email.
 - **Say what is true.** No claim of compliance, detection or security that the code and the threat model do not back.
 
@@ -54,7 +54,8 @@ examples/webhook/       A receiver of deliveries that verifies signatures
 examples/refunds/       A receiver that checks each claim in the payload against its own records
 cmd/pgmandate/          The service binary and the operator's command line, with the demo
 deploy/                 Compose and Dockerfile
-docs/                   design.md, threat-model.md, roadmap.md, decisions.md
+docs/                   scope.md (canonical), landscape.md, design.md, threat-model.md, roadmap.md, decisions.md,
+                        delivery-v1.schema.json (the delivery contract)
 ```
 
 - A module never imports another module's `internal/` (Go stops it). Modules reach each other through their root packages; the kernel wires what would otherwise be a cycle.
@@ -67,12 +68,12 @@ docs/                   design.md, threat-model.md, roadmap.md, decisions.md
 - **Scope:** `actor` carries tenant, actor and run id. Everything that touches the database reads them from the context; `db.InTx` sets the session variables per transaction. A tenant id is never passed around as a loose parameter.
 - **Errors:** `fault` codes. Return a code only when it is not Internal. `fault.FromDb` reads a refusal by a trigger or a policy as a coded error.
 - **Transactions:** `db.InTx`. Keep them short. Never make outgoing calls inside one. Events are appended in the same transaction as the change; follow-up work is a River job inserted in the same transaction.
-- **SQL:** when a table is added, the same migration decides `tenant_id` and its RLS policy, append-only triggers where rows must not change, `ON DELETE CASCADE` from tenants, and a test that another tenant cannot see the row. Queries inside triggers and functions filter by tenant themselves rather than relying on row level security. A migration that has reached `main` is never changed.
+- **SQL:** when a table is added, the same migration decides `tenant_id` and its RLS policy, append-only triggers where rows must not change, `ON DELETE CASCADE` from tenants, and a test that another tenant cannot see the row. Queries inside triggers and functions filter by tenant themselves rather than relying on row level security. From 0.1.0 on, a migration that has reached `main` is never changed. Before 0.1.0 nothing is kept compatible: migrations may be rewritten or folded together, and a local database is reset (`docs/decisions.md`).
 - **Names:** Go uses strict CamelCase (`TenantId`, `HttpClient`). Environment variables are `MANDATE_*`.
 - **Logs:** `log/slog` with fields. Never log payloads, tokens or secrets.
 - **Generation:** `make gen` (buf and sqlc). Generated code (`gen/`, `web/src/gen/`, `sqlc_*.go`) is checked in.
 - **Frontend:** English text, the design tokens in `web/src/index.css`, no raw colour values. `make web` builds it into the binary; `make web-dev` gives hot reload on :5173 against the server on :8585. Checked with `tsc`, oxlint and `pnpm build`.
-- **Secrets:** agent tokens and connector secrets are stored as hashes or, for connector secrets, as the bytes the server signs with; neither is ever logged or returned after the moment it is shown.
+- **Secrets:** agent tokens, connector secrets and notifier addresses are stored as hashes or, for connector secrets and notifier addresses, as the values the server uses. None of them is ever logged or returned after the moment it is shown.
 
 ## Tests
 

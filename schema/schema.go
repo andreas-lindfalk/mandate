@@ -1,5 +1,6 @@
-// Package schema holds mandate's migrations. A migration that has reached
-// main is never changed; a change is a new file with the next number.
+// Package schema holds pgmandate's migrations. From 0.1.0 on, a migration
+// that has reached main is never changed; a change is a new file with the
+// next number. Before 0.1.0 nothing is kept compatible.
 package schema
 
 import (
@@ -11,5 +12,5 @@ import (
 //go:embed *.sql
 var files embed.FS
 
-// Migrations is mandate's own migration set. A host applies it before its own.
+// Migrations is pgmandate's own migration set. A host applies it before its own.
 var Migrations = db.Migrations{Name: "mandate", Fs: files, Dir: "."}

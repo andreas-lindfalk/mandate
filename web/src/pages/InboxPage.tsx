@@ -401,7 +401,7 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
         <p className="mt-1 text-[13px] text-muted">
           Proposed by {p.agentName || shortId(p.agentId)} · {formatDateTime(p.createdAt)} · costs {units(p.costUnits)}
           {p.runId ? (
-            <span title="The agent's own id for the task this proposal belongs to">{` · task ${p.runId}`}</span>
+            <span title="The agent's own id for the run this proposal belongs to">{` · run ${p.runId}`}</span>
           ) : null}
         </p>
       </div>

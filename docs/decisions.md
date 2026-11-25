@@ -1,6 +1,93 @@
 # Decisions
 
-Newest first. A decision that changes the rules also changes `AGENTS.md`.
+Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
+
+## 2026-11-25: the roadmap follows a first team
+
+Three critical readings of the scope and the roadmap each came back "go, with changes". These are the changes. They revise the roadmap order in the entry below.
+
+- **A first team, not more features, is the critical path.** Finding one is a track of its own from the start, with a checkpoint when phase 1 is done. Phase 1 makes pgmandate easy to try, safe to pilot, and fixes its contracts. Phase 2 becomes a list to choose from, ordered by what the first team runs into.
+- **Pulled into phase 1:**
+  - expiry of waiting proposals
+  - a dry run as the way in, since no team removes an agent's credentials on day one. A dry run delivers nothing, since a receiver that ignores an unknown field would otherwise carry it out. It is recorded on the proposal by the database, kept out of budgets and the decisions export (the log keeps it, tagged), and named in the scope as the one exception to its first principle
+  - people identified by subject id, and limits on failed sign-ins and bad tokens
+- **Contracts before anything is built on them.** Delivery contract v2 comes before any receiver template, and must hold phase 2 without a v3. It carries:
+  - signing with Ed25519, with the key outside the database, a key id and an audience. Key-pair signing has to change receivers' code once, so it happens before there are receivers.
+  - a budget block with a kind, so that money is an addition
+  - `notAfter`, so an expired decision is not carried out late
+  - the *outcome unknown* status
+  - a result reported later, authenticated by a single-use token per delivery
+
+  The agent's operations become one Connect contract that MCP, HTTP and the clients share.
+- **River in a schema of its own.** Queue names alone would not separate pgmandate's jobs from a host's, and its tables live in the host's `public` schema today.
+- **A framework adapter must govern, not just approve.** Answering a framework's approval hook pauses a tool that still runs with the agent's credential. That is recorded approval. A governed tool's body proposes and waits for the receiver's result. The scope says so.
+- **Budgets:**
+  - **Phase 1:** a budget counts executions; "units" and an action's fixed cost go.
+  - **Phase 2:** money, as a second limit beside the count, an amount per currency with no exchange between them. The database reads the cost from the payload itself, so the second gate holds for budgets too, and the cost field must be the one the receiver carries out.
+  - Money does not stop an agent splitting a request; the scope now says it caps the splitting at the month's budget instead of closing the gap.
+- **The MCP bridge waits for a team that needs it.** It depends on outcome unknown and upstream OAuth. It proposes mappings and an owner confirms them, so the bridge cannot raise its own authority. It reports what it called, so the log shows it.
+- **No compatibility before 0.1.0.** Nobody runs pgmandate, so until 0.1.0:
+  - the schema, the migrations and the contracts change freely
+  - migrations may be folded into one fresh first migration
+  - a 0.0.1 database is reset, not upgraded
+
+  The rule that a migration on `main` is never changed applies from 0.1.0 on. A pilot starts on 0.1.0. This replaces the "only new files" rule of 2026-11-24 for the time before 0.1.0, and makes the migration 0008 approach optional rather than required.
+- **A design note before code.** The roadmap says what each item must achieve and must not break. Before an item is built, a short note in `docs/` gives its states, migration, contract changes and tests, and is reviewed like code. Expiry, the dry run, contract v2 and the agent contract are designed together, since contracts and migrations cannot be changed once they ship. The roadmap carries the constraints the readings found:
+  - a dry run never becomes *executed*, and the database refuses to deliver it, count it as spend, or open a host's table for it
+  - an audience assigned per tenant and connector
+  - budgets as a list
+  - from 0.1.0 on, rows that exist at an upgrade get a stated treatment, and data changes that write to the log run as a Go step, never in SQL
+  - a result deadline (`resultBy`) for work a receiver finishes later, so "not done" never comes while the work can still happen, and a late-result token stored only as a hash
+  - identity as issuer and subject together
+  - one outcome per delivery
+  - River moved without losing a job
+- **Scope for a pilot.** The scope says what a first team does with 0.0.1, how a Python agent uses it today, what changes in 0.1.0, and plainly that personal data in a payload cannot be erased yet. The comparison with other tools moves to [landscape.md](landscape.md).
+- **Durable execution and evaluation named.** Where a team runs Temporal or Restate, the adapter's natural form is an activity that proposes, with the decision arriving as a signal. The decisions export is a labelled set for evaluation tools.
+- **A correction to the threat model.** It listed the log's digests as enforced by the database. The database checks that each event continues the chain and carries its session's actor. The hash, the digests, and whether a decision writes an event at all are the service's, and are now listed so.
+- **Moved to later:**
+  - embedding beyond the River and setup fixes, which phase 1 keeps so that "embeddable" is true
+  - more notification channels and routing, except a plain webhook notifier, which stays in phase 2
+  - typed tools
+  - the regulatory mapping
+
+  Phase 1 turns the assumptions under *What stays flexible* into CI tests, so they are checked rather than stated.
+- **The callback is owner-registered,** signed under an audience of its own so it can never pass for a delivery, and says only that a proposal changed. An agent never chooses where pgmandate calls.
+
+## 2026-11-25: the scope, written down
+
+Its roadmap order was revised the same day; see the entry above.
+
+- **The aim is to be useful to other teams, not to be a product.** pgmandate stays an open-source project with no company behind it. Being useful means being tried, embedded and run by teams other than its author's. "Reference implementation" is no longer how it describes itself: it is meant to be used, and its status says how far along it is.
+- **[scope.md](scope.md) is the canonical description.** It covers what pgmandate is and is not, the terms, where it fits, what it brings and who it is for. The README, AGENTS.md, the other documents, the UI and the help texts follow it. The contradictions found when it was written are fixed in the same change:
+  - the number of MCP tools
+  - whether an agent can withdraw
+  - "no code path around this package"
+  - "adopted policy document"
+  - task and run
+  - the old name in prose
+- **Positioning: between agents and the systems they change, next to gateways and frameworks.** pgmandate does not compete with gateways, identity providers, policy engines or the approval steps in agent frameworks; it works with them. It leads with what is particular to it:
+  - the mandate as a bounded permission a named person grants
+  - Postgres as the second gate
+  - approval bound to what runs, with a receiver that checks the claims it is given
+
+  It does not lead with the hash-chained log or with asking a person, which are common by now.
+- **The tagline says what the database does.**
+  - "Postgres is the last gate" was the thesis behind the name, and it holds for the decision. But the receiver acts after Postgres, so the tagline overstated it. It now reads: *Agents propose. A person, or a standing permission a person granted, decides. Postgres enforces the rules a second time.*
+  - "The database decides" leaves the UI and the command line, since a person or a mandate decides.
+  - The scope also states the limits of the principles: which rules only the service holds, that the log is tamper-evident only to someone who keeps its latest hash elsewhere, and that the database guards against bugs in the service, not against a compromised one.
+- **Every deployment shape stays open.** The shapes are its own service (the main one), embedded in a Go service, behind a gateway or framework, and hosted for several organisations. Hosted is not built, but nothing may close it. Credentials to customers' systems live with receivers, so a hosted pgmandate would hold none of them. It would still hold the secrets receivers trust until deliveries are signed with a key pair (revised above: key-pair signing is now part of delivery contract v2, in phase 1).
+- **Postgres is required, in any language.** The database as the second gate is the point, so it is not pluggable. That pgmandate is written in Go matters only to a host that embeds it.
+- **It comes with a UI, and the API is the contract.** The web UI uses only the people API, so a team can build its own UI or wire an existing admin tool to the same API.
+- **One repository.** Clients, framework adapters, receiver templates and the MCP bridge live here, under their own directories.
+- **Budgets in money or as a count, not units.** A person granting a mandate must understand what they grant. An amount of money, as with prepaid API credit, or a number of executions does that; "units" does not. An action's cost becomes a fixed amount or a payload field with its currency. A cost that cannot be read waits for a person. Planned, not built. (Revised above: a count of executions in phase 1, and money from the payload as a second limit in phase 2.)
+- **Reversed: pgmandate will not sit in front of MCP servers.** It gets a bridge instead: a receiver, run next to the system, that calls an existing MCP server's tools once a proposal is decided. The goal of the earlier decision stays, an existing MCP server governed in ten minutes with no code, and so do its design points (mapping, a hash of each tool's definition, at most once with an outcome that can be unknown, no reads). Why:
+  - The upstream credential stays next to the system instead of in pgmandate's database, for every tenant.
+  - pgmandate stays out of the gateway market, where others are ahead.
+  - The groundwork the front needed first is no longer a precondition: encrypted upstream credentials, upstream OAuth, and a separate sending role. The sending role stays a known gap in the threat model and is listed under later.
+
+  What the bridge gives up: it has no records of its own and cannot check the agent's claims. Bridged actions therefore default to a person deciding. The roadmap carries the rest: at most once with an outcome that can be unknown, least privilege upstream, and untrusted results.
+- **The append-only guard is tightened (migration 0008).** A security reading of the scope found that the guard let a delete through whenever the session setting `mandate.allow_purge` was on, a setting any role can set. Nothing was exposed, since the application role holds no delete right on those tables, but a grant added later would have opened them. Now the statement must also run as the table's owner, as `purge_tenant` does. The fix is a new migration rather than an edit to 0001, so databases that already ran 0001 get it too.
+- **The roadmap is rewritten in that light.** Phase 1 makes pgmandate tryable and embeddable. Phase 2 meets agents and systems where they are: HTTP, Python and TypeScript, framework adapters, receiver templates, money budgets and the bridge. The rest waits until someone needs it. (Revised above: the HTTP agent API is now phase 1, through the agent contract, and phase 2 follows a first team.)
 
 ## 2026-11-25: conditions, the part the database can check
 

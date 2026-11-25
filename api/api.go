@@ -1,5 +1,6 @@
 // Package api serves people over Connect: sign-in, the inbox, the
-// mandates, the agents and actions, and the evidence. Every call carries a
+// mandates, the agents and actions, the people, the notifier and the
+// evidence (the log and its exports). Every call carries a
 // session and, except sign-in, the tenant it acts in.
 package api
 

@@ -1,4 +1,4 @@
-// Command mandate is the service: it serves the UI and the API to people,
+// Command pgmandate is the service: it serves the UI and the API to people,
 // MCP to agents and deliveries to connectors, applies the schema, and lets
 // an operator run a tenant from the command line. Actions are defined as data; a host that embeds the
 // library instead registers builtin actions in its own binary.
@@ -44,7 +44,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/web"
 )
 
-const usage = `pgmandate: agents propose, the database decides.
+const usage = `pgmandate: agents propose, a person or a mandate decides, Postgres checks again.
 
   pgmandate migrate                  create the app role and apply the schema (needs the owner connection)
   pgmandate serve                    migrate when the owner connection is given, then serve the UI, the API
@@ -87,7 +87,7 @@ The commands below act on the database directly, as the person named with -as. R
   pgmandate reject -tenant ID -as EMAIL -proposal ID [-note TEXT]
   pgmandate redeliver -tenant ID -as EMAIL -proposal ID        send a failed delivery again
   pgmandate events -tenant ID [-subject ID] [-limit 50]
-  pgmandate verify -tenant ID                                  recompute the event chain
+  pgmandate verify -tenant ID                                  recompute the log's hash chain
   pgmandate export -tenant ID                                  decided proposals as JSON lines (an eval set)
   pgmandate export-chain -tenant ID                            the whole chain as JSON lines, hashes included
   pgmandate verify-export -tenant ID -file chain.jsonl         recompute an exported chain without the database

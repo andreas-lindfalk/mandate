@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "mandate delivery, version 1",
-  "description": "The body mandate posts to a webhook action's URL when a proposal has been approved by a person or executed under a mandate. The body is the same on every attempt of a delivery; the time of an attempt is in the Mandate-Timestamp header. Fields may be added within a version, so a receiver ignores fields it does not know. A removed field or a changed meaning is a new version, which a receiver refuses.",
+  "title": "pgmandate delivery, version 1",
+  "description": "The body pgmandate posts to a webhook action's URL when a proposal has been approved by a person or executed under a mandate. The body is the same on every attempt of a delivery; the time of an attempt is in the Mandate-Timestamp header. Fields may be added within a version, so a receiver ignores fields it does not know. A removed field or a changed meaning is a new version, which a receiver refuses.",
   "type": "object",
   "required": ["version", "deliveryId", "correlationId", "tenantId", "createdAt", "proposal", "decision"],
   "properties": {

@@ -72,19 +72,19 @@ export function EvidencePage() {
           {chain.data?.ok ? <ShieldCheck className="size-5 text-success" /> : chain.data ? <ShieldAlert className="size-5 text-danger" /> : null}
           <div className="flex-1 text-[14px]">
             {chain.isPending ? (
-              "Checking the chain…"
+              "Checking the audit trail…"
             ) : chain.isError ? (
-              "Could not check the chain right now."
+              "Could not check the audit trail right now."
             ) : chain.data.ok ? (
               <>
                 <span className="font-medium">Audit trail verified.</span> {Number(chain.data.events)} events, each linked to the one before it by a
                 hash, so an edit or a removal would show. "Export the chain" gives every event with its hashes; it verifies without this server:{" "}
-                <code className="font-mono text-[12px]">mandate verify-export -tenant {session.tenant?.tenantId} -file chain.jsonl</code>. "Export
+                <code className="font-mono text-[12px]">pgmandate verify-export -tenant {session.tenant?.tenantId} -file chain.jsonl</code>. "Export
                 decisions" gives each decided proposal with its outcome.
               </>
             ) : (
               <>
-                <span className="font-medium text-danger">The chain is broken</span> at {chain.data.error}.
+                <span className="font-medium text-danger">The audit trail is broken</span> at {chain.data.error}.
               </>
             )}
           </div>
@@ -119,7 +119,7 @@ export function EvidencePage() {
                   <th className="px-2 py-2">Actor</th>
                   <th className="px-2 py-2">Event</th>
                   <th className="px-2 py-2">Subject</th>
-                  <th className="px-2 py-2">Task</th>
+                  <th className="px-2 py-2">Run</th>
                   <th className="px-2 py-2">Details</th>
                 </tr>
               </thead>

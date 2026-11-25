@@ -115,17 +115,17 @@ function ChainStatus() {
     return (
       <div className="flex items-center gap-2 text-[12px] text-cream/55" title="Trying again in a minute.">
         <ShieldQuestion className="size-3.5" />
-        <span>Could not check the chain right now</span>
+        <span>Could not check the audit trail right now</span>
       </div>
     );
   }
   if (!chain.data) return null;
   const ok = chain.data.ok;
   return (
-    <div className={cn("flex items-center gap-2 text-[12px]", ok ? "text-cream/55" : "text-danger-on-dark")} title="Every event is hash linked to the one before it. The chain is recomputed from the start.">
+    <div className={cn("flex items-center gap-2 text-[12px]", ok ? "text-cream/55" : "text-danger-on-dark")} title="Every event is hash linked to the one before it. The audit trail is recomputed from the start.">
       {ok ? <ShieldCheck className="size-3.5 text-sand" /> : <ShieldAlert className="size-3.5" />}
       <span>
-        {ok ? "Chain verified" : "The chain is broken"} · {Number(chain.data.events)} events
+        {ok ? "Audit trail verified" : "The audit trail is broken"} · {Number(chain.data.events)} events
       </span>
     </div>
   );

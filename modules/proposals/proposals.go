@@ -1,8 +1,9 @@
 // Package proposals is the queue: the one way an agent changes anything.
 // An agent proposes an action with a payload; a person approves, edits or
 // rejects it; or the system executes it under a mandate. The database
-// enforces every rule here a second time, so no code path around this
-// package can do what this package refuses.
+// enforces the rules here a second time, so a bug in the service cannot
+// record or allow what they refuse; docs/threat-model.md lists what only
+// the service holds.
 package proposals
 
 import (
@@ -61,7 +62,7 @@ const (
 )
 
 // Action is what a proposal can do, as the owner defined it or the host
-// registered it. The host owns the meaning; mandate owns the gate.
+// registered it. The host owns the meaning; pgmandate owns the gate.
 type Action struct {
 	Key         string
 	Description string

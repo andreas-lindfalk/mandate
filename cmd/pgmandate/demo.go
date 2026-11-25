@@ -100,7 +100,7 @@ func (d *demo) say(format string, args ...any) {
 }
 
 func (d *demo) run(ctx context.Context, url string) error {
-	d.say("pgmandate: agents propose, the database decides.")
+	d.say("pgmandate: agents propose, a person or a mandate decides, Postgres checks again.")
 	d.say("")
 
 	d.say("1. An owner sets up a tenant, an agent, three actions and a mandate")

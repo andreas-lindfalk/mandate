@@ -1,5 +1,5 @@
 // Package web embeds the built single page app (web/dist) into the binary,
-// so local, hosted and on-premise all serve the same UI with no extra
+// so every deployment serves the same UI with no extra
 // server.
 package web
 

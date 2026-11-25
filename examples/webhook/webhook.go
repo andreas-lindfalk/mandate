@@ -1,7 +1,7 @@
 // Package webhook is a reference receiver of deliveries: an http.Handler to
 // mount at the URL of a webhook action. It verifies the signature, drops
 // a delivery it has already seen, decodes the payload, and answers with a
-// JSON object, which mandate keeps as the proposal's result and shows to
+// JSON object, which pgmandate keeps as the proposal's result and shows to
 // the agent. A real receiver does its work where this one appends to a
 // list. It imports only the sign package.
 package webhook

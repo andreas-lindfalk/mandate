@@ -1,6 +1,6 @@
 // Package sign signs and verifies deliveries. A delivery carries a
 // timestamp and a signature over the timestamp and the body, so a receiver
-// knows mandate sent it, that it was not changed, and that it is not a
+// knows it came from a holder of the action's secret, that it was not changed, and that it is not a
 // replay from long ago.
 package sign
 
