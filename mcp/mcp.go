@@ -25,6 +25,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/time/rate"
 
+	"github.com/andreas-lindfalk/pgmandate/modules/actions"
 	"github.com/andreas-lindfalk/pgmandate/modules/agents"
 	"github.com/andreas-lindfalk/pgmandate/modules/deliveries"
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
@@ -41,8 +42,8 @@ type Host interface {
 	ActionsOf(ctx context.Context) ([]proposals.Action, error)
 	Lookup(ctx context.Context, key string) (proposals.Action, bool, error)
 	LiveMandates(ctx context.Context) ([]mandates.Mandate, error)
-	// SpentUnits is what a mandate's executions have cost this month.
-	SpentUnits(ctx context.Context, mandateIds []uuid.UUID) (map[uuid.UUID]int64, error)
+	// SpentCount is how many executions each mandate has allowed this month.
+	SpentCount(ctx context.Context, mandateIds []uuid.UUID) (map[uuid.UUID]int64, error)
 	// DeliveryOf is the delivery of a decided proposal, if it has one.
 	DeliveryOf(ctx context.Context, proposalId uuid.UUID) (deliveries.Delivery, bool, error)
 	DeliveriesOf(ctx context.Context, proposalIds []uuid.UUID) (map[uuid.UUID]deliveries.Delivery, error)
@@ -68,7 +69,7 @@ const (
 
 	instructions = `pgmandate is the gate between you and the systems you work in. You never change anything directly: you propose an action with a payload, and either a person decides it or a mandate granted by a person allows it at once.
 
-Start with list_actions: it shows every action you may propose, the schema of its payload, its risk and cost, and whether one of your mandates covers it. Then propose. Read "outcome" and "next" in the answer: they say whether the action was allowed, whether it has reached the system that carries it out, what that system answered ("result"), or that it waits for a person and why.
+Start with list_actions: it shows every action you may propose, the schema of its payload, its risk, how long a proposal for it waits for a decision, and whether one of your mandates covers it. Then propose. Read "outcome" and "next" in the answer: they say whether the action was allowed, whether it has reached the system that carries it out, what that system answered ("result"), or that it waits for a person and why.
 
 Every proposal needs an idempotency_key, used once per agent for a proposal that was taken. Make it from your run id and the step, such as <run id>:<step>, and send the same key only to retry the same request. A call refused with an error stored nothing: correct it and send it again under the same key. Your run id should come from whoever started you; if you were given none, use suggestedRunId from list_actions for this whole run and remember it. Give the same run id as run_id, so a later run can find this one's proposals with list_proposals.
 
@@ -157,7 +158,7 @@ var (
 	uuidPattern   = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	actionPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`)
 	runPattern    = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,100}$`)
-	statusPattern = regexp.MustCompile(`^(?:pending|approved|rejected|executed|withdrawn)$`)
+	statusPattern = regexp.MustCompile(`^(?:pending|approved|rejected|executed|withdrawn|expired)$`)
 )
 
 // maxArgument bounds any id-like argument before it is matched or kept.
@@ -268,13 +269,13 @@ type withdrawInput struct {
 }
 
 type listInput struct {
-	Status string `json:"status,omitempty" jsonschema:"only this status: pending (waits for a person), approved (a person approved it), rejected, executed (a mandate allowed it without a person), or withdrawn (you took it back). Approved and executed say who allowed it, not that it was carried out: read delivery and result for that"`
+	Status string `json:"status,omitempty" jsonschema:"only this status: pending (waits for a person), approved (a person approved it), rejected, executed (a mandate allowed it without a person), withdrawn (you took it back), or expired (nobody decided it in time). Approved and executed say who allowed it, not that it was carried out: read delivery and result for that"`
 	RunId  string `json:"run_id,omitempty" jsonschema:"only the proposals you made under this run id: how a new run picks up what an earlier one left waiting"`
 	Limit  int    `json:"limit,omitempty" jsonschema:"at most this many, newest first, 1 to 100 (default 20)"`
 }
 
 func (s *server) register() {
-	add(s, "list_actions", "List the actions you may propose: key, description, payload schema, risk, cost, and whether a mandate lets it be carried out without a person.", true, true,
+	add(s, "list_actions", "List the actions you may propose: key, description, payload schema, risk, how long a proposal waits, and whether a mandate lets it be carried out without a person.", true, true,
 		func(noInput) map[string]any { return map[string]any{} },
 		func(ctx context.Context, _ noInput) (any, error) { return s.listActions(ctx) })
 
@@ -360,23 +361,26 @@ func (s *server) register() {
 }
 
 type actionView struct {
-	Key         string          `json:"key"`
-	Description string          `json:"description"`
-	Risk        string          `json:"risk"`
-	CostUnits   int64           `json:"costUnits"`
+	Key         string `json:"key"`
+	Description string `json:"description"`
+	Risk        string `json:"risk"`
+	// WaitSeconds is how long a proposal for it waits for a decision
+	// before it expires.
+	WaitSeconds int64           `json:"waitSeconds"`
 	Schema      json.RawMessage `json:"schema,omitempty"`
 	Autonomy    string          `json:"autonomy"`
 	Mandates    []mandateView   `json:"mandates"`
 }
 
 type mandateView struct {
-	Id          uuid.UUID `json:"id"`
-	MaxRisk     string    `json:"maxRisk"`
-	BudgetUnits int64     `json:"budgetUnits"`
-	// RemainingUnits is what is left of this month's budget.
-	RemainingUnits int64  `json:"remainingUnits"`
-	PolicyRef      string `json:"policyRef"`
-	ValidUntil     string `json:"validUntil"`
+	Id      uuid.UUID `json:"id"`
+	MaxRisk string    `json:"maxRisk"`
+	// BudgetCount is how many executions it allows per UTC calendar month,
+	// and Remaining how many are left this month.
+	BudgetCount int64  `json:"budgetCount"`
+	Remaining   int64  `json:"remaining"`
+	PolicyRef   string `json:"policyRef"`
+	ValidUntil  string `json:"validUntil"`
 	// Condition, in CEL, is what the payload must meet for the mandate to
 	// allow it; empty when the mandate has none.
 	Condition string `json:"condition,omitempty"`
@@ -398,18 +402,18 @@ func (s *server) listActions(ctx context.Context) (any, error) {
 	for _, m := range live {
 		ids = append(ids, m.Id)
 	}
-	spent, err := s.host.SpentUnits(ctx, ids)
+	spent, err := s.host.SpentCount(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
 	remaining := map[uuid.UUID]int64{}
 	for _, m := range live {
-		remaining[m.Id] = max(m.BudgetUnits-spent[m.Id], 0)
+		remaining[m.Id] = max(m.BudgetCount-spent[m.Id], 0)
 	}
 	var out []actionView
 	for _, action := range actions {
 		view := actionView{
-			Key: action.Key, Description: action.Description, Risk: action.Risk, CostUnits: action.CostUnits,
+			Key: action.Key, Description: action.Description, Risk: action.Risk, WaitSeconds: int64(waitLimit(action) / time.Second),
 			Schema: action.Schema, Mandates: []mandateView{},
 		}
 		best, unconditional := "", false
@@ -418,7 +422,7 @@ func (s *server) listActions(ctx context.Context) (any, error) {
 				continue
 			}
 			view.Mandates = append(view.Mandates, mandateView{
-				Id: m.Id, MaxRisk: m.MaxRisk, BudgetUnits: m.BudgetUnits, RemainingUnits: remaining[m.Id], PolicyRef: m.PolicyRef,
+				Id: m.Id, MaxRisk: m.MaxRisk, BudgetCount: m.BudgetCount, Remaining: remaining[m.Id], PolicyRef: m.PolicyRef,
 				ValidUntil: m.ValidUntil.UTC().Format(time.RFC3339), Condition: m.Condition, Shared: m.AgentId == nil,
 			})
 			if mandates.RiskRank(m.MaxRisk) > mandates.RiskRank(best) {
@@ -575,7 +579,10 @@ func (s *server) settled(ctx context.Context, id uuid.UUID, wait time.Duration, 
 		reason := ""
 		var delivery *deliveries.Delivery
 		done := false
-		if p.Status == proposals.StatusPending {
+		if p.Status == proposals.StatusPending && p.PastDeadline {
+			// Nobody can decide it any more: waiting would change nothing.
+			done = true
+		} else if p.Status == proposals.StatusPending {
 			recorded, found, err := service.SkipReason(ctx, id)
 			if err != nil {
 				return nil, err
@@ -665,7 +672,13 @@ func (s *server) history(ctx context.Context, subjectId uuid.UUID) ([]eventView,
 func proposalView(p proposals.Proposal, skipReason string, delivery *deliveries.Delivery) map[string]any {
 	view := map[string]any{
 		"proposalId": p.Id, "action": p.Action, "title": p.Title, "payload": p.Payload, "risk": p.Risk, "flags": p.Flags,
-		"costUnits": p.CostUnits, "status": p.Status, "createdAt": p.CreatedAt,
+		"status": p.Status, "createdAt": p.CreatedAt, "expiresAt": p.ExpiresAt.UTC().Format(time.RFC3339),
+	}
+	// Past its deadline by the database's clock, a proposal the sweep has
+	// not yet reached can no longer be decided: say so now.
+	if p.PastDeadline {
+		p.Status = proposals.StatusExpired
+		view["status"] = p.Status
 	}
 	if p.RunId != "" {
 		view["runId"] = p.RunId
@@ -684,6 +697,9 @@ func proposalView(p proposals.Proposal, skipReason string, delivery *deliveries.
 	case p.Status == proposals.StatusWithdrawn:
 		view["outcome"] = "withdrawn by you before anyone decided it; nothing was done"
 		view["next"] = "Nothing to do for this proposal."
+	case p.Status == proposals.StatusExpired:
+		view["outcome"] = "expired: nobody decided it before " + p.ExpiresAt.UTC().Format(time.RFC3339) + "; nothing was done"
+		view["next"] = "Do not wait for it any longer. If it is still needed, propose it again under a new idempotency_key, or tell whoever you work for that nobody decided in time."
 	case p.Status == proposals.StatusRejected:
 		view["outcome"] = "rejected by a person"
 		view["next"] = "Read the note. Do not send the same request again. If the note asks for a change, propose a corrected version under a new idempotency_key; otherwise tell whoever you work for that it was rejected."
@@ -752,7 +768,7 @@ func explain(reason string) string {
 	case proposals.SkipNotExecutable:
 		return "this action is never carried out without a person"
 	case proposals.SkipActionChanged:
-		return "the action's cost or risk has changed since you proposed it, so a person must look at it"
+		return "the action's risk was raised since you proposed it, so a person must look at it"
 	case proposals.SkipPayloadInvalid:
 		return "the action's schema has changed and the payload no longer fits it; a person can edit it or reject it"
 	case "agent_revoked":
@@ -866,4 +882,13 @@ func refused(d *deliveries.Delivery) bool {
 	default:
 		return status >= 400 && status < 500
 	}
+}
+
+// waitLimit is how long a proposal for the action waits: its definition's,
+// or the default for an action that exists only as code.
+func waitLimit(action proposals.Action) time.Duration {
+	if action.WaitLimit == 0 {
+		return actions.DefaultWaitLimit
+	}
+	return action.WaitLimit
 }

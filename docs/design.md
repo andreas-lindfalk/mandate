@@ -21,7 +21,8 @@ An owner defines an action in the UI or on the command line:
 | `key` | `tickets.create` |
 | `description` | shown to agents and people |
 | `risk` | low, medium or high |
-| `cost_units` | charged to the mandate's budget when a mandate allows it |
+| `wait_limit` | how long a proposal for it waits for a decision before it expires, 1 minute to 30 days; 7 days by default |
+| `deliver_within` | how long after a decision its delivery may still be carried out, 2 minutes to 7 days; 1 hour by default |
 | `may_execute` | whether a mandate may ever allow it without a person |
 | `schema` | JSON schema of the payload, shown to agents, enforced on propose and on edit. Required for a webhook, so what reaches another system has a stated shape; `{"type":"object"}` states that anything goes |
 | `connector` | `webhook` with a URL and a signing secret, or `builtin` for an embedded host's code |
@@ -32,7 +33,7 @@ An embedded host can also register actions in code. A tenant's own definition of
 ## The life of a proposal
 
 1. The agent calls `propose` with an idempotency key and its justification: a rationale (required), evidence (what it looked at: a source, a reference to find it again, what it showed) and provenance (the MCP client as it introduced itself, the model and its own version as it states them). The payload is checked against the schema, the risk is set, the text is scanned, including the justification, and the proposal is stored as waiting, unless the agent is past its limit for the minute or the hour, which the database refuses. The justification is not part of the request a key names: a retry in other words is the same request. If it could be allowed by a mandate, a job is inserted in the same transaction. The same key again returns this proposal and does nothing else.
-2. The job asks, in one transaction with the mandate rows locked: is there a live mandate for this agent that covers the action, at this risk, whose condition holds for the payload, with budget left, and does the payload still fit the action's schema, and are the action's cost and risk as they were (a raised risk counts)? If so, the proposal becomes allowed, with the basis recorded. If not, it stays waiting and the reason goes to the log.
+2. The job asks, in one transaction with the mandate rows locked: is there a live mandate for this agent that covers the action, at this risk, whose condition holds for the payload, with room left in its count for the month, and does the payload still fit the action's schema, and is the action's risk no higher than it was? If so, the proposal becomes allowed, with the basis recorded. If not, it stays waiting and the reason goes to the log.
 3. A person approves, edits and approves, or rejects what waits, reading the agent's justification beside the payload, and, when a condition stopped it, which comparison failed and what the payload had instead. When the tenant has a notifier, a Slack or Discord channel is told once that the proposal waits: the action, its risk, the agent's registered name, why it waits and a link, never the agent's text. An approval is held to the action as it is then: the payload to its schema, at its current risk if that is higher. The payload as the agent proposed it is kept beside an edit.
 4. For a webhook action, the deciding transaction also records a delivery and inserts its job, on a queue of its own so a slow connector does not hold up decisions. The job posts the decision, signed, and records the answer as the result, or retries, or marks it failed. A person can send a failed delivery again.
 5. The agent reads the decision, the delivery state and the result with `get_proposal`, which can wait for them.
@@ -62,6 +63,14 @@ An agent may withdraw its own waiting proposal, with a reason the person reads, 
 
 A receiver that refuses a delivery with a 4xx answers once and for all. When its answer is a JSON object of at most 4 kB, it is kept with the failed delivery, named in the log by digest, shown in the inbox and given to the agent as `refusal`, with advice not to send the same request again. An answer to an attempt that will be retried is not kept.
 
+## Expiry
+
+A proposal waits until a person decides it, its agent withdraws it, or its deadline passes. The deadline (`expires_at`) and the delivery window (`deliver_within`) are fixed by the insert trigger from the action, or from the defaults for an action that exists only as code, so a later change to the action changes nothing for a proposal already made.
+
+From the deadline on, the update trigger allows one change only: the system setting the status to `expired`, with nothing else changed. An approval, a rejection, a withdrawal and an execution are all refused. Before the deadline, nothing expires a proposal. The comparison uses the transaction's start (`now()`), so a decision whose transaction began before the deadline is in time. The service checks the same thing first, to give a readable error.
+
+A periodic River job, `mandate.sweep`, runs every minute on River's leader. It asks `mandate.tenants_with_due_work()`, a function that returns tenant ids only, which tenants have proposals past their deadline, and queues one `mandate.sweep_tenant` job per tenant. That job, scoped to the tenant as the system, expires the due proposals one transaction each, taking each row with `FOR UPDATE SKIP LOCKED` so a decision under way is never waited on, and writes `proposal.expired`. A host that runs the kernel without a queue calls `Kernel.ExpireDue` itself. An agent that asks about a proposal past its deadline before the sweep has come is told it has expired.
+
 ## Limits per agent
 
 Each agent may make at most so many proposals a minute and an hour, 30 and 300 unless an owner sets others. A trigger counts the agent's recent proposals under a lock per agent, so two at once cannot both take the last place, and refuses the rest with SQLSTATE MD429, pgmandate's own code, which reaches the agent as `rate_limited`. A repeat of a request inserts nothing and is not counted, also when it waited while its first copy took the last place.
@@ -88,6 +97,8 @@ The API is Connect: Auth, Persons, Agents, Actions, Mandates, Proposals, Notifie
 
 One image, built in two stages so the web app is embedded in the binary. Configuration is by environment; see the README. `pgmandate migrate` runs as the owner, as a step of its own; `serve` runs with the application role only, and refuses the repository's default password when it listens beyond loopback. `deploy/compose.server.yaml` shows the split.
 
+River's tables live in a schema of their own, `mandate_river`, which `migrate` creates. The application role is given rights there and on nothing of River's in `public`, so a host that runs River itself, in `public`, never shares a queue with pgmandate.
+
 ## Not built
 
-Passkeys. Expiry of proposals. Replay of a run. Conditions beyond comparisons with literal values, and a cost taken from the payload. Budgets per tenant across mandates. Encryption of connector secrets at rest (the roadmap replaces them with key-pair signing in delivery contract v2). Pagination and streaming exports. Self-service sign-up.
+Passkeys. Replay of a run. Conditions beyond comparisons with literal values, and budgets in money. Budgets per tenant across mandates. Encryption of connector secrets at rest (the roadmap replaces them with key-pair signing in delivery contract v2). Pagination and streaming exports. Self-service sign-up.

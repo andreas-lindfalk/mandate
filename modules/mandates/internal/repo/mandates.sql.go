@@ -59,7 +59,7 @@ func (q *Queries) CoveredActions(ctx context.Context, patterns []string) ([]Cove
 }
 
 const getMandate = `-- name: GetMandate :one
-SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at, condition, condition_plan FROM mandate.mandates WHERE id = $1
+SELECT id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, condition, condition_plan, created_at FROM mandate.mandates WHERE id = $1
 `
 
 func (q *Queries) GetMandate(ctx context.Context, id uuid.UUID) (MandateMandate, error) {
@@ -71,7 +71,7 @@ func (q *Queries) GetMandate(ctx context.Context, id uuid.UUID) (MandateMandate,
 		&i.AgentId,
 		&i.Actions,
 		&i.MaxRisk,
-		&i.BudgetUnits,
+		&i.BudgetCount,
 		&i.PolicyRef,
 		&i.Department,
 		&i.GrantedBy,
@@ -79,15 +79,15 @@ func (q *Queries) GetMandate(ctx context.Context, id uuid.UUID) (MandateMandate,
 		&i.ValidUntil,
 		&i.RevokedAt,
 		&i.RevokedBy,
-		&i.CreatedAt,
 		&i.Condition,
 		&i.ConditionPlan,
+		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const insertMandate = `-- name: InsertMandate :exec
-INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, valid_from, valid_until, condition, condition_plan)
+INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, valid_from, valid_until, condition, condition_plan)
 VALUES ($1, $2, $3, $4::text[], $5, $6, $7, $8, $9, $10,
     $11, $12)
 `
@@ -98,7 +98,7 @@ type InsertMandateParams struct {
 	AgentId       *uuid.UUID
 	Actions       []string
 	MaxRisk       string
-	BudgetUnits   int64
+	BudgetCount   int64
 	PolicyRef     string
 	Department    *string
 	ValidFrom     time.Time
@@ -114,7 +114,7 @@ func (q *Queries) InsertMandate(ctx context.Context, arg InsertMandateParams) er
 		arg.AgentId,
 		arg.Actions,
 		arg.MaxRisk,
-		arg.BudgetUnits,
+		arg.BudgetCount,
 		arg.PolicyRef,
 		arg.Department,
 		arg.ValidFrom,
@@ -126,7 +126,7 @@ func (q *Queries) InsertMandate(ctx context.Context, arg InsertMandateParams) er
 }
 
 const listLiveForAgent = `-- name: ListLiveForAgent :many
-SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at, condition, condition_plan FROM mandate.mandates
+SELECT id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, condition, condition_plan, created_at FROM mandate.mandates
 WHERE (agent_id IS NULL OR agent_id = $1::uuid)
     AND revoked_at IS NULL AND valid_from <= $2 AND valid_until > $2
 ORDER BY max_risk DESC, created_at, id
@@ -155,7 +155,7 @@ func (q *Queries) ListLiveForAgent(ctx context.Context, arg ListLiveForAgentPara
 			&i.AgentId,
 			&i.Actions,
 			&i.MaxRisk,
-			&i.BudgetUnits,
+			&i.BudgetCount,
 			&i.PolicyRef,
 			&i.Department,
 			&i.GrantedBy,
@@ -163,9 +163,9 @@ func (q *Queries) ListLiveForAgent(ctx context.Context, arg ListLiveForAgentPara
 			&i.ValidUntil,
 			&i.RevokedAt,
 			&i.RevokedBy,
-			&i.CreatedAt,
 			&i.Condition,
 			&i.ConditionPlan,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -178,7 +178,7 @@ func (q *Queries) ListLiveForAgent(ctx context.Context, arg ListLiveForAgentPara
 }
 
 const listLiveForAgentToRead = `-- name: ListLiveForAgentToRead :many
-SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at, condition, condition_plan FROM mandate.mandates
+SELECT id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, condition, condition_plan, created_at FROM mandate.mandates
 WHERE (agent_id IS NULL OR agent_id = $1::uuid)
     AND revoked_at IS NULL AND valid_from <= $2 AND valid_until > $2
 ORDER BY max_risk DESC, created_at, id
@@ -205,7 +205,7 @@ func (q *Queries) ListLiveForAgentToRead(ctx context.Context, arg ListLiveForAge
 			&i.AgentId,
 			&i.Actions,
 			&i.MaxRisk,
-			&i.BudgetUnits,
+			&i.BudgetCount,
 			&i.PolicyRef,
 			&i.Department,
 			&i.GrantedBy,
@@ -213,9 +213,9 @@ func (q *Queries) ListLiveForAgentToRead(ctx context.Context, arg ListLiveForAge
 			&i.ValidUntil,
 			&i.RevokedAt,
 			&i.RevokedBy,
-			&i.CreatedAt,
 			&i.Condition,
 			&i.ConditionPlan,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -228,7 +228,7 @@ func (q *Queries) ListLiveForAgentToRead(ctx context.Context, arg ListLiveForAge
 }
 
 const listMandates = `-- name: ListMandates :many
-SELECT id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, created_at, condition, condition_plan FROM mandate.mandates
+SELECT id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, condition, condition_plan, created_at FROM mandate.mandates
 WHERE $1::boolean OR (revoked_at IS NULL AND valid_until > now())
 ORDER BY created_at DESC, id
 `
@@ -248,7 +248,7 @@ func (q *Queries) ListMandates(ctx context.Context, includeEnded bool) ([]Mandat
 			&i.AgentId,
 			&i.Actions,
 			&i.MaxRisk,
-			&i.BudgetUnits,
+			&i.BudgetCount,
 			&i.PolicyRef,
 			&i.Department,
 			&i.GrantedBy,
@@ -256,9 +256,9 @@ func (q *Queries) ListMandates(ctx context.Context, includeEnded bool) ([]Mandat
 			&i.ValidUntil,
 			&i.RevokedAt,
 			&i.RevokedBy,
-			&i.CreatedAt,
 			&i.Condition,
 			&i.ConditionPlan,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -282,37 +282,37 @@ func (q *Queries) RevokeMandate(ctx context.Context, id uuid.UUID) (int64, error
 	return result.RowsAffected(), nil
 }
 
-const spentUnits = `-- name: SpentUnits :one
-SELECT mandate.spent_units($1::uuid)::bigint
+const spentCount = `-- name: SpentCount :one
+SELECT mandate.spent_count($1::uuid)::bigint
 `
 
-// What the executions under a mandate have cost this month, as the
-// database counts it (the same function the execution trigger uses).
-func (q *Queries) SpentUnits(ctx context.Context, mandateID uuid.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, spentUnits, mandateID)
+// How many executions a mandate has allowed this month, as the database
+// counts it (the same function the execution trigger uses).
+func (q *Queries) SpentCount(ctx context.Context, mandateID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, spentCount, mandateID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
 }
 
-const spentUnitsFor = `-- name: SpentUnitsFor :many
-SELECT id, mandate.spent_units(id)::bigint AS spent FROM mandate.mandates WHERE id = ANY($1::uuid[])
+const spentCountFor = `-- name: SpentCountFor :many
+SELECT id, mandate.spent_count(id)::bigint AS spent FROM mandate.mandates WHERE id = ANY($1::uuid[])
 `
 
-type SpentUnitsForRow struct {
+type SpentCountForRow struct {
 	Id    uuid.UUID
 	Spent int64
 }
 
-func (q *Queries) SpentUnitsFor(ctx context.Context, ids []uuid.UUID) ([]SpentUnitsForRow, error) {
-	rows, err := q.db.Query(ctx, spentUnitsFor, ids)
+func (q *Queries) SpentCountFor(ctx context.Context, ids []uuid.UUID) ([]SpentCountForRow, error) {
+	rows, err := q.db.Query(ctx, spentCountFor, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []SpentUnitsForRow
+	var items []SpentCountForRow
 	for rows.Next() {
-		var i SpentUnitsForRow
+		var i SpentCountForRow
 		if err := rows.Scan(&i.Id, &i.Spent); err != nil {
 			return nil, err
 		}

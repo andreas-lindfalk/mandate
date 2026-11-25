@@ -28,31 +28,30 @@ func TestHardeningSuite(t *testing.T) {
 	suite.Run(t, new(HardeningSuite))
 }
 
-func (s *HardeningSuite) define(ctx context.Context, key, risk string, cost int64, mayExecute bool) {
+func (s *HardeningSuite) define(ctx context.Context, key, risk string, mayExecute bool) {
 	s.T().Helper()
 	_, _, err := s.W.Kernel.Actions.Define(ctx, actions.Input{
-		Key: key, Risk: risk, CostUnits: cost, MayExecute: mayExecute, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
+		Key: key, Risk: risk, MayExecute: mayExecute, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
 		Schema: json.RawMessage(`{"type":"object"}`),
 	})
 	s.Require().NoError(err)
 }
 
-const insertProposal = `INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash, rationale)
-	VALUES ($1, $2, $3, $4, $5, 'forged', '{}', $6, '{}', gen_random_uuid()::text, sha256('forged'), 'Test rationale.')`
+const insertProposal = `INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, flags, idempotency_key, request_hash, rationale)
+	VALUES ($1, $2, $3, $4, $5, 'forged', '{}', '{}', gen_random_uuid()::text, sha256('forged'), 'Test rationale.')`
 
-func (s *HardeningSuite) Test_AnAgentCannotUnderstateRiskOrCost() {
+func (s *HardeningSuite) Test_AnAgentCannotUnderstateRisk() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	s.define(t.Owner, "wire.send", mandates.RiskHigh, 5, false)
-	s.refused(t.Agent, insertProposal, uuid.New(), t.Id, t.AgentId, "wire.send", "low", 5)
-	s.refused(t.Agent, insertProposal, uuid.New(), t.Id, t.AgentId, "wire.send", "high", 0)
-	s.Require().NoError(s.exec(t.Agent, insertProposal, uuid.New(), t.Id, t.AgentId, "wire.send", "high", 5))
+	s.define(t.Owner, "wire.send", mandates.RiskHigh, false)
+	s.refused(t.Agent, insertProposal, uuid.New(), t.Id, t.AgentId, "wire.send", "low")
+	s.Require().NoError(s.exec(t.Agent, insertProposal, uuid.New(), t.Id, t.AgentId, "wire.send", "high"))
 
 	s.Require().NoError(s.W.Kernel.Actions.Remove(t.Owner, "wire.send"))
-	s.refused(t.Agent, insertProposal, uuid.New(), t.Id, t.AgentId, "wire.send", "high", 5)
+	s.refused(t.Agent, insertProposal, uuid.New(), t.Id, t.AgentId, "wire.send", "high")
 
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 1, true)
+	s.define(t.Owner, "notes.add", mandates.RiskLow, true)
 	s.Require().NoError(s.W.Kernel.Agents.Revoke(t.Owner, t.AgentId))
-	s.refused(t.Agent, insertProposal, uuid.New(), t.Id, t.AgentId, "notes.add", "low", 1)
+	s.refused(t.Agent, insertProposal, uuid.New(), t.Id, t.AgentId, "notes.add", "low")
 }
 
 // executeDirectly tries the status change the way Execute does, without
@@ -71,12 +70,12 @@ func (s *HardeningSuite) executeDirectly(ctx context.Context, id uuid.UUID, basi
 
 func (s *HardeningSuite) Test_TheDatabaseRefusesWhatOnlyGoUsedToCheck() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 1, false)
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30})
+	s.define(t.Owner, "notes.add", mandates.RiskLow, false)
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "notes.add", Title: "note", Payload: json.RawMessage(`{}`)})
 	s.Require().NoError(err)
-	basis := map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "low", "budgetUnits": 10, "spentUnits": 0, "costUnits": 1}
+	basis := map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "low", "budgets": []any{map[string]any{"kind": "count", "limit": 10, "spent": 0}}}
 
 	// The action is defined as one a person always decides.
 	err = s.executeDirectly(t.System, p.Id, basis)
@@ -84,8 +83,8 @@ func (s *HardeningSuite) Test_TheDatabaseRefusesWhatOnlyGoUsedToCheck() {
 
 	// Once it may execute, the same statement is accepted: the check above
 	// was the action's, not something else in the basis.
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 1, true)
-	upper := map[string]any{"mandateId": "{" + m.Id.String() + "}", "policyRef": "P", "maxRisk": "low", "budgetUnits": 10, "spentUnits": 0, "costUnits": 1}
+	s.define(t.Owner, "notes.add", mandates.RiskLow, true)
+	upper := map[string]any{"mandateId": "{" + m.Id.String() + "}", "policyRef": "P", "maxRisk": "low", "budgets": []any{map[string]any{"kind": "count", "limit": 10, "spent": 0}}}
 	err = s.executeDirectly(t.System, p.Id, upper)
 	s.code(fault.FromDb(err), fault.PermissionDenied)
 	s.T().Log("a mandate id that is not in canonical form is refused, so the spend cannot be hidden:", err)
@@ -100,9 +99,9 @@ func (s *HardeningSuite) Test_TheDatabaseRefusesWhatOnlyGoUsedToCheck() {
 // does not cite the condition as granted.
 func (s *HardeningSuite) Test_TheDatabaseHoldsAnExecutionToTheCondition() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 1, true)
+	s.define(t.Owner, "notes.add", mandates.RiskLow, true)
 	const condition = `payload.amount <= 500`
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30, Condition: condition})
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30, Condition: condition})
 	s.Require().NoError(err)
 	propose := func(payload string) uuid.UUID {
 		p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "notes.add", Title: "note", Payload: json.RawMessage(payload)})
@@ -110,7 +109,7 @@ func (s *HardeningSuite) Test_TheDatabaseHoldsAnExecutionToTheCondition() {
 		return p.Id
 	}
 	basis := func(condition any) map[string]any {
-		b := map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "low", "budgetUnits": 10, "spentUnits": 0, "costUnits": 1}
+		b := map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "low", "budgets": []any{map[string]any{"kind": "count", "limit": 10, "spent": 0}}}
 		if condition != nil {
 			b["condition"] = condition
 		}
@@ -139,14 +138,14 @@ func (s *HardeningSuite) Test_TheDatabaseHoldsAnExecutionToTheCondition() {
 // could otherwise be carried out on the other.
 func (s *HardeningSuite) Test_APayloadKeyIsReadOneWayOnly() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 1, true)
+	s.define(t.Owner, "notes.add", mandates.RiskLow, true)
 	_, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{
 		IdempotencyKey: uuid.NewString(), Action: "notes.add", Title: "x", Rationale: "Why.", Payload: json.RawMessage(`{"amountCents":100,"amountcents":999999}`),
 	})
 	s.code(err, fault.InvalidArgument)
 	s.Require().Contains(err.Error(), "amountcents")
-	insert := `INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, cost_units, idempotency_key, request_hash, rationale)
-		VALUES (gen_random_uuid(), $1, $2, 'notes.add', 'low', 'x', $3::jsonb, 1, gen_random_uuid()::text, sha256('x'), 'Why.')`
+	insert := `INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, idempotency_key, request_hash, rationale)
+		VALUES (gen_random_uuid(), $1, $2, 'notes.add', 'low', 'x', $3::jsonb, gen_random_uuid()::text, sha256('x'), 'Why.')`
 	for _, payload := range []string{
 		`{"amountCents":100,"amountcents":999999}`,
 		`{"order":{"Id":"a","ID":"b"}}`,
@@ -163,8 +162,8 @@ func (s *HardeningSuite) Test_APayloadKeyIsReadOneWayOnly() {
 	_, err = s.W.Pg.Owner.Exec(context.Background(), `
 		BEGIN;
 		SET LOCAL session_replication_role = replica;
-		INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, proposed_payload, cost_units, idempotency_key, request_hash, rationale)
-		VALUES ('`+legacy.String()+`', '`+t.Id.String()+`', '`+t.AgentId.String()+`', 'notes.add', 'low', 'old', '{"a":1,"A":2}', '{"a":1,"A":2}', 1, 'legacy', sha256('x'), 'Why.');
+		INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, proposed_payload, expires_at, deliver_within, idempotency_key, request_hash, rationale)
+		VALUES ('`+legacy.String()+`', '`+t.Id.String()+`', '`+t.AgentId.String()+`', 'notes.add', 'low', 'old', '{"a":1,"A":2}', '{"a":1,"A":2}', now() + interval '7 days', interval '1 hour', 'legacy', sha256('x'), 'Why.');
 		COMMIT;`)
 	s.Require().NoError(err)
 	_, err = s.W.Kernel.Proposals.Reject(t.Reviewer, legacy, "Stored before the rule.")
@@ -175,12 +174,12 @@ func (s *HardeningSuite) Test_APayloadKeyIsReadOneWayOnly() {
 // only under read committed; another isolation is refused, not trusted.
 func (s *HardeningSuite) Test_CountsAreMadeUnderReadCommittedOnly() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 1, true)
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30})
+	s.define(t.Owner, "notes.add", mandates.RiskLow, true)
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{IdempotencyKey: uuid.NewString(), Action: "notes.add", Title: "x", Payload: json.RawMessage(`{}`), Rationale: "Why."})
 	s.Require().NoError(err)
-	basis, err := json.Marshal(map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "low", "budgetUnits": 10, "spentUnits": 0, "costUnits": 1})
+	basis, err := json.Marshal(map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "low", "budgets": []any{map[string]any{"kind": "count", "limit": 10, "spent": 0}}})
 	s.Require().NoError(err)
 	// The scope is set by hand, as db.InTx would, in a transaction begun at
 	// another isolation level.
@@ -209,25 +208,25 @@ func (s *HardeningSuite) Test_CountsAreMadeUnderReadCommittedOnly() {
 	})
 	s.Require().ErrorContains(err, "read committed")
 	err = at(pgx.Serializable, "agent", t.AgentId, func(tx pgx.Tx) error {
-		_, err := tx.Exec(context.Background(), insertProposal, uuid.New(), t.Id, t.AgentId, "notes.add", "low", 1)
+		_, err := tx.Exec(context.Background(), insertProposal, uuid.New(), t.Id, t.AgentId, "notes.add", "low")
 		return err
 	})
 	s.Require().ErrorContains(err, "read committed")
 	s.Require().NoError(at(pgx.ReadCommitted, "agent", t.AgentId, func(tx pgx.Tx) error {
-		_, err := tx.Exec(context.Background(), insertProposal, uuid.New(), t.Id, t.AgentId, "notes.add", "low", 1)
+		_, err := tx.Exec(context.Background(), insertProposal, uuid.New(), t.Id, t.AgentId, "notes.add", "low")
 		return err
 	}), "the same insert under read committed is taken")
-	s.Require().NoError(s.executeDirectly(t.System, p.Id, map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "low", "budgetUnits": 10, "spentUnits": 0, "costUnits": 1}))
+	s.Require().NoError(s.executeDirectly(t.System, p.Id, map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "low", "budgets": []any{map[string]any{"kind": "count", "limit": 10, "spent": 0}}}))
 }
 
 // The trigger takes the mandate's lock itself: two executions that skip
 // the service entirely still count the budget one after the other.
 func (s *HardeningSuite) Test_TheTriggerLocksTheBudgetByItself() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 1, true)
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 1, PolicyRef: "P", Days: 30})
+	s.define(t.Owner, "notes.add", mandates.RiskLow, true)
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 1, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
-	basis := map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "low", "budgetUnits": 1, "spentUnits": 0, "costUnits": 1}
+	basis := map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "low", "budgets": []any{map[string]any{"kind": "count", "limit": 1, "spent": 0}}}
 	const racers = 6
 	ids := make([]uuid.UUID, racers)
 	for i := range ids {
@@ -253,7 +252,7 @@ func (s *HardeningSuite) Test_TheTriggerLocksTheBudgetByItself() {
 			s.code(fault.FromDb(err), fault.PermissionDenied)
 		}
 	}
-	s.Require().Equal(1, accepted, "a budget of one unit admits one execution")
+	s.Require().Equal(1, accepted, "a budget of one admits one execution")
 	spent, err := s.W.Kernel.Mandates.Spent(t.Owner, m.Id)
 	s.Require().NoError(err)
 	s.Require().Equal(int64(1), spent)
@@ -261,7 +260,7 @@ func (s *HardeningSuite) Test_TheTriggerLocksTheBudgetByItself() {
 
 func (s *HardeningSuite) Test_ARemovedActionsProposalsCanStillBeRejected() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 1, false)
+	s.define(t.Owner, "notes.add", mandates.RiskLow, false)
 	p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "notes.add", Title: "note", Payload: json.RawMessage(`{}`)})
 	s.Require().NoError(err)
 	s.Require().NoError(s.W.Kernel.Actions.Remove(t.Owner, "notes.add"))
@@ -275,7 +274,7 @@ func (s *HardeningSuite) Test_ARemovedActionsProposalsCanStillBeRejected() {
 func (s *HardeningSuite) Test_ParallelExecutionsNeverOverspend() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	const budget, proposed = 3, 8
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: budget, PolicyRef: "P", Days: 30})
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetCount: budget, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	ids := make([]uuid.UUID, 0, proposed)
 	for i := 0; i < proposed; i++ {
@@ -313,7 +312,7 @@ func (s *HardeningSuite) Test_ParallelExecutionsNeverOverspend() {
 
 func (s *HardeningSuite) Test_ApproveAndExecuteRaceHasOneWinner() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 100, PolicyRef: "P", Days: 30})
+	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 100, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	for round := 0; round < 10; round++ {
 		p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "test.low", Title: "race", Payload: json.RawMessage(`{}`)})
@@ -367,14 +366,14 @@ func (s *HardeningSuite) Test_ADecisionHoldsThePayloadToTheSchemaOfToday() {
 	strict := func() {
 		s.T().Helper()
 		_, _, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
-			Key: "notes.add", Risk: mandates.RiskLow, CostUnits: 1, MayExecute: true, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
+			Key: "notes.add", Risk: mandates.RiskLow, MayExecute: true, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
 			Schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["text"],"properties":{"text":{"type":"string"}}}`),
 		})
 		s.Require().NoError(err)
 	}
 	propose := func() proposals.Proposal {
 		s.T().Helper()
-		s.define(t.Owner, "notes.add", mandates.RiskLow, 1, true)
+		s.define(t.Owner, "notes.add", mandates.RiskLow, true)
 		p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "notes.add", Title: "note", Payload: json.RawMessage(`{"anything":1}`)})
 		s.Require().NoError(err)
 		strict()
@@ -402,7 +401,7 @@ func (s *HardeningSuite) Test_ADecisionHoldsThePayloadToTheSchemaOfToday() {
 	s.Require().NoError(err)
 
 	// A mandate does not allow it either: it is left for a person, with the reason.
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	waiting := propose()
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, waiting.Id))
@@ -441,7 +440,7 @@ func (s *HardeningSuite) eventPayloads(ctx context.Context, id uuid.UUID) map[st
 // so a payload rewritten in the table afterwards no longer matches.
 func (s *HardeningSuite) Test_TheChainNamesWhatWasDecided() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 1, true)
+	s.define(t.Owner, "notes.add", mandates.RiskLow, true)
 	p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", Action: "notes.add", Title: "note", Payload: json.RawMessage(`{"b":2, "a":1}`), IdempotencyKey: "k1"})
 	s.Require().NoError(err)
 	proposed, err := events.Digest(json.RawMessage(`{"a":1,"b":2}`))
@@ -462,7 +461,7 @@ func (s *HardeningSuite) Test_TheChainNamesWhatWasDecided() {
 	s.refused(t.Owner, `UPDATE mandate.proposals SET proposed_payload = '{"a":9}' WHERE id = $1`, p.Id)
 
 	// An execution names its payload too.
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	q, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", Action: "notes.add", Title: "note", Payload: json.RawMessage(`{"c":3}`), IdempotencyKey: "k2"})
 	s.Require().NoError(err)
@@ -477,8 +476,8 @@ func (s *HardeningSuite) Test_TheChainNamesWhatWasDecided() {
 // it to a person.
 func (s *HardeningSuite) Test_TheActionAsItIsNowDecides() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 1, true)
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskMedium, BudgetUnits: 10, PolicyRef: "P", Days: 30})
+	s.define(t.Owner, "notes.add", mandates.RiskLow, true)
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskMedium, BudgetCount: 10, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	propose := func(key string) proposals.Proposal {
 		s.T().Helper()
@@ -493,24 +492,16 @@ func (s *HardeningSuite) Test_TheActionAsItIsNowDecides() {
 		return reason
 	}
 
-	// The cost went up after the proposal: not executed, for a person.
-	cheap := propose("cheap")
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 3, true)
-	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, cheap.Id))
-	s.Require().Equal(proposals.SkipActionChanged, skipped(cheap))
-	basis := map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "medium", "budgetUnits": 10, "spentUnits": 0, "costUnits": 1}
-	s.code(fault.FromDb(s.executeDirectly(t.System, cheap.Id, basis)), fault.PermissionDenied)
-
-	// The risk went up after the proposal: not executed either.
+	// The risk went up after the proposal: not executed, for a person.
 	low := propose("low")
-	s.define(t.Owner, "notes.add", mandates.RiskMedium, 3, true)
+	s.define(t.Owner, "notes.add", mandates.RiskMedium, true)
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, low.Id))
 	s.Require().Equal(proposals.SkipActionChanged, skipped(low))
-	basis["costUnits"] = 3
+	basis := map[string]any{"mandateId": m.Id.String(), "policyRef": "P", "maxRisk": "medium", "budgets": []any{map[string]any{"kind": "count", "limit": 10, "spent": 0}}}
 	s.code(fault.FromDb(s.executeDirectly(t.System, low.Id, basis)), fault.PermissionDenied)
 
 	// A person approves it at the risk the action has now.
-	s.define(t.Owner, "notes.add", mandates.RiskHigh, 3, false)
+	s.define(t.Owner, "notes.add", mandates.RiskHigh, false)
 	_, err = s.W.Kernel.Proposals.Approve(t.Owner, low.Id, proposals.Decision{})
 	s.code(err, fault.InvalidArgument)
 	s.Require().Contains(err.Error(), "confirmed", "now high, so it must be confirmed")
@@ -519,7 +510,7 @@ func (s *HardeningSuite) Test_TheActionAsItIsNowDecides() {
 	s.Require().Equal(mandates.RiskHigh, approved.Risk)
 
 	// A proposal made under the action as it is now runs as before.
-	s.define(t.Owner, "notes.add", mandates.RiskLow, 3, true)
+	s.define(t.Owner, "notes.add", mandates.RiskLow, true)
 	fits := propose("fits")
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, fits.Id))
 	done, err := s.W.Kernel.Proposals.Get(t.Owner, fits.Id)
@@ -538,6 +529,6 @@ func (s *HardeningSuite) Test_ADeliveryBelongsToItsDecision() {
 	s.Require().NoError(err)
 	// Later the tenant defines it as a webhook, and someone records a
 	// delivery for the old approval.
-	s.define(t.Owner, "test.low", mandates.RiskLow, p.CostUnits, false)
+	s.define(t.Owner, "test.low", mandates.RiskLow, false)
 	s.refused(t.Owner, `INSERT INTO mandate.deliveries (id, tenant_id, proposal_id, action_key, url) VALUES (gen_random_uuid(), $1, $2, 'test.low', 'https://connector.example/hooks')`, t.Id, p.Id)
 }

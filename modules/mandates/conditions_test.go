@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/andreas-lindfalk/pgmandate/modules/actions"
@@ -147,12 +145,12 @@ func (s *ConditionsSuite) Test_GoAndPostgresAgree() {
 func (s *ConditionsSuite) Test_TheGrantChecksTheCondition() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	_, _, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
-		Key: "refunds.issue", Risk: mandates.RiskLow, CostUnits: 1, MayExecute: true, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
+		Key: "refunds.issue", Risk: mandates.RiskLow, MayExecute: true, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
 		Schema: json.RawMessage(`{"type":"object","properties":{"amount":{"type":"number"},"currency":{"type":"string"}}}`),
 	})
 	s.Require().NoError(err)
 	grant := func(actions []string, condition string) (mandates.Mandate, error) {
-		return s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: actions, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30, Condition: condition})
+		return s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: actions, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30, Condition: condition})
 	}
 	for condition, why := range map[string]string{
 		`payload.amout <= 500`:                "names payload.amout, which no action",
@@ -192,7 +190,7 @@ func (s *ConditionsSuite) Test_TheGrantChecksTheCondition() {
 	s.Require().NoError(err)
 	_, err = grant([]string{"refunds.*", "test.*"}, `payload.anything == 1`)
 	s.Require().NoError(err)
-	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "refunds.note", Risk: mandates.RiskLow, CostUnits: 1, Connector: actions.ConnectorBuiltin})
+	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "refunds.note", Risk: mandates.RiskLow, Connector: actions.ConnectorBuiltin})
 	s.Require().NoError(err)
 	_, err = grant([]string{"refunds.*"}, `payload.anything == 1`)
 	s.Require().NoError(err, "a defined action without a schema takes any field")
@@ -209,13 +207,13 @@ func (s *ConditionsSuite) Test_TheGrantChecksTheCondition() {
 // text without its plan or a plan without its text.
 func (s *ConditionsSuite) Test_TheDatabaseKeepsTheConditionAsGranted() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30, Condition: `payload.n <= 1`})
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30, Condition: `payload.n <= 1`})
 	s.Require().NoError(err)
 	s.refused(t.Owner, `UPDATE mandate.mandates SET condition_plan = '{"op":"<=","path":["payload","n"],"value":1000}' WHERE id = $1`, m.Id)
 	s.refused(t.Owner, `UPDATE mandate.mandates SET condition = NULL, condition_plan = NULL WHERE id = $1`, m.Id)
 	s.refused(t.Owner, `UPDATE mandate.mandates SET revoked_at = now(), condition = 'payload.n <= 1000' WHERE id = $1`, m.Id)
 
-	insert := `INSERT INTO mandate.mandates (id, tenant_id, actions, max_risk, budget_units, policy_ref, valid_until, condition, condition_plan)
+	insert := `INSERT INTO mandate.mandates (id, tenant_id, actions, max_risk, budget_count, policy_ref, valid_until, condition, condition_plan)
 		VALUES (gen_random_uuid(), $1, '{test.*}', 'low', 10, 'P', now() + interval '1 day', $2, $3::jsonb)`
 	s.invalid(t.Owner, insert, t.Id, "payload.n <= 1", nil)
 	s.invalid(t.Owner, insert, t.Id, nil, `{"op":"<=","path":["payload","n"],"value":1}`)
@@ -259,30 +257,11 @@ func (s *ConditionsSuite) validPlan(ctx context.Context, plan json.RawMessage) b
 	return valid
 }
 
-// Rolling back the migration would leave a conditional mandate without its
-// condition, allowing more than was granted. It is refused while one holds.
-func (s *ConditionsSuite) Test_TheRollbackRefusesWhileAConditionHolds() {
-	t := s.W.NewTenant(s.T(), "Acme")
-	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30, Condition: `payload.n <= 1`})
-	s.Require().NoError(err)
-	down, err := os.ReadFile("../../schema/0002_mandate_conditions.down.sql")
-	s.Require().NoError(err)
-	ctx := context.Background()
-	tx, err := s.W.Pg.Owner.Begin(ctx)
-	s.Require().NoError(err)
-	defer tx.Rollback(ctx) //nolint:errcheck
-	_, err = tx.Exec(ctx, string(down))
-	var pgErr *pgconn.PgError
-	s.Require().ErrorAs(err, &pgErr)
-	s.Require().Equal("55006", pgErr.Code, err.Error())
-	s.Require().Contains(pgErr.Message, "revoke them")
-}
-
 // Unmet explains with the mandates Resolve would use: live by the service's
 // clock, not yet valid ones left out.
 func (s *ConditionsSuite) Test_UnmetReadsTheMandatesResolveReads() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30, Condition: `payload.n <= 1`})
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30, Condition: `payload.n <= 1`})
 	s.Require().NoError(err)
 	lines, err := s.W.Kernel.Mandates.Unmet(t.Owner, t.AgentId, "test.low", mandates.RiskLow, json.RawMessage(`{"n": 2}`))
 	s.Require().NoError(err)
@@ -299,13 +278,13 @@ func (s *ConditionsSuite) Test_UnmetReadsTheMandatesResolveReads() {
 
 func (s *ConditionsSuite) Test_ResolveFollowsTheCondition() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	small, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskMedium, BudgetUnits: 10, PolicyRef: "Small", Days: 30, Condition: `payload.amount <= 500`})
+	small, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskMedium, BudgetCount: 10, PolicyRef: "Small", Days: 30, Condition: `payload.amount <= 500`})
 	s.Require().NoError(err)
 	resolve := func(risk, payload string) mandates.Resolution {
 		var r mandates.Resolution
 		s.Require().NoError(db.InTx(t.System, s.W.Pg.App, func(tx pgx.Tx) error {
 			var err error
-			r, err = s.W.Kernel.Mandates.Resolve(t.System, tx, t.AgentId, "test.low", risk, json.RawMessage(payload), 1)
+			r, err = s.W.Kernel.Mandates.Resolve(t.System, tx, t.AgentId, "test.low", risk, json.RawMessage(payload))
 			return err
 		}))
 		return r
@@ -320,7 +299,7 @@ func (s *ConditionsSuite) Test_ResolveFollowsTheCondition() {
 
 	// A second mandate without a condition, at a lower risk: the first is
 	// more permissive and chosen when it holds; the second when it does not.
-	unconditional, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "Any", Days: 30})
+	unconditional, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "Any", Days: 30})
 	s.Require().NoError(err)
 	s.Require().Equal(small.Id, resolve(mandates.RiskLow, `{"amount": 400}`).Mandate.Id)
 	s.Require().Equal(unconditional.Id, resolve(mandates.RiskLow, `{"amount": 600}`).Mandate.Id)

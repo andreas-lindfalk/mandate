@@ -22,9 +22,10 @@ message Mandate {
   string agent_id = 2;
   repeated string actions = 3;
   string max_risk = 4;
-  int64 budget_units = 5;
-  // What this month's executions under the mandate have cost.
-  int64 spent_units = 6;
+  // How many executions it may allow per UTC calendar month.
+  int64 budget_count = 5;
+  // How many it has allowed this month.
+  int64 spent_count = 6;
   string policy_ref = 7;
   string department = 8;
   string granted_by = 9;
@@ -49,7 +50,8 @@ message GrantMandateRequest {
   string agent_id = 1;
   repeated string actions = 2;
   string max_risk = 3;
-  int64 budget_units = 4;
+  // How many executions it may allow per UTC calendar month.
+  int64 budget_count = 4;
   string policy_ref = 5;
   int32 days = 6;
   string department = 7;

@@ -122,7 +122,7 @@ func (s *McpSuite) Test_TokensGateTheServer() {
 
 func (s *McpSuite) Test_AnAgentProposesAndSeesTheOutcome() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 2, PolicyRef: "ACME-POLICY", Days: 30})
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 2, PolicyRef: "ACME-POLICY", Days: 30})
 	s.Require().NoError(err)
 	session, err := s.connect(t.Token)
 	s.Require().NoError(err)
@@ -235,7 +235,7 @@ func (s *McpSuite) Test_AnAgentProposesAndSeesTheOutcome() {
 	s.Require().Contains(errText, "no connector")
 
 	// An action whose risk depends on the payload says so once a mandate covers it.
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"refunds.*"}, MaxRisk: mandates.RiskMedium, BudgetUnits: 10, PolicyRef: "ACME-POLICY", Days: 30})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"refunds.*"}, MaxRisk: mandates.RiskMedium, BudgetCount: 10, PolicyRef: "ACME-POLICY", Days: 30})
 	s.Require().NoError(err)
 	actions, errText = s.call(session, "list_actions", nil)
 	s.Require().Empty(errText)
@@ -268,12 +268,12 @@ func (s *McpSuite) Test_TheAgentGetsTheConnectorsResult() {
 	connector := httptest.NewServer(receiver)
 	defer connector.Close()
 	_, secret, err := s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{
-		Key: "notes.add", Risk: mandates.RiskLow, CostUnits: 1, MayExecute: true, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL,
+		Key: "notes.add", Risk: mandates.RiskLow, MayExecute: true, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL,
 		Schema: json.RawMessage(`{"type":"object"}`),
 	})
 	s.Require().NoError(err)
 	receiver.SetSecret(secret)
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"notes.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 5, PolicyRef: "P", Days: 30})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"notes.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	session, err := s.connect(t.Token)
 	s.Require().NoError(err)
@@ -284,7 +284,7 @@ func (s *McpSuite) Test_TheAgentGetsTheConnectorsResult() {
 	s.Require().Regexp(`^run-[0-9a-f-]{36}$`, listed["suggestedRunId"], "a run id for an agent whose host gave none")
 	for _, a := range listed["actions"].([]any) {
 		if view := a.(map[string]any); view["key"] == "notes.add" {
-			s.Require().InDelta(5, view["mandates"].([]any)[0].(map[string]any)["remainingUnits"], 0, "the agent can see what is left of the budget")
+			s.Require().InDelta(5, view["mandates"].([]any)[0].(map[string]any)["remaining"], 0, "the agent can see what is left of the budget")
 		}
 	}
 
@@ -304,7 +304,7 @@ func (s *McpSuite) Test_TheAgentGetsTheConnectorsResult() {
 	s.Require().Nil(stuck["result"])
 
 	// A proposal that waits says what to do, and get_proposal can wait for the decision.
-	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{Key: "notes.purge", Risk: mandates.RiskHigh, CostUnits: 1, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL, Schema: json.RawMessage(`{"type":"object"}`)})
+	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{Key: "notes.purge", Risk: mandates.RiskHigh, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL, Schema: json.RawMessage(`{"type":"object"}`)})
 	s.Require().NoError(err)
 	waiting := s.propose(session, "notes.purge", "Purge", map[string]any{}, nil)
 	s.Require().Equal(proposals.StatusPending, waiting["status"])
@@ -323,7 +323,7 @@ func (s *McpSuite) Test_TheAgentGetsTheConnectorsResult() {
 
 // An agent that is unsure whether a proposal went through sends it again.
 // The key makes that safe from the agent to the connector: one proposal,
-// one execution, one delivery, one unit spent.
+// one execution, one delivery, one place in the budget used.
 func (s *McpSuite) Test_ARepeatedRequestIsDoneOnce() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	receiver := webhook.NewReceiver("")
@@ -331,13 +331,13 @@ func (s *McpSuite) Test_ARepeatedRequestIsDoneOnce() {
 	defer connector.Close()
 	for key, risk := range map[string]string{"notes.add": mandates.RiskLow, "notes.purge": mandates.RiskHigh} {
 		_, secret, err := s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{
-			Key: key, Risk: risk, CostUnits: 1, MayExecute: risk != mandates.RiskHigh, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL,
+			Key: key, Risk: risk, MayExecute: risk != mandates.RiskHigh, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL,
 			Schema: json.RawMessage(`{"type":"object"}`),
 		})
 		s.Require().NoError(err)
 		receiver.AddSecret(secret)
 	}
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"notes.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 5, PolicyRef: "P", Days: 30})
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"notes.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	session, err := s.connect(t.Token)
 	s.Require().NoError(err)
@@ -436,12 +436,12 @@ func (s *McpSuite) Test_APayloadKeepsEveryDigit() {
 	connector := httptest.NewServer(receiver)
 	defer connector.Close()
 	_, secret, err := s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{
-		Key: "wires.send", Risk: mandates.RiskLow, CostUnits: 1, MayExecute: true, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL,
+		Key: "wires.send", Risk: mandates.RiskLow, MayExecute: true, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL,
 		Schema: json.RawMessage(`{"type":"object","properties":{"account":{"type":"integer"},"rate":{"type":"number"}}}`),
 	})
 	s.Require().NoError(err)
 	receiver.SetSecret(secret)
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"wires.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 5, PolicyRef: "P", Days: 30})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"wires.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	session, err := s.connect(t.Token)
 	s.Require().NoError(err)
@@ -477,7 +477,7 @@ func (s *McpSuite) Test_APayloadKeepsEveryDigit() {
 func (s *McpSuite) Test_AConditionNarrowsTheMandate() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	const condition = `payload.body == ""`
-	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.create"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30, Condition: condition})
+	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.create"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30, Condition: condition})
 	s.Require().NoError(err)
 	session, err := s.connect(t.Token)
 	s.Require().NoError(err)
@@ -512,7 +512,7 @@ func (s *McpSuite) Test_AConditionNarrowsTheMandate() {
 func (s *McpSuite) Test_TheConditionNoteFollowsTheRisk() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	grant := func(maxRisk, condition string) {
-		_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.*"}, MaxRisk: maxRisk, BudgetUnits: 10, PolicyRef: "P", Days: 30, Condition: condition})
+		_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.*"}, MaxRisk: maxRisk, BudgetCount: 10, PolicyRef: "P", Days: 30, Condition: condition})
 		s.Require().NoError(err)
 	}
 	grant(mandates.RiskLow, "")
@@ -606,7 +606,7 @@ func (s *McpSuite) Test_AnAgentBeyondItsLimitIsToldSo() {
 // the first account.
 func (s *McpSuite) Test_TheAgentIsToldWhatItNeeds() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.create"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30, Condition: `payload.body == ""`})
+	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.create"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30, Condition: `payload.body == ""`})
 	s.Require().NoError(err)
 	_, err = s.W.Kernel.Agents.SetLimits(t.Owner, t.AgentId, 20, 200)
 	s.Require().NoError(err)
@@ -696,4 +696,45 @@ func (s *McpSuite) Test_WithoutAMandateEverythingWaits() {
 	s.Require().Equal(proposals.StatusPending, p["status"])
 	s.Require().Equal(mandates.SkipNoMandate, p["skipped"])
 	_ = testfix.ErrApplyFailed
+}
+
+// An agent is told when a proposal expired, can list what expired, and
+// sees how long a proposal waits.
+func (s *McpSuite) Test_TheAgentIsToldAboutExpiry() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	session, err := s.connect(t.Token)
+	s.Require().NoError(err)
+	defer session.Close() //nolint:errcheck
+
+	listed, errText := s.call(session, "list_actions", nil)
+	s.Require().Empty(errText)
+	for _, a := range listed["actions"].([]any) {
+		if view := a.(map[string]any); view["key"] == "tickets.create" {
+			s.Require().InDelta(7*24*3600, view["waitSeconds"], 0, "an action that exists only as code waits the default")
+		}
+	}
+
+	p := s.propose(session, "tickets.create", "Printer jams", map[string]any{"subject": "Printer jams", "body": "Floor 3"}, nil)
+	id := p["proposalId"].(string)
+	_, err = s.W.Pg.Owner.Exec(context.Background(), `
+		BEGIN;
+		SET LOCAL session_replication_role = replica;
+		UPDATE mandate.proposals SET expires_at = now() - interval '1 second' WHERE id = '`+id+`';
+		COMMIT;`)
+	s.Require().NoError(err)
+
+	// Before the sweep: it already reads as expired, and waiting for it
+	// returns at once.
+	start := time.Now()
+	got, errText := s.call(session, "get_proposal", map[string]any{"proposal_id": id, "wait_seconds": 10})
+	s.Require().Empty(errText)
+	s.Require().Less(time.Since(start), 5*time.Second, "nothing will change, so it does not wait")
+	s.Require().Equal(proposals.StatusExpired, got["status"])
+	s.Require().Contains(got["outcome"], "expired")
+
+	_, err = s.W.Kernel.ExpireDue(context.Background())
+	s.Require().NoError(err)
+	expired, errText := s.call(session, "list_proposals", map[string]any{"status": "expired"})
+	s.Require().Empty(errText)
+	s.Require().Len(expired["proposals"], 1)
 }

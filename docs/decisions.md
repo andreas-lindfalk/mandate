@@ -2,6 +2,15 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
+## 2026-11-26: build step 1, the fresh schema and expiry
+
+- **One fresh migration.** 0001 to 0008 are folded into one `0001_init`. Before the step's own changes, the fold was checked against the old chain: the two schema dumps differ only in the order of two equivalent check constraints' generated names. A local database from before is reset with `make reset`.
+- **Budgets count executions.** `budget_units` is `budget_count`, and actions and proposals no longer carry a cost. The basis cites `budgets: [{kind: "count", limit, spent}]`, and `basis_holds` accepts exactly that one budget, with the spend the database counts and room for one more. Delivery contract v1 carries the same list until v2 replaces it.
+- **Proposal expiry**, as the design note says: a deadline and a delivery window fixed on each proposal from its action, a trigger that allows nothing but the system's expiry from the deadline on, and a sweep every minute on River's leader. A host without a queue calls `Kernel.ExpireDue`.
+- **River in its own schema**, `mandate_river`. The application role is given nothing of River's in `public`.
+- **What "the action changed" means now:** a payload that no longer fits the schema, or a webhook action's raised risk.
+- **Found on the way:** an execution can take up to about a second to start, because River fetches on an interval when it is not woken. `main` behaves the same. The agent-facing tests that wait two seconds for an execution can therefore fail on a loaded machine. That is worth a look of its own; this step does not change it.
+
 ## 2026-11-26: the design of what 0.1.0 freezes
 
 [design-0.1.md](design-0.1.md) designs proposal expiry, the dry run, delivery contract v2 and the agent contract together. Two reviews (protocol and security, and fit with the code) shaped it. The choices that matter:

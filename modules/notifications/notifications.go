@@ -359,7 +359,7 @@ var reasons = map[string]string{
 	"action_failed":         "the system that carries it out refused it",
 	"execution_failed":      "the execution failed",
 	"agent_revoked":         "the agent is revoked",
-	"action_changed":        "the action's cost or risk changed since it was proposed",
+	"action_changed":        "the action's risk was raised since it was proposed",
 	"payload_invalid":       "the payload no longer fits the action's schema",
 }
 

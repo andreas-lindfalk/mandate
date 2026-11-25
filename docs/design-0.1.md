@@ -1,6 +1,6 @@
 # Design note: what 0.1.0 freezes
 
-Status: proposed, 2026-11-26, revised after review the same day. It covers roadmap items 5 (proposal expiry), 6 (dry run), 8 (delivery contract v2) and 9 (the agent contract). They are designed together because they share the proposal's states, the delivery's states and the contracts that 0.1.0 freezes. Everything is built on a fresh first migration: nothing before 0.1.0 is kept compatible ([decisions](decisions.md)).
+Status: accepted, 2026-11-26. Build step 1 (section 11) is built: the fresh schema, River's own schema, budgets as a count, expiry and the sweep. It covers roadmap items 5 (proposal expiry), 6 (dry run), 8 (delivery contract v2) and 9 (the agent contract). They are designed together because they share the proposal's states, the delivery's states and the contracts that 0.1.0 freezes. Everything is built on a fresh first migration: nothing before 0.1.0 is kept compatible ([decisions](decisions.md)).
 
 This note sets out the states, the rules the database holds, the contracts, the jobs, the log events and the tests. When the code differs from this note, one of them is wrong.
 

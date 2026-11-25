@@ -48,13 +48,15 @@ type Payload struct {
 		Note           string     `json:"note"`
 		Edited         bool       `json:"edited"`
 		ExecutionBasis *struct {
-			MandateId   uuid.UUID `json:"mandateId"`
-			PolicyRef   string    `json:"policyRef"`
-			MaxRisk     string    `json:"maxRisk"`
-			BudgetUnits int64     `json:"budgetUnits"`
-			SpentUnits  int64     `json:"spentUnits"`
-			CostUnits   int64     `json:"costUnits"`
-			Condition   string    `json:"condition"`
+			MandateId uuid.UUID `json:"mandateId"`
+			PolicyRef string    `json:"policyRef"`
+			MaxRisk   string    `json:"maxRisk"`
+			Budgets   []struct {
+				Kind  string `json:"kind"`
+				Limit int64  `json:"limit"`
+				Spent int64  `json:"spent"`
+			} `json:"budgets"`
+			Condition string `json:"condition"`
 		} `json:"executionBasis"`
 	} `json:"decision"`
 }

@@ -106,7 +106,7 @@ func (k *Kernel) ExecuteProposal(ctx context.Context, tenantId, proposalId uuid.
 // basisFor asks the mandates, inside the execution transaction, whether one
 // allows the proposal now.
 func (k *Kernel) basisFor(ctx context.Context, tx pgx.Tx, proposal Proposal) (ExecutionBasis, string, error) {
-	resolution, err := k.Mandates.Resolve(ctx, tx, proposal.AgentId, proposal.Action, proposal.Risk, proposal.Payload, proposal.CostUnits)
+	resolution, err := k.Mandates.Resolve(ctx, tx, proposal.AgentId, proposal.Action, proposal.Risk, proposal.Payload)
 	if err != nil {
 		return ExecutionBasis{}, "", err
 	}
@@ -115,7 +115,8 @@ func (k *Kernel) basisFor(ctx context.Context, tx pgx.Tx, proposal Proposal) (Ex
 	}
 	m := resolution.Mandate
 	return ExecutionBasis{
-		MandateId: m.Id, PolicyRef: m.PolicyRef, MaxRisk: m.MaxRisk, BudgetUnits: m.BudgetUnits,
-		SpentUnits: resolution.SpentUnits, CostUnits: proposal.CostUnits, Condition: m.Condition,
+		MandateId: m.Id, PolicyRef: m.PolicyRef, MaxRisk: m.MaxRisk,
+		Budgets:   []proposals.Budget{{Kind: proposals.BudgetCount, Limit: m.BudgetCount, Spent: resolution.Spent}},
+		Condition: m.Condition,
 	}, "", nil
 }

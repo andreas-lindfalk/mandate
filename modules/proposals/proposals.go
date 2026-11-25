@@ -19,10 +19,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
@@ -44,6 +46,9 @@ const (
 	// StatusWithdrawn marks a proposal its agent took back before anyone
 	// decided it.
 	StatusWithdrawn = "withdrawn"
+	// StatusExpired marks a proposal nobody decided before its deadline.
+	// Nothing was done.
+	StatusExpired = "expired"
 
 	// FlagSteeringText marks a proposal whose title, payload or account
 	// holds text that tries to steer a model. Such a proposal is high risk and is never
@@ -68,9 +73,10 @@ type Action struct {
 	Description string
 	// Risk is the default risk of the action: low, medium or high.
 	Risk string
-	// CostUnits is charged to the mandate's budget when the action is
-	// executed without a person.
-	CostUnits int64
+	// WaitLimit is how long a proposal for it waits for a decision before
+	// it expires. Zero for an action that exists only as code, whose
+	// proposals wait the default.
+	WaitLimit time.Duration
 	// MayExecute says whether the action may ever be carried out under a
 	// mandate. False means a person always decides, whatever the mandates.
 	MayExecute bool
@@ -134,7 +140,6 @@ type Proposal struct {
 	// ProposedPayload is the payload as the agent proposed it, before any
 	// edit.
 	ProposedPayload json.RawMessage
-	CostUnits       int64
 	Flags           []string
 	IdempotencyKey  string
 	Status          string
@@ -143,24 +148,42 @@ type Proposal struct {
 	DecidedAt       *string
 	DecisionNote    string
 	CreatedAt       string
+	// ExpiresAt is when it stops waiting for a decision, and DeliverWithin
+	// how long after a decision its delivery may be carried out. Both were
+	// fixed when it was made.
+	ExpiresAt     time.Time
+	DeliverWithin time.Duration
+	// PastDeadline is set on a proposal still pending whose deadline has
+	// passed by the database's clock when it was read: nobody can decide
+	// it any more, though the sweep has not yet expired it.
+	PastDeadline bool
 	// ExecutionBasis is set when the status is executed.
 	ExecutionBasis *ExecutionBasis
 }
 
 // ExecutionBasis is what allowed a proposal to be executed without a
-// person: the mandate, the policy it rests on, its risk limit and its
-// budget at the time. The database checks all of it against the mandate
-// when the status changes: the id, the policy reference, the risk limit,
-// the budget, the cost and this month's spend.
+// person: the mandate, the policy it rests on, its risk limit, its
+// condition and its budgets at the time. The database checks all of it
+// against the mandate when the status changes.
 type ExecutionBasis struct {
-	MandateId   uuid.UUID `json:"mandateId"`
-	PolicyRef   string    `json:"policyRef"`
-	MaxRisk     string    `json:"maxRisk"`
-	BudgetUnits int64     `json:"budgetUnits"`
-	SpentUnits  int64     `json:"spentUnits"`
-	CostUnits   int64     `json:"costUnits"`
+	MandateId uuid.UUID `json:"mandateId"`
+	PolicyRef string    `json:"policyRef"`
+	MaxRisk   string    `json:"maxRisk"`
+	// Budgets are the mandate's budgets: today one, a count.
+	Budgets []Budget `json:"budgets"`
 	// Condition is the mandate's condition, which held for the payload.
 	Condition string `json:"condition,omitempty"`
+}
+
+// BudgetCount is the kind of budget that counts executions.
+const BudgetCount = "count"
+
+// Budget is one of a mandate's budgets as an execution saw it: its kind,
+// its limit per calendar month, and what was spent before this execution.
+type Budget struct {
+	Kind  string `json:"kind"`
+	Limit int64  `json:"limit"`
+	Spent int64  `json:"spent"`
 }
 
 type Input struct {
@@ -421,7 +444,7 @@ func (s *Service) Propose(ctx context.Context, input Input) (Proposal, bool, err
 		q := repo.New(tx)
 		id, err := q.InsertProposal(ctx, repo.InsertProposalParams{
 			Id: uuid.New(), TenantId: tenantId, AgentId: a.Id, Action: action.Key, Risk: risk, Title: title,
-			Payload: payload, CostUnits: action.CostUnits, Flags: flags, IdempotencyKey: input.IdempotencyKey, RequestHash: request,
+			Payload: payload, Flags: flags, IdempotencyKey: input.IdempotencyKey, RequestHash: request,
 			Rationale: rationale, Evidence: evidenceJson, Provenance: provenanceJson,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -460,7 +483,7 @@ func (s *Service) Propose(ctx context.Context, input Input) (Proposal, bool, err
 			return err
 		}
 		fields := map[string]any{
-			"action": action.Key, "risk": risk, "flags": flags, "costUnits": action.CostUnits, "titleChars": utf8.RuneCountInString(title),
+			"action": action.Key, "risk": risk, "flags": flags, "titleChars": utf8.RuneCountInString(title),
 			"payloadSha256": payloadDigest, "requestSha256": hex.EncodeToString(request),
 			"rationaleSha256": rationaleDigest, "evidenceSha256": evidenceDigest, "evidenceItems": len(evidence),
 		}
@@ -543,10 +566,35 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (Proposal, error) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fault.New(fault.NotFound, "proposal not found")
 		}
+		if err != nil {
+			return err
+		}
+		now, err := dbNow(ctx, tx)
 		proposal = toProposal(row)
+		proposal.markPastDeadline(now)
 		return err
 	})
 	return proposal, err
+}
+
+// ShownStatus is the status to show: expired for a proposal past its
+// deadline that the sweep has not yet reached, since nobody can decide it.
+func (p Proposal) ShownStatus() string {
+	if p.PastDeadline {
+		return StatusExpired
+	}
+	return p.Status
+}
+
+func (p *Proposal) markPastDeadline(now time.Time) {
+	p.PastDeadline = p.Status == StatusPending && !now.Before(p.ExpiresAt)
+}
+
+// dbNow is the database's clock as the update trigger reads it.
+func dbNow(ctx context.Context, tx pgx.Tx) (time.Time, error) {
+	var now time.Time
+	err := tx.QueryRow(ctx, `SELECT now()`).Scan(&now)
+	return now, err
 }
 
 func (s *Service) List(ctx context.Context, filter Filter) ([]Proposal, error) {
@@ -564,8 +612,14 @@ func (s *Service) List(ctx context.Context, filter Filter) ([]Proposal, error) {
 	var result []Proposal
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		rows, err := repo.New(tx).ListProposals(ctx, params)
+		if err != nil {
+			return err
+		}
+		now, err := dbNow(ctx, tx)
 		for _, row := range rows {
-			result = append(result, toProposal(row))
+			p := toProposal(row)
+			p.markPastDeadline(now)
+			result = append(result, p)
 		}
 		return err
 	})
@@ -686,6 +740,9 @@ func (s *Service) Withdraw(ctx context.Context, id uuid.UUID, reason string) (Pr
 		if row.Status != StatusPending {
 			return fault.New(fault.Conflict, "the proposal is already "+row.Status+": only a waiting proposal can be withdrawn")
 		}
+		if err := pastDeadline(ctx, q, id); err != nil {
+			return err
+		}
 		if _, err := q.WithdrawProposal(ctx, repo.WithdrawProposalParams{Id: id, Note: note}); err != nil {
 			return err
 		}
@@ -736,6 +793,9 @@ func (s *Service) decide(ctx context.Context, id uuid.UUID, status string, decis
 		}
 		if row.Status != StatusPending {
 			return fault.New(fault.Conflict, "proposal is already decided")
+		}
+		if err := pastDeadline(ctx, q, id); err != nil {
+			return err
 		}
 		action, ok, err := s.actions.LookupIn(ctx, tx, row.Action)
 		if err != nil {
@@ -865,8 +925,8 @@ const (
 	// SkipPayloadInvalid is written when the payload no longer fits the
 	// action's schema, which changed after the agent proposed.
 	SkipPayloadInvalid = "payload_invalid"
-	// SkipActionChanged is written when the action's cost or risk changed
-	// after the agent proposed.
+	// SkipActionChanged is written when the action's risk was raised after
+	// the agent proposed.
 	SkipActionChanged = "action_changed"
 	SkipFlagged       = "flagged"
 )
@@ -909,6 +969,9 @@ func (s *Service) Execute(ctx context.Context, id uuid.UUID, basisFor BasisFor) 
 		if row.Status != StatusPending {
 			return fault.New(fault.Conflict, "proposal is already decided")
 		}
+		if err := pastDeadline(ctx, q, id); err != nil {
+			return err
+		}
 		proposal := toProposal(row)
 		skip := func(reason string) error {
 			skipped = reason
@@ -934,9 +997,9 @@ func (s *Service) Execute(ctx context.Context, id uuid.UUID, basisFor BasisFor) 
 		if _, _, err := checkPayload(action, proposal.Payload); err != nil {
 			return skip(SkipPayloadInvalid)
 		}
-		// The action as it is now: a cost changed since, or a risk raised
-		// above the proposal's, is for a person to look at.
-		if action.CostUnits != proposal.CostUnits || mandates.RiskRank(currentRisk(action, proposal.Payload)) > mandates.RiskRank(proposal.Risk) {
+		// The action as it is now: a risk raised above the proposal's is for
+		// a person to look at.
+		if mandates.RiskRank(currentRisk(action, proposal.Payload)) > mandates.RiskRank(proposal.Risk) {
 			return skip(SkipActionChanged)
 		}
 		basis, reason, err := basisFor(ctx, tx, proposal)
@@ -964,7 +1027,7 @@ func (s *Service) Execute(ctx context.Context, id uuid.UUID, basisFor BasisFor) 
 		}
 		if _, err := events.Append(ctx, tx, events.Event{
 			Type: "proposal.executed", SubjectId: id,
-			Payload: map[string]any{"action": result.Action, "risk": result.Risk, "costUnits": result.CostUnits, "basis": basis, "payloadSha256": payloadDigest},
+			Payload: map[string]any{"action": result.Action, "risk": result.Risk, "basis": basis, "payloadSha256": payloadDigest},
 		}); err != nil {
 			return err
 		}
@@ -977,6 +1040,49 @@ func (s *Service) Execute(ctx context.Context, id uuid.UUID, basisFor BasisFor) 
 		return Proposal{}, "", fault.FromDb(err)
 	}
 	return result, skipped, nil
+}
+
+// ExpireDue decides as expired every waiting proposal of the tenant in
+// scope whose deadline has passed, one transaction each, and returns how
+// many it expired. Only the system may. A proposal that another
+// transaction holds, such as a person deciding it at that moment, is left
+// for the next sweep; the database decides which of the two comes first.
+func (s *Service) ExpireDue(ctx context.Context) (int, error) {
+	a, ok := actor.From(ctx)
+	if !ok || a.Kind != actor.System {
+		return 0, fault.New(fault.PermissionDenied, "only the system expires proposals")
+	}
+	expired := 0
+	for {
+		done := false
+		err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+			q := repo.New(tx)
+			ids, err := q.ListDueForExpiry(ctx, 1)
+			if err != nil || len(ids) == 0 {
+				done = true
+				return err
+			}
+			row, err := q.GetProposal(ctx, ids[0])
+			if err != nil {
+				return err
+			}
+			if _, err := q.ExpireProposal(ctx, ids[0]); err != nil {
+				return err
+			}
+			_, err = events.Append(ctx, tx, events.Event{
+				Type: "proposal.expired", SubjectId: ids[0],
+				Payload: map[string]any{"action": row.Action, "expiresAt": row.ExpiresAt.UTC().Format(time.RFC3339)},
+			})
+			return err
+		})
+		if err != nil {
+			return expired, fault.FromDb(err)
+		}
+		if done {
+			return expired, nil
+		}
+		expired++
+	}
 }
 
 // RecordSkip writes a skip reason to the chain outside an execution, for
@@ -1152,9 +1258,10 @@ func stringsOf(value any) []string {
 func toProposal(row repo.MandateProposal) Proposal {
 	result := Proposal{
 		Id: row.Id, AgentId: row.AgentId, RunId: deref(row.RunId), Action: row.Action, Risk: row.Risk, Title: row.Title,
-		Payload: json.RawMessage(row.Payload), ProposedPayload: json.RawMessage(row.ProposedPayload), CostUnits: row.CostUnits, Flags: slices.Clone(row.Flags),
+		Payload: json.RawMessage(row.Payload), ProposedPayload: json.RawMessage(row.ProposedPayload), Flags: slices.Clone(row.Flags),
 		IdempotencyKey: row.IdempotencyKey, Status: row.Status, Edited: row.Edited, DecidedBy: row.DecidedBy,
 		DecisionNote: deref(row.DecisionNote), CreatedAt: row.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		ExpiresAt: row.ExpiresAt, DeliverWithin: intervalDuration(row.DeliverWithin),
 	}
 	if result.Flags == nil {
 		result.Flags = []string{}
@@ -1180,6 +1287,24 @@ func toProposal(row repo.MandateProposal) Proposal {
 		}
 	}
 	return result
+}
+
+// pastDeadline refuses, with a readable error, a change to a proposal whose
+// deadline has passed by the database's clock. The trigger refuses it too.
+func pastDeadline(ctx context.Context, q *repo.Queries, id uuid.UUID) error {
+	past, err := q.PastDeadline(ctx, id)
+	if err != nil {
+		return err
+	}
+	if past {
+		return fault.New(fault.Conflict, "the proposal has expired: nobody decided it in time, and nothing was done")
+	}
+	return nil
+}
+
+// intervalDuration reads an interval the schema bounds to days and less.
+func intervalDuration(i pgtype.Interval) time.Duration {
+	return time.Duration(i.Microseconds)*time.Microsecond + time.Duration(i.Days)*24*time.Hour + time.Duration(i.Months)*30*24*time.Hour
 }
 
 func deref(value *string) string {

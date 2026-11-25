@@ -121,17 +121,16 @@ func (w *World) record(_ context.Context, _ pgx.Tx, p pgmandate.Proposal) error 
 var ErrApplyFailed = errors.New("the action failed on purpose")
 
 // The synthetic actions: one per risk, one the host never executes, one
-// that fails, one that costs nothing.
+// that fails, one that refuses.
 func (w *World) actions() []pgmandate.Action {
 	return []pgmandate.Action{
-		{Key: "test.low", Description: "low risk", Risk: pgmandate.RiskLow, CostUnits: 1, MayExecute: true, Apply: w.record},
-		{Key: "test.medium", Description: "medium risk", Risk: pgmandate.RiskMedium, CostUnits: 1, MayExecute: true, Apply: w.record},
-		{Key: "test.high", Description: "high risk", Risk: pgmandate.RiskHigh, CostUnits: 5, MayExecute: true, Apply: w.record},
-		{Key: "test.manual", Description: "never without a person", Risk: pgmandate.RiskLow, CostUnits: 1, MayExecute: false, Apply: w.record},
-		{Key: "test.free", Description: "costs nothing", Risk: pgmandate.RiskLow, CostUnits: 0, MayExecute: true, Apply: w.record},
-		{Key: "test.failing", Description: "fails to apply", Risk: pgmandate.RiskLow, CostUnits: 1, MayExecute: true,
+		{Key: "test.low", Description: "low risk", Risk: pgmandate.RiskLow, MayExecute: true, Apply: w.record},
+		{Key: "test.medium", Description: "medium risk", Risk: pgmandate.RiskMedium, MayExecute: true, Apply: w.record},
+		{Key: "test.high", Description: "high risk", Risk: pgmandate.RiskHigh, MayExecute: true, Apply: w.record},
+		{Key: "test.manual", Description: "never without a person", Risk: pgmandate.RiskLow, MayExecute: false, Apply: w.record},
+		{Key: "test.failing", Description: "fails to apply", Risk: pgmandate.RiskLow, MayExecute: true,
 			Apply: func(context.Context, pgx.Tx, pgmandate.Proposal) error { return ErrApplyFailed }},
-		{Key: "test.refusing", Description: "refuses with a coded error", Risk: pgmandate.RiskLow, CostUnits: 1, MayExecute: true,
+		{Key: "test.refusing", Description: "refuses with a coded error", Risk: pgmandate.RiskLow, MayExecute: true,
 			Apply: func(context.Context, pgx.Tx, pgmandate.Proposal) error {
 				return fault.New(fault.NotFound, "no such row")
 			}},

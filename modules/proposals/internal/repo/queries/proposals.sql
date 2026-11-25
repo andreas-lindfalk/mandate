@@ -1,7 +1,7 @@
 -- name: InsertProposal :one
-INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash,
+INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, flags, idempotency_key, request_hash,
     rationale, evidence, provenance)
-VALUES (@id, @tenant_id, @agent_id, @action, @risk, @title, @payload, @cost_units, @flags::text[], @idempotency_key, @request_hash,
+VALUES (@id, @tenant_id, @agent_id, @action, @risk, @title, @payload, @flags::text[], @idempotency_key, @request_hash,
     @rationale::text, @evidence::jsonb, @provenance::jsonb)
 ON CONFLICT (tenant_id, agent_id, idempotency_key) DO NOTHING
 RETURNING id;
@@ -28,7 +28,8 @@ SELECT count(*) FROM mandate.proposals
 WHERE (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text);
 
 -- name: ListDecided :many
-SELECT * FROM mandate.proposals WHERE status <> 'pending' ORDER BY decided_at, id;
+-- What people and mandates decided: not what was withdrawn or expired.
+SELECT * FROM mandate.proposals WHERE status IN ('approved', 'rejected', 'executed') ORDER BY decided_at, id;
 
 -- name: DecideProposal :exec
 UPDATE mandate.proposals
@@ -51,3 +52,19 @@ WHERE type = 'proposal.approved' AND actor_id = @actor_id AND created_at > now()
 
 -- name: WithdrawProposal :execrows
 UPDATE mandate.proposals SET status = 'withdrawn', decision_note = sqlc.narg('note') WHERE id = @id AND status = 'pending';
+
+-- name: ListDueForExpiry :many
+-- Waiting proposals past their deadline, locked for the sweep; a row another
+-- transaction holds is left for the next sweep.
+SELECT id FROM mandate.proposals WHERE status = 'pending' AND expires_at <= now()
+ORDER BY expires_at, id
+LIMIT @max_rows
+FOR UPDATE SKIP LOCKED;
+
+-- name: ExpireProposal :execrows
+UPDATE mandate.proposals SET status = 'expired' WHERE id = @id AND status = 'pending';
+
+-- name: PastDeadline :one
+-- Whether a proposal's deadline has passed by the database's clock, the
+-- same now() the update trigger compares with.
+SELECT (now() >= expires_at)::boolean FROM mandate.proposals WHERE id = @id;

@@ -11,7 +11,7 @@ import { Select } from "@/components/ui/select";
 import type { Mandate } from "@/gen/mandate/v1/mandates_pb";
 import { api } from "@/lib/api";
 import { errorText } from "@/lib/errors";
-import { formatDate, riskLabel, riskTone, shortId, units } from "@/lib/format";
+import { durationLabel, executions, formatDate, riskLabel, riskTone, shortId } from "@/lib/format";
 import { useSession } from "@/lib/session";
 
 /** Whether a mandate pattern covers an action key: the server's rule. */
@@ -75,7 +75,7 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
         agentId: agentId === "*" ? "" : agentId,
         actions: patterns,
         maxRisk,
-        budgetUnits: BigInt(Number(budget) || 0),
+        budgetCount: BigInt(Number(budget) || 0),
         policyRef: policy,
         days: Number(days),
         department,
@@ -143,7 +143,7 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
                         />
                         <span className="font-mono text-[12.5px]">{a.key}</span>
                         <Badge tone={riskTone[a.risk] ?? "neutral"}>{riskLabel[a.risk]}</Badge>
-                        <span className="text-muted">{never ? "always waits for a person" : `costs ${units(a.costUnits)}`}</span>
+                        <span className="text-muted">{never ? "always waits for a person" : `waits up to ${durationLabel(a.waitSeconds)} for a person otherwise`}</span>
                       </label>
                     </li>
                   );
@@ -176,7 +176,7 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
                 ]}
               />
             </Field>
-            <Field label="Budget, units per month" htmlFor="budget" hint="A proposal whose cost would take this month's spend past this waits for a person.">
+            <Field label="Budget, executions per month" htmlFor="budget" hint="Once this many have run this month, further proposals wait for a person.">
               <Input id="budget" type="number" min={1} value={budget} onChange={(e) => setBudget(e.target.value)} />
             </Field>
           </div>
@@ -227,7 +227,7 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
               <p>
                 <span className="font-medium">{agentName}</span> will have{" "}
                 {effective.length ? effective.map((a) => a.key).join(", ") : "nothing that is defined today"} carried out{" "}
-                <span className="font-medium">without anyone looking</span>, up to {maxRisk} risk and {budget || 0} units a month, for {days} days
+                <span className="font-medium">without anyone looking</span>, up to {maxRisk} risk and {executions(Number(budget) || 0)} a month, for {days} days
                 {policy.trim() ? `, under ${policy.trim()}` : ""}
                 {condition.trim() ? (
                   <>
@@ -238,7 +238,7 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
                     , <span className="font-medium">whatever the payload says</span>: no condition limits an amount or any other field
                   </>
                 )}
-                . A unit is the action's cost as defined, not money.
+                . The budget counts executions, not money.
               </p>
               {patterns.includes("*") ? <p className="mt-1">The pattern * also covers every action defined later.</p> : null}
               {covered.length > effective.length ? (
@@ -275,8 +275,8 @@ function MandateRow({ mandate, agentName, canRevoke, onChanged }: { mandate: Man
     },
     onError: (error) => toast.error("Could not revoke", { description: errorText(error) }),
   });
-  const spent = Number(mandate.spentUnits);
-  const budget = Number(mandate.budgetUnits);
+  const spent = Number(mandate.spentCount);
+  const budget = Number(mandate.budgetCount);
   const share = budget ? Math.min(100, Math.round((spent / budget) * 100)) : 0;
   // The clock is read once per mount: a mandate that expires while the page is open shows on the next refresh.
   const [now] = React.useState(() => new Date());
@@ -323,7 +323,7 @@ function MandateRow({ mandate, agentName, canRevoke, onChanged }: { mandate: Man
           <div className={share >= 100 ? "h-full bg-danger" : share >= 80 ? "h-full bg-warning" : "h-full bg-success"} style={{ width: `${share}%` }} />
         </div>
         <span className="font-mono text-[12px] text-muted">
-          {spent} / {budget} units this month
+          {spent} / {executions(budget)} this month
         </span>
       </div>
     </li>

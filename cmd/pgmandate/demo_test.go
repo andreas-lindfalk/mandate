@@ -112,7 +112,7 @@ func TestDemoAndCommandLine(t *testing.T) {
 	out.Reset()
 	require.NoError(t, run(ctx, "grant", []string{"-tenant", tenantId, "-as", "cli@test.example", "-agent", agentId, "-actions", "tickets.*", "-max-risk", "low", "-budget", "5", "-policy", "CLI-POLICY",
 		"-condition", `action == "tickets.create"`}, &out))
-	require.Contains(t, out.String(), "0 of 5 units")
+	require.Contains(t, out.String(), "0 of 5 executions")
 	require.Contains(t, out.String(), `when action == "tickets.create"`)
 	require.Error(t, run(ctx, "grant", []string{"-tenant", tenantId, "-as", "cli@test.example", "-actions", "*", "-max-risk", "high", "-budget", "5", "-policy", "P"}, &out))
 
@@ -128,7 +128,7 @@ func TestDemoAndCommandLine(t *testing.T) {
 	require.Contains(t, out.String(), "mandate.granted")
 
 	out.Reset()
-	require.NoError(t, run(ctx, "action", []string{"define", "-tenant", tenantId, "-as", "cli@test.example", "-key", "tickets.create", "-risk", "low", "-cost", "1", "-may-execute", "-url", "https://helpdesk.example/hooks", "-schema", `{"type":"object"}`}, &out))
+	require.NoError(t, run(ctx, "action", []string{"define", "-tenant", tenantId, "-as", "cli@test.example", "-key", "tickets.create", "-risk", "low", "-may-execute", "-url", "https://helpdesk.example/hooks", "-schema", `{"type":"object"}`}, &out))
 	require.Contains(t, out.String(), "secret mws_")
 	out.Reset()
 	require.NoError(t, run(ctx, "actions", []string{"-tenant", tenantId}, &out))
@@ -182,7 +182,7 @@ func TestDemoAndCommandLine(t *testing.T) {
 	require.Contains(t, out.String(), "approved")
 	require.Contains(t, out.String(), "delivery pending")
 	var queued int
-	require.NoError(t, pg.Owner.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'mandate.deliver' AND state = 'available'`).Scan(&queued))
+	require.NoError(t, pg.Owner.QueryRow(ctx, `SELECT count(*) FROM mandate_river.river_job WHERE kind = 'mandate.deliver' AND state = 'available'`).Scan(&queued))
 	require.Equal(t, 1, queued, "the delivery job waits for a server")
 
 	require.Error(t, run(ctx, "nonsense", nil, &out))

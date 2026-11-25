@@ -58,7 +58,7 @@ func (s *DeliveriesSuite) defineWebhook(t testfix.Tenant, mayExecute bool) host 
 	server := httptest.NewServer(receiver)
 	s.T().Cleanup(server.Close)
 	_, secret, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
-		Key: "tickets.create", Description: "Open a ticket", Risk: mandates.RiskLow, CostUnits: 1, MayExecute: mayExecute,
+		Key: "tickets.create", Description: "Open a ticket", Risk: mandates.RiskLow, MayExecute: mayExecute,
 		Schema:    json.RawMessage(`{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`),
 		Connector: actions.ConnectorWebhook, Url: server.URL + "/hooks",
 	})
@@ -178,7 +178,7 @@ func (s *DeliveriesSuite) Test_TheBodyIsThePublishedContract() {
 	server := httptest.NewServer(recorded)
 	defer server.Close()
 	_, _, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
-		Key: "tickets.create", Risk: mandates.RiskLow, CostUnits: 2, MayExecute: true, Connector: actions.ConnectorWebhook, Url: server.URL,
+		Key: "tickets.create", Risk: mandates.RiskLow, MayExecute: true, Connector: actions.ConnectorWebhook, Url: server.URL,
 		Schema: json.RawMessage(`{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`),
 	})
 	s.Require().NoError(err)
@@ -196,7 +196,7 @@ func (s *DeliveriesSuite) Test_TheBodyIsThePublishedContract() {
 	_, err = s.W.Kernel.Proposals.Approve(t.Reviewer, approved.Id, proposals.Decision{Note: "ok"})
 	s.Require().NoError(err)
 	// An execution under a mandate, in a run the agent named.
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 5, PolicyRef: "P-1", Days: 30, Condition: `payload.subject != ""`})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P-1", Days: 30, Condition: `payload.subject != ""`})
 	s.Require().NoError(err)
 	inRun, _, err := s.W.Kernel.Proposals.Propose(actor.WithRun(t.Agent, "run-42"), proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: "Toner", Payload: json.RawMessage(`{"subject":"Toner"}`)})
 	s.Require().NoError(err)
@@ -310,7 +310,7 @@ func (s *DeliveriesSuite) postSigned(url, secret, body string) int {
 func (s *DeliveriesSuite) Test_AnExecutionIsDeliveredWithItsBasis() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	h := s.defineWebhook(t, true)
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 5, PolicyRef: "P", Days: 30})
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	p := s.propose(t, "Keyboard missing")
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, p.Id))
@@ -597,7 +597,7 @@ func (s *DeliveriesSuite) Test_WaitingDeliveriesMoveWithTheirAction() {
 	movedServer := httptest.NewServer(moved)
 	defer movedServer.Close()
 	_, secret, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
-		Key: "tickets.create", Description: "Open a ticket", Risk: mandates.RiskLow, CostUnits: 1,
+		Key: "tickets.create", Description: "Open a ticket", Risk: mandates.RiskLow,
 		Schema:    json.RawMessage(`{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`),
 		Connector: actions.ConnectorWebhook, Url: movedServer.URL + "/hooks",
 	})
@@ -684,6 +684,6 @@ func (s *DeliveriesSuite) Test_SendingAgainIsNeverDroppedAsADuplicate() {
 	_, err = service.Redeliver(t.Owner, p.Id)
 	s.Require().NoError(err)
 	var count int
-	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(), `SELECT count(*) FROM river_job WHERE args->>'deliveryId' = $1`, delivery.Id.String()).Scan(&count))
+	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(), `SELECT count(*) FROM mandate_river.river_job WHERE args->>'deliveryId' = $1`, delivery.Id.String()).Scan(&count))
 	s.Require().Equal(2, count, "the resend has its own job")
 }

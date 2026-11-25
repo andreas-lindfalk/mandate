@@ -2,7 +2,8 @@
 // standing permission, decides.
 //
 // Owners define actions as data: what an agent may propose, with a schema,
-// a risk, a cost and a connector, usually a signed webhook. People grant
+// a risk, how long a proposal for it may wait, and a connector, usually a
+// signed webhook. People grant
 // mandates: which agent's proposals for which actions may be carried out
 // without them, up to which risk, within which monthly budget, under which
 // policy reference and until when. Everything else waits for a person. A
@@ -130,6 +131,10 @@ func New(pool *pgxpool.Pool, opts Options) *Kernel {
 	}
 	if opts.Queue != nil {
 		river.AddWorker(opts.Queue.Workers(), &executeWorker{kernel: k})
+		river.AddWorker(opts.Queue.Workers(), &sweepWorker{kernel: k})
+		river.AddWorker(opts.Queue.Workers(), &sweepTenantWorker{kernel: k})
+		opts.Queue.AddPeriodic(river.NewPeriodicJob(river.PeriodicInterval(SweepInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return SweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}))
 		k.Proposals.SetAfterStore(k.enqueueExecution)
 	}
 	return k
@@ -140,17 +145,19 @@ func New(pool *pgxpool.Pool, opts Options) *Kernel {
 // the risk one of low, medium or high, and Apply set. The schema, when
 // given, is compiled and payloads are validated against it. A tenant's own
 // definition of the same key (connector builtin) overrides the description,
-// risk, cost, schema and whether it may execute, and keeps the code.
+// risk, waiting time, schema and whether it may execute, and keeps the code.
 func (k *Kernel) Register(action Action) error {
 	switch {
 	case !mandates.ValidKey(action.Key):
 		return fmt.Errorf("action key %q: use dotted lower case such as tickets.create", action.Key)
 	case mandates.RiskRank(action.Risk) < 0:
 		return fmt.Errorf("action %s: risk must be low, medium or high", action.Key)
-	case action.CostUnits < 0:
-		return fmt.Errorf("action %s: cost must be 0 or more", action.Key)
 	case action.Apply == nil:
 		return fmt.Errorf("action %s: Apply is required", action.Key)
+	case action.WaitLimit != 0:
+		// The database gives an action that exists only as code the
+		// default waiting time; a tenant's definition can set another.
+		return fmt.Errorf("action %s: a waiting time is set by defining the action, not in code", action.Key)
 	}
 	if len(action.Schema) > 0 {
 		compiled, err := actions.Compile(action.Schema)
@@ -244,7 +251,7 @@ func (k *Kernel) resolve(key string, defined actions.Action, err error) (Action,
 // definition says so and the registry has it.
 func (k *Kernel) merge(defined actions.Action, code Action, hasCode bool) (Action, bool, error) {
 	action := Action{
-		Key: defined.Key, Description: defined.Description, Risk: defined.Risk, CostUnits: defined.CostUnits,
+		Key: defined.Key, Description: defined.Description, Risk: defined.Risk, WaitLimit: defined.WaitLimit,
 		MayExecute: defined.MayExecute, Schema: defined.Schema, Department: defined.Department,
 	}
 	if len(defined.Schema) > 0 {
@@ -335,8 +342,8 @@ func (k *Kernel) LiveMandates(ctx context.Context) ([]Mandate, error) {
 	return slices.Clip(live), nil
 }
 
-// SpentUnits, DeliveryOf and DeliveriesOf implement mcp.Host.
-func (k *Kernel) SpentUnits(ctx context.Context, mandateIds []uuid.UUID) (map[uuid.UUID]int64, error) {
+// SpentCount, DeliveryOf and DeliveriesOf implement mcp.Host.
+func (k *Kernel) SpentCount(ctx context.Context, mandateIds []uuid.UUID) (map[uuid.UUID]int64, error) {
 	return k.Mandates.SpentFor(ctx, mandateIds)
 }
 
@@ -431,4 +438,81 @@ func (k *Kernel) enqueueExecution(ctx context.Context, tx pgx.Tx, proposalId uui
 	}
 	return k.queue.InsertTx(ctx, tx, ExecuteArgs{TenantId: tenantId, ProposalId: proposalId},
 		&river.InsertOpts{UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: jobs.InFlight}})
+}
+
+// SweepInterval is how often the sweep looks for work that is due.
+const SweepInterval = time.Minute
+
+// SweepArgs is the periodic job that finds the tenants with work due, such
+// as proposals past their deadline. River runs it on its leader only.
+type SweepArgs struct{}
+
+func (SweepArgs) Kind() string { return "mandate.sweep" }
+
+type sweepWorker struct {
+	river.WorkerDefaults[SweepArgs]
+	kernel *Kernel
+}
+
+func (w *sweepWorker) Work(ctx context.Context, _ *river.Job[SweepArgs]) error {
+	tenantIds, err := w.kernel.tenantsWithDueWork(ctx)
+	if err != nil {
+		return err
+	}
+	for _, tenantId := range tenantIds {
+		// One job per tenant at a time: a tenant already being swept is
+		// not queued twice.
+		if err := w.kernel.queue.Insert(ctx, SweepTenantArgs{TenantId: tenantId},
+			&river.InsertOpts{UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: jobs.InFlight}}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SweepTenantArgs does the due work of one tenant, as the system.
+type SweepTenantArgs struct {
+	TenantId uuid.UUID `json:"tenantId"`
+}
+
+func (SweepTenantArgs) Kind() string { return "mandate.sweep_tenant" }
+
+type sweepTenantWorker struct {
+	river.WorkerDefaults[SweepTenantArgs]
+	kernel *Kernel
+}
+
+func (w *sweepTenantWorker) Work(ctx context.Context, job *river.Job[SweepTenantArgs]) error {
+	_, err := w.kernel.Proposals.ExpireDue(actor.AsSystem(ctx, job.Args.TenantId))
+	return err
+}
+
+// ExpireDue expires, in every tenant, the waiting proposals past their
+// deadline, and returns how many. The sweep does this every minute; a host
+// that runs the kernel without a queue calls it itself.
+func (k *Kernel) ExpireDue(ctx context.Context) (int, error) {
+	tenantIds, err := k.tenantsWithDueWork(ctx)
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, tenantId := range tenantIds {
+		n, err := k.Proposals.ExpireDue(actor.AsSystem(ctx, tenantId))
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
+// tenantsWithDueWork lists the tenants the sweep must visit. The database
+// function returns ids only, across tenants, for the system to scope itself
+// to each.
+func (k *Kernel) tenantsWithDueWork(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := k.pool.Query(ctx, `SELECT mandate.tenants_with_due_work()`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }

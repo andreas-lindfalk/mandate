@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file mandate/v1/mandates.proto.
  */
 export const file_mandate_v1_mandates: GenFile = /*@__PURE__*/
-  fileDesc("ChltYW5kYXRlL3YxL21hbmRhdGVzLnByb3RvEgptYW5kYXRlLnYxIukCCgdNYW5kYXRlEgoKAmlkGAEgASgJEhAKCGFnZW50X2lkGAIgASgJEg8KB2FjdGlvbnMYAyADKAkSEAoIbWF4X3Jpc2sYBCABKAkSFAoMYnVkZ2V0X3VuaXRzGAUgASgDEhMKC3NwZW50X3VuaXRzGAYgASgDEhIKCnBvbGljeV9yZWYYByABKAkSEgoKZGVwYXJ0bWVudBgIIAEoCRISCgpncmFudGVkX2J5GAkgASgJEi4KCnZhbGlkX2Zyb20YCiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi8KC3ZhbGlkX3VudGlsGAsgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgpyZXZva2VkX2F0GAwgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBISCgpyZXZva2VkX2J5GA0gASgJEhEKCWNvbmRpdGlvbhgOIAEoCSIsChNMaXN0TWFuZGF0ZXNSZXF1ZXN0EhUKDWluY2x1ZGVfZW5kZWQYASABKAgiPQoUTGlzdE1hbmRhdGVzUmVzcG9uc2USJQoIbWFuZGF0ZXMYASADKAsyEy5tYW5kYXRlLnYxLk1hbmRhdGUiqQEKE0dyYW50TWFuZGF0ZVJlcXVlc3QSEAoIYWdlbnRfaWQYASABKAkSDwoHYWN0aW9ucxgCIAMoCRIQCghtYXhfcmlzaxgDIAEoCRIUCgxidWRnZXRfdW5pdHMYBCABKAMSEgoKcG9saWN5X3JlZhgFIAEoCRIMCgRkYXlzGAYgASgFEhIKCmRlcGFydG1lbnQYByABKAkSEQoJY29uZGl0aW9uGAggASgJIjwKFEdyYW50TWFuZGF0ZVJlc3BvbnNlEiQKB21hbmRhdGUYASABKAsyEy5tYW5kYXRlLnYxLk1hbmRhdGUiIgoUUmV2b2tlTWFuZGF0ZVJlcXVlc3QSCgoCaWQYASABKAkiFwoVUmV2b2tlTWFuZGF0ZVJlc3BvbnNlMowCCg5NYW5kYXRlU2VydmljZRJRCgxMaXN0TWFuZGF0ZXMSHy5tYW5kYXRlLnYxLkxpc3RNYW5kYXRlc1JlcXVlc3QaIC5tYW5kYXRlLnYxLkxpc3RNYW5kYXRlc1Jlc3BvbnNlElEKDEdyYW50TWFuZGF0ZRIfLm1hbmRhdGUudjEuR3JhbnRNYW5kYXRlUmVxdWVzdBogLm1hbmRhdGUudjEuR3JhbnRNYW5kYXRlUmVzcG9uc2USVAoNUmV2b2tlTWFuZGF0ZRIgLm1hbmRhdGUudjEuUmV2b2tlTWFuZGF0ZVJlcXVlc3QaIS5tYW5kYXRlLnYxLlJldm9rZU1hbmRhdGVSZXNwb25zZUJDWkFnaXRodWIuY29tL2FuZHJlYXMtbGluZGZhbGsvcGdtYW5kYXRlL2dlbi9nby9tYW5kYXRlL3YxO21hbmRhdGV2MWIGcHJvdG8z", [file_google_protobuf_timestamp]);
+  fileDesc("ChltYW5kYXRlL3YxL21hbmRhdGVzLnByb3RvEgptYW5kYXRlLnYxIukCCgdNYW5kYXRlEgoKAmlkGAEgASgJEhAKCGFnZW50X2lkGAIgASgJEg8KB2FjdGlvbnMYAyADKAkSEAoIbWF4X3Jpc2sYBCABKAkSFAoMYnVkZ2V0X2NvdW50GAUgASgDEhMKC3NwZW50X2NvdW50GAYgASgDEhIKCnBvbGljeV9yZWYYByABKAkSEgoKZGVwYXJ0bWVudBgIIAEoCRISCgpncmFudGVkX2J5GAkgASgJEi4KCnZhbGlkX2Zyb20YCiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi8KC3ZhbGlkX3VudGlsGAsgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgpyZXZva2VkX2F0GAwgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBISCgpyZXZva2VkX2J5GA0gASgJEhEKCWNvbmRpdGlvbhgOIAEoCSIsChNMaXN0TWFuZGF0ZXNSZXF1ZXN0EhUKDWluY2x1ZGVfZW5kZWQYASABKAgiPQoUTGlzdE1hbmRhdGVzUmVzcG9uc2USJQoIbWFuZGF0ZXMYASADKAsyEy5tYW5kYXRlLnYxLk1hbmRhdGUiqQEKE0dyYW50TWFuZGF0ZVJlcXVlc3QSEAoIYWdlbnRfaWQYASABKAkSDwoHYWN0aW9ucxgCIAMoCRIQCghtYXhfcmlzaxgDIAEoCRIUCgxidWRnZXRfY291bnQYBCABKAMSEgoKcG9saWN5X3JlZhgFIAEoCRIMCgRkYXlzGAYgASgFEhIKCmRlcGFydG1lbnQYByABKAkSEQoJY29uZGl0aW9uGAggASgJIjwKFEdyYW50TWFuZGF0ZVJlc3BvbnNlEiQKB21hbmRhdGUYASABKAsyEy5tYW5kYXRlLnYxLk1hbmRhdGUiIgoUUmV2b2tlTWFuZGF0ZVJlcXVlc3QSCgoCaWQYASABKAkiFwoVUmV2b2tlTWFuZGF0ZVJlc3BvbnNlMowCCg5NYW5kYXRlU2VydmljZRJRCgxMaXN0TWFuZGF0ZXMSHy5tYW5kYXRlLnYxLkxpc3RNYW5kYXRlc1JlcXVlc3QaIC5tYW5kYXRlLnYxLkxpc3RNYW5kYXRlc1Jlc3BvbnNlElEKDEdyYW50TWFuZGF0ZRIfLm1hbmRhdGUudjEuR3JhbnRNYW5kYXRlUmVxdWVzdBogLm1hbmRhdGUudjEuR3JhbnRNYW5kYXRlUmVzcG9uc2USVAoNUmV2b2tlTWFuZGF0ZRIgLm1hbmRhdGUudjEuUmV2b2tlTWFuZGF0ZVJlcXVlc3QaIS5tYW5kYXRlLnYxLlJldm9rZU1hbmRhdGVSZXNwb25zZUJDWkFnaXRodWIuY29tL2FuZHJlYXMtbGluZGZhbGsvcGdtYW5kYXRlL2dlbi9nby9tYW5kYXRlL3YxO21hbmRhdGV2MWIGcHJvdG8z", [file_google_protobuf_timestamp]);
 
 /**
  * @generated from message mandate.v1.Mandate
@@ -41,16 +41,18 @@ export type Mandate = Message<"mandate.v1.Mandate"> & {
   maxRisk: string;
 
   /**
-   * @generated from field: int64 budget_units = 5;
+   * How many executions it may allow per UTC calendar month.
+   *
+   * @generated from field: int64 budget_count = 5;
    */
-  budgetUnits: bigint;
+  budgetCount: bigint;
 
   /**
-   * What this month's executions under the mandate have cost.
+   * How many it has allowed this month.
    *
-   * @generated from field: int64 spent_units = 6;
+   * @generated from field: int64 spent_count = 6;
    */
-  spentUnits: bigint;
+  spentCount: bigint;
 
   /**
    * @generated from field: string policy_ref = 7;
@@ -157,9 +159,11 @@ export type GrantMandateRequest = Message<"mandate.v1.GrantMandateRequest"> & {
   maxRisk: string;
 
   /**
-   * @generated from field: int64 budget_units = 4;
+   * How many executions it may allow per UTC calendar month.
+   *
+   * @generated from field: int64 budget_count = 4;
    */
-  budgetUnits: bigint;
+  budgetCount: bigint;
 
   /**
    * @generated from field: string policy_ref = 5;

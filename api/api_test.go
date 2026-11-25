@@ -183,7 +183,7 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	s.code(err, connect.CodeInvalidArgument)
 
 	defined, err := s.actions.DefineAction(owner, &mandatev1.DefineActionRequest{
-		Key: "tickets.create", Description: "Open a ticket", Risk: "low", CostUnits: 1, MayExecute: true,
+		Key: "tickets.create", Description: "Open a ticket", Risk: "low", MayExecute: true,
 		SchemaJson: `{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`,
 		Connector:  "webhook", ConnectorUrl: "https://helpdesk.example/hooks",
 	})
@@ -202,7 +202,7 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	s.code(err, connect.CodePermissionDenied)
 
 	granted, err := s.mandates.GrantMandate(owner, &mandatev1.GrantMandateRequest{
-		AgentId: agent.GetAgent().GetId(), Actions: []string{"tickets.*"}, MaxRisk: "low", BudgetUnits: 10, PolicyRef: "ACME-POLICY", Days: 30, Department: "Support",
+		AgentId: agent.GetAgent().GetId(), Actions: []string{"tickets.*"}, MaxRisk: "low", BudgetCount: 10, PolicyRef: "ACME-POLICY", Days: 30, Department: "Support",
 	})
 	s.Require().NoError(err)
 	s.Require().Equal("Support", granted.GetMandate().GetDepartment())
@@ -210,12 +210,12 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	mandatesList, err := s.mandates.ListMandates(reviewer, &mandatev1.ListMandatesRequest{})
 	s.Require().NoError(err)
 	s.Require().Len(mandatesList.GetMandates(), 1)
-	s.Require().Zero(mandatesList.GetMandates()[0].GetSpentUnits())
-	_, err = s.mandates.GrantMandate(reviewer, &mandatev1.GrantMandateRequest{Actions: []string{"*"}, MaxRisk: "low", BudgetUnits: 1, PolicyRef: "P", Days: 1})
+	s.Require().Zero(mandatesList.GetMandates()[0].GetSpentCount())
+	_, err = s.mandates.GrantMandate(reviewer, &mandatev1.GrantMandateRequest{Actions: []string{"*"}, MaxRisk: "low", BudgetCount: 1, PolicyRef: "P", Days: 1})
 	s.code(err, connect.CodePermissionDenied)
-	_, err = s.mandates.GrantMandate(owner, &mandatev1.GrantMandateRequest{Actions: []string{"*"}, MaxRisk: "high", BudgetUnits: 1, PolicyRef: "P", Days: 1})
+	_, err = s.mandates.GrantMandate(owner, &mandatev1.GrantMandateRequest{Actions: []string{"*"}, MaxRisk: "high", BudgetCount: 1, PolicyRef: "P", Days: 1})
 	s.code(err, connect.CodeInvalidArgument)
-	_, err = s.mandates.GrantMandate(owner, &mandatev1.GrantMandateRequest{Actions: []string{"tickets.*"}, MaxRisk: "low", BudgetUnits: 1, PolicyRef: "P", Days: 1, Condition: "payload.subjct == \"x\""})
+	_, err = s.mandates.GrantMandate(owner, &mandatev1.GrantMandateRequest{Actions: []string{"tickets.*"}, MaxRisk: "low", BudgetCount: 1, PolicyRef: "P", Days: 1, Condition: "payload.subjct == \"x\""})
 	s.code(err, connect.CodeInvalidArgument)
 	s.Require().Contains(err.Error(), "payload.subjct", "the refusal names the field no schema declares")
 
@@ -244,7 +244,7 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	s.Require().Equal("low", waiting.GetProposal().GetApprovalRisk())
 	// The action is made high risk: an approval would now run at high.
 	_, err = s.actions.DefineAction(owner, &mandatev1.DefineActionRequest{
-		Key: "tickets.create", Description: "Open a ticket", Risk: "high", CostUnits: 1,
+		Key: "tickets.create", Description: "Open a ticket", Risk: "high",
 		SchemaJson: `{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`,
 		Connector:  "webhook", ConnectorUrl: "https://helpdesk.example/hooks",
 	})
@@ -254,7 +254,7 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	s.Require().Equal("low", raised.GetProposal().GetRisk(), "as proposed")
 	s.Require().Equal("high", raised.GetProposal().GetApprovalRisk(), "as an approval would run")
 	_, err = s.actions.DefineAction(owner, &mandatev1.DefineActionRequest{
-		Key: "tickets.create", Description: "Open a ticket", Risk: "low", CostUnits: 1, MayExecute: true,
+		Key: "tickets.create", Description: "Open a ticket", Risk: "low", MayExecute: true,
 		SchemaJson: `{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`,
 		Connector:  "webhook", ConnectorUrl: "https://helpdesk.example/hooks",
 	})
@@ -343,7 +343,7 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 func (s *ApiSuite) Test_AWaitingProposalSaysWhatTheConditionMissed() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	reviewer := as(s.login("reviewer-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: "low", BudgetUnits: 10, PolicyRef: "P", Days: 30, Condition: `payload.amount <= 500`})
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: "low", BudgetCount: 10, PolicyRef: "P", Days: 30, Condition: `payload.amount <= 500`})
 	s.Require().NoError(err)
 	p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Why.", IdempotencyKey: uuid.NewString(), Action: "test.low", Title: "Big", Payload: json.RawMessage(`{"amount": 750}`)})
 	s.Require().NoError(err)

@@ -24,11 +24,18 @@ message ExecutionBasis {
   string mandate_id = 1;
   string policy_ref = 2;
   string max_risk = 3;
-  int64 budget_units = 4;
-  int64 spent_units = 5;
-  int64 cost_units = 6;
+  // The mandate's budgets as the execution saw them: today one, a count.
+  repeated Budget budgets = 4;
   // The mandate's condition, which held for the payload; empty when it has none.
   string condition = 7;
+}
+
+message Budget {
+  // count: executions per UTC calendar month.
+  string kind = 1;
+  int64 limit = 2;
+  // What was spent before this execution.
+  int64 spent = 3;
 }
 
 message Delivery {
@@ -62,7 +69,8 @@ message Proposal {
   string risk = 6;
   string title = 7;
   string payload_json = 8;
-  int64 cost_units = 9;
+  // Until when it waits for a decision; past it, it expires.
+  google.protobuf.Timestamp expires_at = 9;
   repeated string flags = 10;
   string status = 11;
   bool edited = 12;

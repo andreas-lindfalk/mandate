@@ -23,7 +23,9 @@ message Action {
   string key = 2;
   string description = 3;
   string risk = 4;
-  int64 cost_units = 5;
+  // How long a proposal for it waits for a decision before it expires,
+  // in seconds.
+  int64 wait_seconds = 5;
   bool may_execute = 6;
   // The payload schema as JSON text, empty for none. A webhook action
   // always has one.
@@ -37,6 +39,9 @@ message Action {
   google.protobuf.Timestamp removed_at = 14;
   // Builtin actions registered in code and not defined by the tenant.
   bool builtin_only = 15;
+  // How long after a decision its delivery may still be carried out, in
+  // seconds.
+  int64 deliver_seconds = 16;
 }
 
 message ListActionsRequest {
@@ -51,7 +56,9 @@ message DefineActionRequest {
   string key = 1;
   string description = 2;
   string risk = 3;
-  int64 cost_units = 4;
+  // How long a proposal may wait for a decision, in seconds: 60 to 2592000
+  // (30 days). 0 means the default, 7 days.
+  int64 wait_seconds = 4;
   bool may_execute = 5;
   // Required when the connector is webhook.
   string schema_json = 6;
@@ -59,6 +66,9 @@ message DefineActionRequest {
   string connector_url = 8;
   bool rotate_secret = 9;
   string department = 10;
+  // How long after a decision its delivery may still be carried out, in
+  // seconds: 120 to 604800 (7 days). 0 means the default, 1 hour.
+  int64 deliver_seconds = 11;
 }
 
 message DefineActionResponse {

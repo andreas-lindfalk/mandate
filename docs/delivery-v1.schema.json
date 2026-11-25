@@ -76,18 +76,25 @@
         "executionBasis": {
           "description": "What allowed an execution without a person. Left out for an approval.",
           "type": "object",
-          "required": ["mandateId", "policyRef", "maxRisk", "budgetUnits", "spentUnits", "costUnits"],
+          "required": ["mandateId", "policyRef", "maxRisk", "budgets"],
           "properties": {
             "mandateId": { "type": "string", "format": "uuid" },
             "policyRef": { "type": "string" },
             "maxRisk": { "enum": ["low", "medium"] },
-            "budgetUnits": { "type": "integer", "minimum": 0 },
-            "spentUnits": {
-              "description": "Units spent under the mandate this month before this proposal.",
-              "type": "integer",
-              "minimum": 0
+            "budgets": {
+              "description": "The mandate's budgets as this execution saw them. Today one, of kind count: how many executions the mandate may allow per UTC calendar month (limit), and how many it had allowed this month before this one (spent).",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["kind", "limit", "spent"],
+                "properties": {
+                  "kind": { "enum": ["count"] },
+                  "limit": { "type": "integer", "minimum": 1 },
+                  "spent": { "type": "integer", "minimum": 0 }
+                }
+              }
             },
-            "costUnits": { "type": "integer", "minimum": 0 },
             "condition": {
               "description": "The mandate's condition on the payload, which held for it, for the record. Left out when the mandate has none. Do not evaluate it again: check the facts in the payload against your own records.",
               "type": "string",

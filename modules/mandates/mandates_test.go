@@ -31,8 +31,8 @@ func (s *MandatesSuite) grant(ctx context.Context, input mandates.Input) mandate
 	if input.Days == 0 {
 		input.Days = 30
 	}
-	if input.BudgetUnits == 0 {
-		input.BudgetUnits = 10
+	if input.BudgetCount == 0 {
+		input.BudgetCount = 10
 	}
 	if input.MaxRisk == "" {
 		input.MaxRisk = mandates.RiskLow
@@ -42,12 +42,12 @@ func (s *MandatesSuite) grant(ctx context.Context, input mandates.Input) mandate
 	return m
 }
 
-func (s *MandatesSuite) resolve(ctx context.Context, agentId uuid.UUID, action, risk string, cost int64) mandates.Resolution {
+func (s *MandatesSuite) resolve(ctx context.Context, agentId uuid.UUID, action, risk string) mandates.Resolution {
 	s.T().Helper()
 	var r mandates.Resolution
 	s.Require().NoError(db.InTx(ctx, s.W.Pg.App, func(tx pgx.Tx) error {
 		var err error
-		r, err = s.W.Kernel.Mandates.Resolve(ctx, tx, agentId, action, risk, json.RawMessage(`{}`), cost)
+		r, err = s.W.Kernel.Mandates.Resolve(ctx, tx, agentId, action, risk, json.RawMessage(`{}`))
 		return err
 	}))
 	return r
@@ -55,14 +55,14 @@ func (s *MandatesSuite) resolve(ctx context.Context, agentId uuid.UUID, action, 
 
 func (s *MandatesSuite) Test_GrantValidation() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	ok := mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30}
+	ok := mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30}
 	for name, change := range map[string]func(*mandates.Input){
 		"no actions":      func(i *mandates.Input) { i.Actions = nil },
 		"bad pattern":     func(i *mandates.Input) { i.Actions = []string{"Tickets.*"} },
 		"high risk":       func(i *mandates.Input) { i.MaxRisk = mandates.RiskHigh },
 		"unknown risk":    func(i *mandates.Input) { i.MaxRisk = "none" },
-		"zero budget":     func(i *mandates.Input) { i.BudgetUnits = 0 },
-		"negative budget": func(i *mandates.Input) { i.BudgetUnits = -1 },
+		"zero budget":     func(i *mandates.Input) { i.BudgetCount = 0 },
+		"negative budget": func(i *mandates.Input) { i.BudgetCount = -1 },
 		"no policy":       func(i *mandates.Input) { i.PolicyRef = "  " },
 		"too long":        func(i *mandates.Input) { i.Days = 367 },
 		"zero days":       func(i *mandates.Input) { i.Days = 0 },
@@ -79,10 +79,10 @@ func (s *MandatesSuite) Test_GrantValidation() {
 
 func (s *MandatesSuite) Test_OwnerGrantsAndRevokesOnce() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	m := s.grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.*", "refunds.issue"}, MaxRisk: mandates.RiskMedium, BudgetUnits: 42, PolicyRef: "ACME-AI-POLICY §4", Days: 90})
+	m := s.grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.*", "refunds.issue"}, MaxRisk: mandates.RiskMedium, BudgetCount: 42, PolicyRef: "ACME-AI-POLICY §4", Days: 90})
 	s.Require().Equal(&t.OwnerId, m.GrantedBy)
 	s.Require().Equal(&t.AgentId, m.AgentId)
-	s.Require().Equal(int64(42), m.BudgetUnits)
+	s.Require().Equal(int64(42), m.BudgetCount)
 	s.Require().WithinDuration(time.Now().AddDate(0, 0, 90), m.ValidUntil, time.Minute)
 	s.Require().Equal([]string{"mandate.granted"}, s.eventTypes(t.Owner, m.Id))
 
@@ -109,7 +109,7 @@ func (s *MandatesSuite) Test_OwnerGrantsAndRevokesOnce() {
 
 func (s *MandatesSuite) Test_OnlyOwners() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	input := mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 1, PolicyRef: "P", Days: 1}
+	input := mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 1, PolicyRef: "P", Days: 1}
 	_, err := s.W.Kernel.Mandates.Grant(t.Reviewer, input)
 	s.code(err, fault.PermissionDenied)
 	_, err = s.W.Kernel.Mandates.Grant(t.Agent, input)
@@ -123,7 +123,7 @@ func (s *MandatesSuite) Test_OnlyOwners() {
 
 func (s *MandatesSuite) Test_DatabaseRefusesWhatGoRefuses() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	insert := `INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, valid_until)
+	insert := `INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, valid_until)
 		VALUES (gen_random_uuid(), $1, NULL, $2, $3, $4, $5, now() + ($6 || ' days')::interval)`
 	s.invalid(t.Owner, insert, t.Id, []string{"*"}, "high", 10, "P", "30")
 	s.invalid(t.Owner, insert, t.Id, []string{"Tickets.create"}, "low", 10, "P", "30")
@@ -138,7 +138,7 @@ func (s *MandatesSuite) Test_DatabaseRefusesWhatGoRefuses() {
 	s.refused(t.Owner, `UPDATE mandate.mandates SET actions = '{*}' WHERE id = $1`, m.Id)
 	s.refused(t.Owner, `UPDATE mandate.mandates SET max_risk = 'medium' WHERE id = $1`, m.Id)
 	s.refused(t.Owner, `UPDATE mandate.mandates SET valid_until = now() + interval '10 years' WHERE id = $1`, m.Id)
-	s.refused(t.Owner, `UPDATE mandate.mandates SET budget_units = 1000000 WHERE id = $1`, m.Id)
+	s.refused(t.Owner, `UPDATE mandate.mandates SET budget_count = 1000000 WHERE id = $1`, m.Id)
 	s.refused(t.Owner, `DELETE FROM mandate.mandates WHERE id = $1`, m.Id)
 	s.refused(t.Reviewer, `UPDATE mandate.mandates SET revoked_at = now() WHERE id = $1`, m.Id)
 	s.Require().NoError(s.exec(t.Owner, `UPDATE mandate.mandates SET revoked_at = now() WHERE id = $1`, m.Id))
@@ -151,53 +151,50 @@ func (s *MandatesSuite) Test_DatabaseRefusesWhatGoRefuses() {
 
 func (s *MandatesSuite) Test_ResolveFindsTheMandateThatAllowsIt() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow, 1).Reason)
+	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow).Reason)
 
 	other, err := s.W.Kernel.Agents.Create(t.Owner, "other-bot", "")
 	s.Require().NoError(err)
 	s.grant(t.Owner, mandates.Input{AgentId: &other.Id, Actions: []string{"*"}, MaxRisk: mandates.RiskMedium})
-	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow, 1).Reason, "another agent's mandate does not cover me")
+	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow).Reason, "another agent's mandate does not cover me")
 
-	low := s.grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 3})
-	r := s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow, 1)
+	low := s.grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 3})
+	r := s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow)
 	s.Require().Empty(r.Reason)
 	s.Require().Equal(low.Id, r.Mandate.Id)
-	s.Require().Zero(r.SpentUnits)
-	s.Require().Equal(mandates.SkipRiskAbove, s.resolve(t.System, t.AgentId, "test.medium", mandates.RiskMedium, 1).Reason)
-	s.Require().Equal(mandates.SkipRiskAbove, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskHigh, 1).Reason)
-	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "tickets.create", mandates.RiskLow, 1).Reason)
-	s.Require().Equal(mandates.SkipBudgetSpent, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow, 4).Reason, "the cost must fit")
+	s.Require().Zero(r.Spent)
+	s.Require().Equal(mandates.SkipRiskAbove, s.resolve(t.System, t.AgentId, "test.medium", mandates.RiskMedium).Reason)
+	s.Require().Equal(mandates.SkipRiskAbove, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskHigh).Reason)
+	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "tickets.create", mandates.RiskLow).Reason)
 
 	medium := s.grant(t.Owner, mandates.Input{Actions: []string{"test.low"}, MaxRisk: mandates.RiskMedium})
-	r = s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow, 1)
+	r = s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow)
 	s.Require().Equal(medium.Id, r.Mandate.Id, "the most permissive mandate with room is chosen")
-	r = s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow, 5)
-	s.Require().Equal(medium.Id, r.Mandate.Id, "the low one has no room for 5; the medium one has")
 }
 
 func (s *MandatesSuite) Test_ValidityAndRevocation() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	m := s.grant(t.Owner, mandates.Input{Actions: []string{"*"}, Days: 10})
-	s.Require().Empty(s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow, 1).Reason)
+	s.Require().Empty(s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow).Reason)
 
 	s.W.SetNow(time.Now().AddDate(0, 0, 11))
-	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow, 1).Reason, "expired")
+	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow).Reason, "expired")
 	live, err := s.W.Kernel.Mandates.List(t.Owner, false)
 	s.Require().NoError(err)
 	s.Require().Len(live, 1, "the list is the database's clock; the mandate is still in its window there")
 	s.W.SetNow(time.Time{})
 
 	s.Require().NoError(s.W.Kernel.Mandates.Revoke(t.Owner, m.Id))
-	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow, 1).Reason, "revoked")
+	s.Require().Equal(mandates.SkipNoMandate, s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow).Reason, "revoked")
 }
 
 func (s *MandatesSuite) Test_GrantNamesAnAgentOfTheTenant() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	unknown := uuid.New()
-	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &unknown, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 1, PolicyRef: "P", Days: 1})
+	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &unknown, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 1, PolicyRef: "P", Days: 1})
 	s.code(err, fault.NotFound)
 	s.Require().NoError(s.W.Kernel.Agents.Revoke(t.Owner, t.AgentId))
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 1, PolicyRef: "P", Days: 1})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 1, PolicyRef: "P", Days: 1})
 	s.code(err, fault.InvalidArgument)
 }
 
@@ -217,9 +214,9 @@ func (s *MandatesSuite) Test_AnotherTenantSeesNoMandates() {
 	a := s.W.NewTenant(s.T(), "A")
 	b := s.W.NewTenant(s.T(), "B")
 	m := s.grant(a.Owner, mandates.Input{Actions: []string{"*"}})
-	_, err := s.W.Kernel.Mandates.Grant(b.Owner, mandates.Input{AgentId: &a.AgentId, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 1, PolicyRef: "P", Days: 1})
+	_, err := s.W.Kernel.Mandates.Grant(b.Owner, mandates.Input{AgentId: &a.AgentId, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 1, PolicyRef: "P", Days: 1})
 	s.code(err, fault.NotFound)
-	s.invalid(b.Owner, `INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, valid_until)
+	s.invalid(b.Owner, `INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, valid_until)
 		VALUES (gen_random_uuid(), $1, $2, '{*}', 'low', 1, 'P', now() + interval '1 day')`, b.Id, a.AgentId)
 	list, err := s.W.Kernel.Mandates.List(b.Owner, true)
 	s.Require().NoError(err)
@@ -227,7 +224,7 @@ func (s *MandatesSuite) Test_AnotherTenantSeesNoMandates() {
 	_, err = s.W.Kernel.Mandates.Get(b.Owner, m.Id)
 	s.code(err, fault.NotFound)
 	s.code(s.W.Kernel.Mandates.Revoke(b.Owner, m.Id), fault.NotFound)
-	s.Require().Equal(mandates.SkipNoMandate, s.resolve(b.System, a.AgentId, "test.low", mandates.RiskLow, 1).Reason)
-	s.refused(b.Owner, `INSERT INTO mandate.mandates (id, tenant_id, actions, max_risk, budget_units, policy_ref, valid_until)
+	s.Require().Equal(mandates.SkipNoMandate, s.resolve(b.System, a.AgentId, "test.low", mandates.RiskLow).Reason)
+	s.refused(b.Owner, `INSERT INTO mandate.mandates (id, tenant_id, actions, max_risk, budget_count, policy_ref, valid_until)
 		VALUES (gen_random_uuid(), $1, '{*}', 'low', 1, 'P', now() + interval '1 day')`, a.Id)
 }

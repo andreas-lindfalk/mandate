@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -52,11 +53,11 @@ func (s *KernelSuite) Test_RegisterValidatesActions() {
 	k := pgmandate.New(s.W.Pg.App, pgmandate.Options{})
 	apply := func(context.Context, pgx.Tx, pgmandate.Proposal) error { return nil }
 	for name, action := range map[string]pgmandate.Action{
-		"bad key":       {Key: "Tickets.Create", Risk: pgmandate.RiskLow, Apply: apply},
-		"bad risk":      {Key: "a.b", Risk: "severe", Apply: apply},
-		"negative cost": {Key: "a.b", Risk: pgmandate.RiskLow, CostUnits: -1, Apply: apply},
-		"no apply":      {Key: "a.b", Risk: pgmandate.RiskLow},
-		"bad schema":    {Key: "a.b", Risk: pgmandate.RiskLow, Apply: apply, Schema: json.RawMessage(`{"type":`)},
+		"bad key":        {Key: "Tickets.Create", Risk: pgmandate.RiskLow, Apply: apply},
+		"bad risk":       {Key: "a.b", Risk: "severe", Apply: apply},
+		"no apply":       {Key: "a.b", Risk: pgmandate.RiskLow},
+		"a waiting time": {Key: "a.b", Risk: pgmandate.RiskLow, Apply: apply, WaitLimit: time.Hour},
+		"bad schema":     {Key: "a.b", Risk: pgmandate.RiskLow, Apply: apply, Schema: json.RawMessage(`{"type":`)},
 	} {
 		s.Require().Error(k.Register(action), name)
 	}
@@ -74,7 +75,7 @@ func (s *KernelSuite) Test_RegisterValidatesActions() {
 
 func (s *KernelSuite) Test_TheChainExecutesWithinTheMandate() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 2, PolicyRef: "ACME-POLICY v1", Days: 30})
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 2, PolicyRef: "ACME-POLICY v1", Days: 30})
 	s.Require().NoError(err)
 
 	first := s.propose(t.Agent, "test.low", map[string]any{"n": 1})
@@ -83,7 +84,8 @@ func (s *KernelSuite) Test_TheChainExecutesWithinTheMandate() {
 	s.Require().Empty(reason)
 	executed, err := s.W.Kernel.Proposals.Get(t.Owner, first.Id)
 	s.Require().NoError(err)
-	s.Require().Equal(&proposals.ExecutionBasis{MandateId: m.Id, PolicyRef: "ACME-POLICY v1", MaxRisk: mandates.RiskLow, BudgetUnits: 2, SpentUnits: 0, CostUnits: 1}, executed.ExecutionBasis)
+	s.Require().Equal(&proposals.ExecutionBasis{MandateId: m.Id, PolicyRef: "ACME-POLICY v1", MaxRisk: mandates.RiskLow,
+		Budgets: []proposals.Budget{{Kind: proposals.BudgetCount, Limit: 2, Spent: 0}}}, executed.ExecutionBasis)
 	s.Require().Contains(s.W.Applied(), first.Id)
 
 	second := s.propose(t.Agent, "test.low", map[string]any{"n": 2})
@@ -91,16 +93,12 @@ func (s *KernelSuite) Test_TheChainExecutesWithinTheMandate() {
 	s.Require().Equal(proposals.StatusExecuted, status)
 	executed, err = s.W.Kernel.Proposals.Get(t.Owner, second.Id)
 	s.Require().NoError(err)
-	s.Require().Equal(int64(1), executed.ExecutionBasis.SpentUnits)
+	s.Require().Equal([]proposals.Budget{{Kind: proposals.BudgetCount, Limit: 2, Spent: 1}}, executed.ExecutionBasis.Budgets)
 
 	third := s.propose(t.Agent, "test.low", map[string]any{"n": 3})
 	status, reason = s.execute(t, third)
 	s.Require().Equal(proposals.StatusPending, status)
 	s.Require().Equal(pgmandate.SkipBudgetSpent, reason)
-
-	free := s.propose(t.Agent, "test.free", map[string]any{})
-	status, _ = s.execute(t, free)
-	s.Require().Equal(proposals.StatusExecuted, status, "a free action fits a spent budget")
 
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, third.Id))
 	s.Require().Equal([]string{"proposal.created", "proposal.execution_skipped", "proposal.execution_skipped"}, s.eventTypes(t.Owner, third.Id), "a rerun says so again")
@@ -120,7 +118,7 @@ func (s *KernelSuite) Test_TheChainExecutesWithinTheMandate() {
 func (s *KernelSuite) Test_TheChainFollowsTheCondition() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{
-		AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "Refunds v2", Days: 30,
+		AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "Refunds v2", Days: 30,
 		Condition: `payload.amount <= 500 && payload.currency in ["EUR", "SEK"]`,
 	})
 	s.Require().NoError(err)
@@ -132,7 +130,8 @@ func (s *KernelSuite) Test_TheChainFollowsTheCondition() {
 	executed, err := s.W.Kernel.Proposals.Get(t.Owner, small.Id)
 	s.Require().NoError(err)
 	s.Require().Equal(&proposals.ExecutionBasis{
-		MandateId: m.Id, PolicyRef: "Refunds v2", MaxRisk: mandates.RiskLow, BudgetUnits: 10, SpentUnits: 0, CostUnits: 1, Condition: m.Condition,
+		MandateId: m.Id, PolicyRef: "Refunds v2", MaxRisk: mandates.RiskLow,
+		Budgets: []proposals.Budget{{Kind: proposals.BudgetCount, Limit: 10, Spent: 0}}, Condition: m.Condition,
 	}, executed.ExecutionBasis)
 
 	for _, payload := range []map[string]any{
@@ -156,7 +155,7 @@ func (s *KernelSuite) Test_TheChainLeavesTheRestForAPerson() {
 	s.Require().Equal(proposals.StatusPending, status)
 	s.Require().Equal(pgmandate.SkipNoMandate, reason)
 
-	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 100, PolicyRef: "P", Days: 30})
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 100, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	for _, c := range []struct {
 		action  string
@@ -189,7 +188,7 @@ func (s *KernelSuite) Test_TheChainLeavesTheRestForAPerson() {
 	s.Require().Equal(proposals.StatusPending, status)
 	s.Require().Equal(pgmandate.SkipNoMandate, reason)
 
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 100, PolicyRef: "P", Days: 30})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 100, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	s.Require().NoError(s.W.Kernel.Agents.Revoke(t.Owner, t.AgentId))
 	status, reason = s.execute(t, revoked)
@@ -199,7 +198,7 @@ func (s *KernelSuite) Test_TheChainLeavesTheRestForAPerson() {
 
 func (s *KernelSuite) Test_ActionFailuresAreRecorded() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 100, PolicyRef: "P", Days: 30})
+	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 100, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 
 	refusing := s.propose(t.Agent, "test.refusing", map[string]any{})
@@ -240,11 +239,11 @@ func (s *KernelSuite) Test_LiveMandatesAreTheAgentsOwn() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "")
 	s.Require().NoError(err)
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &other.Id, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 1, PolicyRef: "P", Days: 1})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &other.Id, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 1, PolicyRef: "P", Days: 1})
 	s.Require().NoError(err)
-	mine, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 1, PolicyRef: "P", Days: 1})
+	mine, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 1, PolicyRef: "P", Days: 1})
 	s.Require().NoError(err)
-	all, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 1, PolicyRef: "P", Days: 1})
+	all, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"*"}, MaxRisk: mandates.RiskLow, BudgetCount: 1, PolicyRef: "P", Days: 1})
 	s.Require().NoError(err)
 	live, err := s.W.Kernel.LiveMandates(t.Agent)
 	s.Require().NoError(err)
