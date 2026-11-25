@@ -76,9 +76,13 @@ export const eventLabel: Record<string, string> = {
   "notifier.set": "Notifications set",
   "notifier.removed": "Notifications turned off",
   "delivery.retargeted": "Delivery moved with its action",
-  "delivery.delivered": "Delivered",
-  "delivery.failed": "Delivery failed",
+  "delivery.done": "Carried out by the receiving system",
+  "delivery.refused": "Refused by the receiving system",
+  "delivery.not_sent": "Never reached the receiving system",
+  "delivery.unknown": "Unknown whether it was carried out",
+  "delivery.conflict": "An answer came after the attempt was closed",
   "delivery.retried": "Delivery sent again",
+  "delivery.settled": "Settled by a person",
 };
 
 /** The host of a URL, for showing where something goes without the whole address. */

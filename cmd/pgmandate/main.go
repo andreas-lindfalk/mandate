@@ -8,6 +8,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -41,6 +44,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/pkg/events"
 	"github.com/andreas-lindfalk/pgmandate/pkg/jobs"
 	"github.com/andreas-lindfalk/pgmandate/schema"
+	"github.com/andreas-lindfalk/pgmandate/sign"
 	"github.com/andreas-lindfalk/pgmandate/web"
 )
 
@@ -50,7 +54,9 @@ const usage = `pgmandate: agents propose, a person or a mandate decides, Postgre
   pgmandate serve                    migrate when the owner connection is given, then serve the UI, the API
                                      and MCP (/mcp) on $MANDATE_HTTP_ADDR
   pgmandate demo                     the five-minute demo (needs a running Postgres)
-  pgmandate receiver -secrets S1,S2  a local receiver that prints the deliveries it accepts [-addr 127.0.0.1:8586]
+  pgmandate receiver -tenant ID -audience A1,A2 [-keys K1,K2 | -keys-url URL] [-addr 127.0.0.1:8586]
+                                     a local receiver that prints the deliveries it accepts; it trusts the
+                                     server's published keys unless -keys names them
   pgmandate propose -token mnd_... -action a.b -title T -rationale WHY -payload '{...}' [-evidence '[...]'] [-key K] [-run R] [-url U]
                                      propose as an agent over MCP, as any agent would, and print the answer
 
@@ -65,11 +71,11 @@ The commands below act on the database directly, as the person named with -as. R
   pgmandate action define -tenant ID -as EMAIL -key a.b [-risk low|medium|high] [-may-execute]
                           [-connector webhook|builtin] [-url http(s)://...] [-schema '{...}' | -schema-file f.json]
                           [-wait 168h] [-deliver-within 1h]
-                          [-description TEXT] [-department D] [-rotate]          prints a new signing secret once
+                          [-description TEXT] [-department D]                    prints the webhook's audience
                           A webhook needs -url and a schema. -wait is how long a proposal waits for a decision
                           before it expires (1m to 720h); -deliver-within how long after a decision its delivery
                           may be carried out (2m to 168h). -may-execute lets a mandate allow it without a person;
-                          without it, a person always decides. Changing -url gives a new secret.
+                          without it, a person always decides. Changing -url gives a new audience.
   pgmandate action remove -tenant ID -as EMAIL -key a.b
   pgmandate actions -tenant ID [-all]
   pgmandate grant -tenant ID -as EMAIL [-agent ID] -actions a.b,c.* [-max-risk low|medium] -budget N -policy REF
@@ -88,7 +94,9 @@ The commands below act on the database directly, as the person named with -as. R
   pgmandate proposals -tenant ID [-status pending|approved|rejected|executed|withdrawn] [-limit 50]
   pgmandate approve -tenant ID -as EMAIL -proposal ID [-note TEXT] [-confirm]
   pgmandate reject -tenant ID -as EMAIL -proposal ID [-note TEXT]
-  pgmandate redeliver -tenant ID -as EMAIL -proposal ID        send a failed delivery again
+  pgmandate redeliver -tenant ID -as EMAIL -proposal ID        send again a delivery that was never sent
+  pgmandate settle -tenant ID -as EMAIL -proposal ID -done true|false
+                                                               say whether a delivery whose outcome is unknown was done
   pgmandate events -tenant ID [-subject ID] [-limit 50]
   pgmandate verify -tenant ID                                  recompute the log's hash chain
   pgmandate export -tenant ID                                  decided proposals as JSON lines (an eval set)
@@ -108,6 +116,11 @@ Environment:
   MANDATE_ALLOW_PRIVATE_CONNECTORS   true lets webhook connectors live on local and private addresses
   MANDATE_RECEIVER_ADDR      where receiver and the demo's receiver listen, default 127.0.0.1:8586
   MANDATE_AGENT_TOKEN        the token propose uses when -token is not given
+  MANDATE_SIGNING_KEY        the Ed25519 seed deliveries are signed with, 32 bytes in standard base64
+  MANDATE_SIGNING_KEY_FILE   the same, in a file. Without either, on a loopback address, one is made
+                               in .local/signing-key; beyond loopback, serve refuses to start
+  MANDATE_SIGNING_KEYS_PREVIOUS  comma separated public keys still published at
+                               /.well-known/pgmandate-keys, after a rotation
 `
 
 type config struct {
@@ -209,7 +222,11 @@ func run(ctx context.Context, command string, args []string, out io.Writer) erro
 		if err != nil {
 			return err
 		}
-		return Demo(ctx, appUrl, cfg.receiverAddr, out)
+		signer, _, err := signingKeys(cfg)
+		if err != nil {
+			return err
+		}
+		return Demo(ctx, appUrl, cfg.receiverAddr, signer, out)
 	case "receiver":
 		return receiver(ctx, cfg, args, out)
 	case "propose":
@@ -219,7 +236,7 @@ func run(ctx context.Context, command string, args []string, out io.Writer) erro
 			return fmt.Errorf("%s needs a subcommand", command)
 		}
 		return admin(ctx, cfg, command+" "+args[0], args[1:], out)
-	case "grant", "revoke", "mandates", "proposals", "approve", "reject", "redeliver", "people", "events", "verify", "export", "export-chain", "actions":
+	case "grant", "revoke", "mandates", "proposals", "approve", "reject", "redeliver", "settle", "people", "events", "verify", "export", "export-chain", "actions":
 		return admin(ctx, cfg, command, args, out)
 	case "verify-export":
 		return verifyExport(args, out)
@@ -270,8 +287,80 @@ func openApp(ctx context.Context, cfg config) (*pgxpool.Pool, error) {
 // newKernel wires the kernel with a queue. serve and demo start the queue
 // and run its jobs; the command line only inserts them, so an approval
 // made there is delivered once a server runs.
-func newKernel(pool *pgxpool.Pool, queue *jobs.Queue, allowPrivate bool, publicUrl string) *pgmandate.Kernel {
-	return pgmandate.New(pool, pgmandate.Options{Queue: queue, AllowPrivateConnectors: allowPrivate, PublicUrl: publicUrl})
+func newKernel(pool *pgxpool.Pool, queue *jobs.Queue, allowPrivate bool, publicUrl string, signer *sign.Signer) *pgmandate.Kernel {
+	return pgmandate.New(pool, pgmandate.Options{Queue: queue, AllowPrivateConnectors: allowPrivate, PublicUrl: publicUrl, Signer: signer})
+}
+
+// signingKeys reads the key deliveries are signed with, and the public keys
+// still published after a rotation. Without a key, on a loopback address,
+// one is made in .local/signing-key; beyond loopback that is refused, so a
+// server never signs with a key nobody chose.
+func signingKeys(cfg config) (*sign.Signer, []ed25519.PublicKey, error) {
+	text := os.Getenv("MANDATE_SIGNING_KEY")
+	if file := os.Getenv("MANDATE_SIGNING_KEY_FILE"); text == "" && file != "" {
+		raw, err := os.ReadFile(file) //nolint:gosec // the operator names the file
+		if err != nil {
+			return nil, nil, fmt.Errorf("MANDATE_SIGNING_KEY_FILE: %w", err)
+		}
+		text = string(raw)
+	}
+	if text == "" {
+		if !loopback(cfg.httpAddr) {
+			return nil, nil, errors.New("no signing key: set MANDATE_SIGNING_KEY or MANDATE_SIGNING_KEY_FILE to a 32-byte Ed25519 seed in standard base64")
+		}
+		var err error
+		if text, err = localSigningKey(); err != nil {
+			return nil, nil, err
+		}
+	}
+	seed, err := sign.ParseSeed(text)
+	if err != nil {
+		return nil, nil, fmt.Errorf("signing key: %w", err)
+	}
+	signer, err := sign.NewSigner(seed)
+	if err != nil {
+		return nil, nil, err
+	}
+	var previous []ed25519.PublicKey
+	for _, key := range splitList(os.Getenv("MANDATE_SIGNING_KEYS_PREVIOUS")) {
+		public, err := sign.ParsePublicKey(key)
+		if err != nil {
+			return nil, nil, fmt.Errorf("MANDATE_SIGNING_KEYS_PREVIOUS: %w", err)
+		}
+		previous = append(previous, public)
+	}
+	return signer, previous, nil
+}
+
+// localSigningKey reads, or makes once, the key a local server signs with.
+func localSigningKey() (string, error) {
+	const path = ".local/signing-key"
+	if raw, err := os.ReadFile(path); err == nil {
+		return string(raw), nil
+	}
+	seed := make([]byte, ed25519.SeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(".local", 0o700); err != nil {
+		return "", err
+	}
+	text := base64.StdEncoding.EncodeToString(seed)
+	if err := os.WriteFile(path, []byte(text+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	slog.Warn("made a signing key for local use in " + path + "; set MANDATE_SIGNING_KEY to sign with your own")
+	return text, nil
+}
+
+// keysHandler publishes the public keys a receiver trusts, current first.
+func keysHandler(signer *sign.Signer, previous []ed25519.PublicKey) http.Handler {
+	body, _ := json.Marshal(sign.Publish(append([]ed25519.PublicKey{signer.PublicKey()}, previous...)...))
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "max-age=300")
+		_, _ = w.Write(body)
+	})
 }
 
 func serve(ctx context.Context, cfg config) error {
@@ -289,13 +378,17 @@ func serve(ctx context.Context, cfg config) error {
 			return err
 		}
 	}
+	signer, previous, err := signingKeys(cfg)
+	if err != nil {
+		return err
+	}
 	pool, err := openApp(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 	queue := jobs.NewQueue(pool)
-	kernel := newKernel(pool, queue, cfg.allowPrivate, cfg.publicUrl)
+	kernel := newKernel(pool, queue, cfg.allowPrivate, cfg.publicUrl, signer)
 	if err := queue.Init(4); err != nil {
 		return err
 	}
@@ -311,6 +404,7 @@ func serve(ctx context.Context, cfg config) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", http.MaxBytesHandler(kernel.Handler(), maxMcpBytes))
+	mux.Handle("GET /.well-known/pgmandate-keys", keysHandler(signer, previous))
 	api.New(kernel, authService).Mount(mux)
 	mux.Handle("/", web.Handler())
 	// Healthy means the database answers: without it nothing is decided,
@@ -419,16 +513,29 @@ func receiver(ctx context.Context, cfg config, args []string, out io.Writer) err
 	flags := flag.NewFlagSet("receiver", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	addr := flags.String("addr", cfg.receiverAddr, "address to listen on")
-	secrets := flags.String("secrets", "", "comma separated signing secrets to trust")
+	tenant := flags.String("tenant", "", "the tenant whose deliveries it accepts")
+	audiences := flags.String("audience", "", "comma separated audiences of the actions that point here")
+	keyList := flags.String("keys", "", "comma separated public keys to trust, in standard base64")
+	keysUrl := flags.String("keys-url", strings.TrimSuffix(cfg.publicUrl, "/")+"/.well-known/pgmandate-keys", "where to fetch the published keys")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("receiver: %w", err)
 	}
-	if len(splitList(*secrets)) == 0 {
-		return errors.New("receiver needs -secrets: the signing secrets of the actions that point here")
+	tenantId, err := uuid.Parse(*tenant)
+	if err != nil || len(splitList(*audiences)) == 0 {
+		return errors.New("receiver needs -tenant and -audience: the tenant id and the audiences of the actions that point here")
 	}
-	r := webhook.NewReceiver("")
-	for _, secret := range splitList(*secrets) {
-		r.AddSecret(secret)
+	keys, err := receiverKeys(ctx, *keyList, *keysUrl)
+	if err != nil {
+		return err
+	}
+	r := webhook.NewReceiver(keys)
+	if *keyList == "" {
+		// Keys fetched from the server are fetched again on a key id the
+		// receiver does not know, as after a rotation.
+		r.Refresh = func(ctx context.Context) (sign.KeySet, error) { return sign.Fetch(ctx, nil, *keysUrl) }
+	}
+	for _, audience := range splitList(*audiences) {
+		r.Trust(audience, tenantId)
 	}
 	r.OnReceive = func(received webhook.Received) {
 		fmt.Fprint(out, describeDelivery(received))
@@ -440,11 +547,31 @@ func receiver(ctx context.Context, cfg config, args []string, out io.Writer) err
 		<-ctx.Done()
 		_ = server.Shutdown(context.WithoutCancel(ctx))
 	}()
-	fmt.Fprintf(out, "receiver listening on http://%s/ (signature verified, duplicates dropped)\n", *addr)
+	fmt.Fprintf(out, "receiver listening on http://%s/ (signature, audience and tenant checked; each delivery done once)\n", *addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// receiverKeys are the keys named, or else the set the server publishes.
+func receiverKeys(ctx context.Context, list, url string) (sign.KeySet, error) {
+	if list != "" {
+		var keys []ed25519.PublicKey
+		for _, text := range splitList(list) {
+			key, err := sign.ParsePublicKey(text)
+			if err != nil {
+				return nil, fmt.Errorf("-keys: %w", err)
+			}
+			keys = append(keys, key)
+		}
+		return sign.NewKeySet(keys...), nil
+	}
+	keys, err := sign.Fetch(ctx, nil, url)
+	if err != nil {
+		return nil, fmt.Errorf("%w (is the server running? or give -keys)", err)
+	}
+	return keys, nil
 }
 
 // describeDelivery is what the receiver prints for a delivery: a line to
@@ -565,7 +692,7 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 	kind := flags.String("kind", "", "for notify: slack or discord")
 	perMinute := flags.Int("per-minute", 30, "for agent limits: proposals a minute")
 	perHour := flags.Int("per-hour", 300, "for agent limits: proposals an hour")
-	rotate := flags.Bool("rotate", false, "rotate the webhook secret")
+	doneFlag := flags.String("done", "", "for settle: true if the receiver did it, false if not")
 	actionList := flags.String("actions", "", "comma separated action patterns")
 	maxRisk := flags.String("max-risk", mandates.RiskLow, "low or medium")
 	budget := flags.Int64("budget", 0, "executions a mandate may allow per month")
@@ -588,7 +715,7 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 	}
 	defer pool.Close()
 	queue := jobs.NewQueue(pool)
-	kernel := newKernel(pool, queue, cfg.allowPrivate, cfg.publicUrl)
+	kernel := newKernel(pool, queue, cfg.allowPrivate, cfg.publicUrl, nil)
 	if err := queue.Init(1); err != nil {
 		return err
 	}
@@ -651,7 +778,20 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 		if err != nil {
 			return errors.New("-proposal must be a proposal id")
 		}
-		d, err := kernel.Deliveries.Redeliver(scoped, id)
+		d, err := kernel.Deliveries.SendAgain(scoped, id)
+		if err != nil {
+			return err
+		}
+		printDelivery(out, d)
+	case "settle":
+		id, err := uuid.Parse(*proposalId)
+		if err != nil {
+			return errors.New("-proposal must be a proposal id")
+		}
+		if *doneFlag != "true" && *doneFlag != "false" {
+			return errors.New("-done must be true or false: whether the receiver did it")
+		}
+		d, err := kernel.Deliveries.Settle(scoped, id, *doneFlag == "true")
 		if err != nil {
 			return err
 		}
@@ -677,7 +817,7 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 		fmt.Fprintln(out, "revoked")
 	case "action define":
 		input := actions.Input{Key: *key, Description: *description, Risk: *risk, WaitLimit: *wait, DeliverWithin: *deliverWithin, MayExecute: *mayExecute,
-			Connector: *connector, Url: *url, RotateSecret: *rotate, Department: *department}
+			Connector: *connector, Url: *url, Department: *department}
 		if *schemaFile != "" {
 			raw, err := os.ReadFile(*schemaFile) //nolint:gosec // a file the operator names on the command line
 			if err != nil {
@@ -687,13 +827,14 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 		} else if *schemaText != "" {
 			input.Schema = []byte(*schemaText)
 		}
-		defined, secret, err := kernel.Actions.Define(scoped, input)
+		defined, err := kernel.Actions.Define(scoped, input)
 		if err != nil {
 			return err
 		}
 		printAction(out, defined)
-		if secret != "" {
-			fmt.Fprintf(out, "secret %s\n\nThe secret is shown once. The connector verifies every delivery's Mandate-Signature with it.\n", secret)
+		if defined.ConnectorAudience != "" {
+			fmt.Fprintf(out, "audience %s\n\nConfigure the receiver with this audience and the tenant id: it accepts nothing else. It verifies every delivery with the keys at %s/.well-known/pgmandate-keys.\n",
+				defined.ConnectorAudience, strings.TrimSuffix(cfg.publicUrl, "/"))
 		}
 	case "agent limits":
 		id, err := uuid.Parse(*agentId)
@@ -954,12 +1095,9 @@ func printAction(out io.Writer, e actions.Action) {
 }
 
 func printDelivery(out io.Writer, d deliveries.Delivery) {
-	detail := ""
-	switch {
-	case d.Status == deliveries.StatusDelivered:
-		detail = fmt.Sprintf("after %d attempt(s)", d.Attempts)
-	case d.LastError != "":
-		detail = fmt.Sprintf("after %d attempt(s): %s", d.Attempts, d.LastError)
+	detail := fmt.Sprintf("after %d attempt(s), not after %s", d.AttemptsStarted, d.NotAfter.UTC().Format(time.RFC3339))
+	if d.LastError != "" && d.Status != deliveries.StatusDone {
+		detail += ": " + d.LastError
 	}
 	fmt.Fprintf(out, "%36s delivery %-9s %s %s\n", "", d.Status, d.Url, detail)
 }

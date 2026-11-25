@@ -2,6 +2,21 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
+## 2026-11-26: build step 2, delivery contract v2
+
+Built as [design-0.1.md](design-0.1.md) sections 3 and 4 set out. v1 and its shared secrets are gone, with nothing kept compatible.
+
+- **The signing key lives outside the database.** `MANDATE_SIGNING_KEY` or `MANDATE_SIGNING_KEY_FILE`, or, on loopback only, one made once in `.local/signing-key`. Beyond loopback a missing key stops the server. `MANDATE_SIGNING_KEYS_PREVIOUS` are published at `/.well-known/pgmandate-keys` and never sign. The compose stack requires the key.
+- **The audience replaces the connector secret.** The actions guard draws it on insert, on a move, on a switch back to webhook, and on redefinition after removal, and ignores whatever a caller writes. `connector_of` is gone: the address and audience are not secret, and the application role reads them like the rest of the row.
+- **The database holds the delivery's states.** Seven states and every transition in the design note's table, in `deliveries_guard`, with tests that bypass the Go code. An attempt is opened in its own committed transaction before the call, and proven unsent only when the request's headers were never written.
+- **A late answer is a conflict.** An explicit answer that arrives after its attempt was closed is logged as `delivery.conflict` and changes nothing.
+- **The sweep finishes deliveries** past `not_after − 15 s` with no attempt open, and closes attempts left open longer than 45 seconds, which stay counted as possibly sent. A host without a queue calls `Kernel.FinishDue`.
+- **The person's side:** `SettleDelivery` in the API and `pgmandate settle` on the command line; `RedeliverProposal` and `redeliver` send again only a delivery never sent, before its deadline. The inbox shows each state, offers "send again" only while it is allowed and "settle" only once it is.
+- **The agent is told what to do per state.** An unknown outcome tells it not to propose again; a refusal, a delivery settled as not done, or one never sent past its deadline tell it that it may, under a new key.
+- **The reference receivers** (`examples/webhook`, `examples/refunds`, `pgmandate receiver`) follow the receiver's order in the note, including 503 for a delivery still in progress and `too_late` before acting.
+- **Rotation is by restart.** The new key signs at once. A receiver that meets a key id it does not know fetches the published set again, at most once a minute (`sign.Fetch`, and `Refresh` in `examples/webhook`); until it has, it answers 401 and the attempt is retried. Publishing a next key before it signs was not needed for 0.1.0.
+- **A body for an audience the receiver does not know is retried, not refused.** A delivery that moves with its action carries the new audience before anyone can have told the receiver at the new address, so a final refusal would lose approved work over a configuration step. The reference receiver answers 403 without an outcome.
+
 ## 2026-11-26: build step 1, the fresh schema and expiry
 
 - **One fresh migration.** 0001 to 0008 are folded into one `0001_init`. Before the step's own changes, the fold was checked against the old chain: the two schema dumps differ only in the order of two equivalent check constraints' generated names. A local database from before is reset with `make reset`.

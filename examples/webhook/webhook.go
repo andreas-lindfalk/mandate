@@ -1,12 +1,27 @@
-// Package webhook is a reference receiver of deliveries: an http.Handler to
-// mount at the URL of a webhook action. It verifies the signature, drops
-// a delivery it has already seen, decodes the payload, and answers with a
-// JSON object, which pgmandate keeps as the proposal's result and shows to
-// the agent. A real receiver does its work where this one appends to a
-// list. It imports only the sign package.
+// Package webhook is a reference receiver of deliveries, delivery contract
+// v2: an http.Handler to mount at the URL of a webhook action. It imports
+// only the sign package, and does what the contract asks of a receiver, in
+// this order:
+//
+//  1. verify the signature over the raw body, with a key it trusts,
+//     fetching the published set again on a key id it does not know;
+//  2. check the body's kind, audience and tenant are its own, and answer
+//     one that is not without an outcome, so that it is retried: an action
+//     just moved here may not have been configured yet;
+//  3. claim the delivery id: a delivery it finished is answered as before,
+//     one still in progress is answered 503, which is retried;
+//  4. refuse, without acting, a delivery it never started that arrives
+//     after notAfter;
+//  5. check the facts and act (Handle), and answer with an explicit
+//     outcome: done, refused or unknown.
+//
+// A real receiver keeps the claimed ids where a restart cannot lose them,
+// at least until notAfter plus five minutes, and never commits work after
+// notAfter by its own clock.
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,14 +38,17 @@ import (
 // maxBody bounds a delivery's body.
 const maxBody = 1 << 20
 
-// Payload is the body of a delivery, as docs/delivery-v1.schema.json
+// Payload is the body of a delivery, as docs/delivery-v2.schema.json
 // describes it. Fields this receiver does not know are ignored.
 type Payload struct {
 	Version       int       `json:"version"`
+	Kind          string    `json:"kind"`
+	Audience      string    `json:"audience"`
+	TenantId      uuid.UUID `json:"tenantId"`
 	DeliveryId    uuid.UUID `json:"deliveryId"`
 	CorrelationId string    `json:"correlationId"`
-	TenantId      uuid.UUID `json:"tenantId"`
 	CreatedAt     time.Time `json:"createdAt"`
+	NotAfter      time.Time `json:"notAfter"`
 	Proposal      struct {
 		Id         uuid.UUID       `json:"id"`
 		Action     string          `json:"action"`
@@ -61,9 +79,6 @@ type Payload struct {
 	} `json:"decision"`
 }
 
-// Version is the version of the delivery body this receiver understands.
-const Version = 1
-
 type Received struct {
 	DeliveryId uuid.UUID
 	Payload    Payload
@@ -72,33 +87,51 @@ type Received struct {
 	At   time.Time
 }
 
+// Errors from Handle that say what happened.
+var (
+	// ErrRefused: the system refused on its own rules and did nothing.
+	// Answered as the outcome refused, which is final.
+	ErrRefused = errors.New("refused")
+	// ErrUnknown: the system cannot tell whether it was done, as when its
+	// own call timed out. Answered as the outcome unknown; a person settles
+	// it.
+	ErrUnknown = errors.New("outcome unknown")
+)
+
 type Receiver struct {
 	mu       sync.Mutex
-	secrets  []trusted
+	keys     sign.KeySet
+	trusted  []trust
 	received []Received
-	seen     map[uuid.UUID]bool
-	failures int
-	now      func() time.Time
+	// answers are the deliveries finished, with what they were answered;
+	// inProgress the ones claimed and still being carried out.
+	answers    map[uuid.UUID]answer
+	inProgress map[uuid.UUID]bool
+	failures   int
+	now        func() time.Time
+	// refreshed is when Refresh last ran.
+	refreshed time.Time
+	// Refresh, when set, fetches the published key set again, as
+	// sign.Fetch does. It is called on a key id the receiver does not know,
+	// at most once a minute, and what it returns replaces the keys.
+	Refresh func(context.Context) (sign.KeySet, error)
 	// OnReceive, when set, is called for each new delivery, after it was
-	// verified and recorded.
+	// verified and claimed.
 	OnReceive func(Received)
 	// Handle, when set, carries a new delivery out. Its result is the
-	// answer, which pgmandate keeps as the proposal's result. An error that
-	// wraps ErrRefused is a refusal on the system's own rules, answered 422
-	// with its text, which pgmandate does not retry and shows to the person
-	// and the agent; any other error is answered 500 and retried. A delivery
-	// that arrives again after it was carried out gets the first answer; one
-	// that was refused or failed runs again, so a person who fixed the
-	// records can send it again. Handle must do its work in one step or
-	// be safe to run twice: a panic or a 500 after part of the work runs
-	// again on the retry (pass the delivery id on as an idempotency key).
-	Handle  func(Received) (any, error)
-	answers map[uuid.UUID]answer
+	// outcome done, kept by pgmandate as the result. An error that wraps
+	// ErrRefused answers refused; one that wraps ErrUnknown answers
+	// unknown; any other error, or a panic, is answered 500 and retried,
+	// so Handle must have done nothing in that case, or be safe to run
+	// twice (pass the delivery id on as an idempotency key).
+	Handle func(Received) (any, error)
 }
 
-// ErrRefused marks an error from Handle as a refusal on the system's own
-// rules: answered 422, final.
-var ErrRefused = errors.New("refused")
+// trust is one audience this receiver accepts, with its tenant.
+type trust struct {
+	audience string
+	tenantId string
+}
 
 // answer is what a delivery was answered, kept to answer it the same way
 // again.
@@ -107,47 +140,26 @@ type answer struct {
 	body   []byte
 }
 
-// trusted is a secret and, when known, the one tenant and action it signs
-// for. Each action has its own secret, so a receiver that serves several
-// should bind each secret to its action: otherwise a delivery signed for
-// one action is accepted as another.
-type trusted struct {
-	secret   []byte
-	tenantId uuid.UUID
-	action   string
+// NewReceiver makes a receiver that trusts deliveries signed by the keys.
+// It accepts nothing until Trust names an audience.
+func NewReceiver(keys sign.KeySet) *Receiver {
+	return &Receiver{keys: keys, now: time.Now, answers: map[uuid.UUID]answer{}, inProgress: map[uuid.UUID]bool{}}
 }
 
-// NewReceiver makes a receiver that trusts deliveries signed with the
-// secret; an empty secret trusts nothing until AddSecret.
-func NewReceiver(secret string) *Receiver {
-	r := &Receiver{now: time.Now, seen: map[uuid.UUID]bool{}, answers: map[uuid.UUID]answer{}}
-	if secret != "" {
-		r.secrets = []trusted{{secret: []byte(secret)}}
-	}
-	return r
-}
-
-// SetSecret replaces every secret, after a rotation.
-func (r *Receiver) SetSecret(secret string) {
+// SetKeys replaces the keys it trusts, as a receiver does when it fetches
+// the published key set again.
+func (r *Receiver) SetKeys(keys sign.KeySet) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.secrets = []trusted{{secret: []byte(secret)}}
+	r.keys = keys
 }
 
-// AddSecret trusts one more secret for any action, as the local receiver
-// command does.
-func (r *Receiver) AddSecret(secret string) {
+// Trust accepts deliveries for one audience of one tenant, as the action
+// was defined with. A receiver that serves several actions trusts each.
+func (r *Receiver) Trust(audience string, tenantId uuid.UUID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.secrets = append(r.secrets, trusted{secret: []byte(secret)})
-}
-
-// AddSecretFor trusts a secret only for the one tenant and action it was
-// issued for, which is what a real receiver serving several actions does.
-func (r *Receiver) AddSecretFor(secret string, tenantId uuid.UUID, action string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.secrets = append(r.secrets, trusted{secret: []byte(secret), tenantId: tenantId, action: action})
+	r.trusted = append(r.trusted, trust{audience: audience, tenantId: tenantId.String()})
 }
 
 // FailNext makes the next n deliveries answer 500, to see retries.
@@ -157,7 +169,7 @@ func (r *Receiver) FailNext(n int) {
 	r.failures = n
 }
 
-// Received lists what was accepted, oldest first.
+// Received lists what was carried out or is being carried out, oldest first.
 func (r *Receiver) Received() []Received {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -177,20 +189,25 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.mu.Lock()
-	secrets := r.secrets
+	keys, trusted := r.keys, r.trusted
 	fail := r.failures > 0
 	if fail {
 		r.failures--
 	}
 	r.mu.Unlock()
-	var signer *trusted
-	for i := range secrets {
-		if sign.Verify(secrets[i].secret, req.Header.Get(sign.HeaderTimestamp), req.Header.Get(sign.HeaderSignature), body, r.now()) == nil {
-			signer = &secrets[i]
-			break
+
+	// 1. The signature, over the raw bytes, before anything is parsed. A
+	// key id it does not know may be a rotation: fetch the set again, once.
+	verify := func(keys sign.KeySet) error {
+		return sign.Verify(keys, req.Header.Get(sign.HeaderTimestamp), req.Header.Get(sign.HeaderSignature), body, r.now())
+	}
+	err = verify(keys)
+	if errors.Is(err, sign.ErrUnknownKey) {
+		if fresh, ok := r.refresh(req.Context()); ok {
+			err = verify(fresh)
 		}
 	}
-	if signer == nil {
+	if err != nil {
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
@@ -198,99 +215,133 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "try again", http.StatusInternalServerError)
 		return
 	}
+	// 2. The envelope: a version 2 delivery for one of its own audiences,
+	// for that audience's tenant, with the header's delivery id.
+	var envelope sign.Envelope
+	accepted := false
+	for _, t := range trusted {
+		if envelope, err = sign.CheckEnvelope(body, req.Header.Get(sign.HeaderDeliveryId), t.audience, t.tenantId); err == nil {
+			accepted = true
+			break
+		}
+	}
+	if !accepted {
+		// Not for an audience it was configured with. It did nothing, but
+		// answers without an outcome, so pgmandate tries again: an action
+		// just moved here may not have been configured yet. Until then the
+		// delivery cannot be settled as refused by this receiver.
+		write(w, encode(http.StatusForbidden, map[string]any{"error": "not_for_this_receiver"}))
+		return
+	}
 	var payload Payload
-	if err := json.Unmarshal(body, &payload); err != nil {
-		http.Error(w, "bad payload", http.StatusBadRequest)
-		return
-	}
-	// A new version means a field went away or changed meaning: refusing it
-	// is safer than acting on a body read wrongly. A 4xx is not retried.
-	if payload.Version != Version {
-		http.Error(w, fmt.Sprintf("unknown payload version %d", payload.Version), http.StatusBadRequest)
-		return
-	}
-	// The secret signs for one tenant's action, and only a decision is
-	// ever delivered. A 403 is not retried.
-	if signer.action != "" && (payload.TenantId != signer.tenantId || payload.Proposal.Action != signer.action) {
-		http.Error(w, "this secret does not sign for that tenant and action", http.StatusForbidden)
+	if err := json.Unmarshal(body, &payload); err != nil || payload.DeliveryId.String() != envelope.DeliveryId {
+		write(w, refusal(http.StatusBadRequest, "unreadable_payload"))
 		return
 	}
 	if payload.Decision.Status != "approved" && payload.Decision.Status != "executed" {
-		http.Error(w, "only an approved or executed proposal is carried out", http.StatusForbidden)
+		write(w, refusal(http.StatusForbidden, "not_a_decision"))
 		return
 	}
-	deliveryId, err := uuid.Parse(req.Header.Get(sign.HeaderDeliveryId))
-	if err != nil || deliveryId != payload.DeliveryId {
-		http.Error(w, "bad delivery id", http.StatusBadRequest)
-		return
-	}
-	// Delivery is at least once: the same delivery can arrive again after a
-	// timeout. It is done once and answered the same way every time. The
-	// ids are kept in memory here; a real receiver keeps them where a
-	// restart cannot lose them, or passes the id on as the idempotency key
-	// of the call it makes.
+
+	// 3. Claim the delivery id, atomically.
 	r.mu.Lock()
-	duplicate := r.seen[deliveryId]
-	first, answered := r.answers[deliveryId]
-	received := Received{DeliveryId: deliveryId, Payload: payload, Body: body, At: r.now()}
-	if !duplicate {
-		r.seen[deliveryId] = true
-		r.received = append(r.received, received)
+	if first, done := r.answers[payload.DeliveryId]; done {
+		r.mu.Unlock()
+		write(w, first)
+		return
 	}
+	if r.inProgress[payload.DeliveryId] {
+		r.mu.Unlock()
+		http.Error(w, "in progress", http.StatusServiceUnavailable)
+		return
+	}
+	// 4. Too late, and never started: refuse without acting.
+	if !r.now().Before(envelope.NotAfter) {
+		reply := refusal(http.StatusConflict, "too_late")
+		r.answers[payload.DeliveryId] = reply
+		r.mu.Unlock()
+		write(w, reply)
+		return
+	}
+	r.inProgress[payload.DeliveryId] = true
+	received := Received{DeliveryId: payload.DeliveryId, Payload: payload, Body: body, At: r.now()}
+	r.received = append(r.received, received)
 	onReceive, handle := r.OnReceive, r.Handle
 	r.mu.Unlock()
-	if !duplicate && onReceive != nil {
+	if onReceive != nil {
 		onReceive(received)
 	}
+
+	// 5. Act, and answer with an explicit outcome.
+	var result any = map[string]any{"reference": fmt.Sprintf("REF-%s", payload.Proposal.Id.String()[:8]), "action": payload.Proposal.Action}
 	if handle != nil {
-		switch {
-		case answered:
-			write(w, first)
-		case duplicate:
-			// The first copy is still being carried out: ask for a retry.
-			http.Error(w, "in progress", http.StatusServiceUnavailable)
-		default:
-			result, err, panicked := call(handle, received)
-			if panicked {
-				// Nothing is known to be done: forget the delivery, so that
-				// the retry pgmandate makes after this 500 runs again.
-				r.mu.Lock()
-				r.forget(deliveryId)
-				r.mu.Unlock()
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
-			reply := answer{status: http.StatusOK}
-			switch {
-			case errors.Is(err, ErrRefused):
-				reply.status = http.StatusUnprocessableEntity
-				result = map[string]any{"refused": err.Error()}
-			case err != nil:
-				reply.status = http.StatusInternalServerError
-				result = map[string]any{"error": "the system could not carry it out now"}
-			}
-			body, encodeErr := json.Marshal(result)
-			if encodeErr != nil {
-				reply.status, body = http.StatusInternalServerError, []byte(`{"error":"the result could not be encoded"}`)
-			}
-			reply.body = body
-			r.mu.Lock()
-			if reply.status == http.StatusOK {
-				r.answers[deliveryId] = reply
-			} else {
-				// Only what was done is remembered: a refusal or a failure
-				// runs again when the delivery is sent again.
-				r.forget(deliveryId)
-			}
-			r.mu.Unlock()
-			write(w, reply)
+		var panicked bool
+		result, err, panicked = call(handle, received)
+		if panicked || (err != nil && !errors.Is(err, ErrRefused) && !errors.Is(err, ErrUnknown)) {
+			// Nothing is known to be done: let go of the claim, so that the
+			// retry pgmandate makes after this 500 runs again.
+			r.release(payload.DeliveryId)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
 		}
-		return
 	}
-	// The answer is the result the agent gets back: here a reference made
-	// from the proposal, where a real system would return its own id.
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"reference": fmt.Sprintf("REF-%s", payload.Proposal.Id.String()[:8]), "action": payload.Proposal.Action})
+	var reply answer
+	switch {
+	case errors.Is(err, ErrRefused):
+		reply = refusal(http.StatusUnprocessableEntity, err.Error())
+	case errors.Is(err, ErrUnknown):
+		reply = encode(http.StatusOK, map[string]any{"outcome": "unknown", "reason": err.Error()})
+	default:
+		reply = encode(http.StatusOK, map[string]any{"outcome": "done", "result": result})
+	}
+	r.mu.Lock()
+	delete(r.inProgress, payload.DeliveryId)
+	r.answers[payload.DeliveryId] = reply
+	r.mu.Unlock()
+	write(w, reply)
+}
+
+// refresh fetches the key set again, at most once a minute, and keeps it.
+func (r *Receiver) refresh(ctx context.Context) (sign.KeySet, bool) {
+	r.mu.Lock()
+	fetch := r.Refresh
+	if fetch == nil || r.now().Sub(r.refreshed) < time.Minute {
+		r.mu.Unlock()
+		return nil, false
+	}
+	r.refreshed = r.now()
+	r.mu.Unlock()
+	keys, err := fetch(ctx)
+	if err != nil || len(keys) == 0 {
+		return nil, false
+	}
+	r.SetKeys(keys)
+	return keys, true
+}
+
+// release lets go of a claim on a delivery that was not carried out.
+func (r *Receiver) release(deliveryId uuid.UUID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.inProgress, deliveryId)
+	for i := len(r.received) - 1; i >= 0; i-- {
+		if r.received[i].DeliveryId == deliveryId {
+			r.received = append(r.received[:i], r.received[i+1:]...)
+			break
+		}
+	}
+}
+
+func refusal(status int, reason string) answer {
+	return encode(status, map[string]any{"outcome": "refused", "refusal": map[string]any{"reason": reason}})
+}
+
+func encode(status int, value any) answer {
+	body, err := json.Marshal(value)
+	if err != nil {
+		return answer{status: http.StatusInternalServerError, body: []byte(`{"error":"the answer could not be encoded"}`)}
+	}
+	return answer{status: status, body: body}
 }
 
 func write(w http.ResponseWriter, a answer) {
@@ -308,16 +359,4 @@ func call(handle func(Received) (any, error), received Received) (result any, er
 	}()
 	result, err = handle(received)
 	return result, err, false
-}
-
-// forget takes back a delivery that was not carried out, so that the next
-// copy of it runs again and is recorded once. The caller holds r.mu.
-func (r *Receiver) forget(deliveryId uuid.UUID) {
-	delete(r.seen, deliveryId)
-	for i := len(r.received) - 1; i >= 0; i-- {
-		if r.received[i].DeliveryId == deliveryId {
-			r.received = append(r.received[:i], r.received[i+1:]...)
-			break
-		}
-	}
 }

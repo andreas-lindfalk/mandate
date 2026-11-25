@@ -3,6 +3,7 @@ package pgmandate_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/andreas-lindfalk/pgmandate/examples/webhook"
 	"github.com/andreas-lindfalk/pgmandate/internal/testfix"
+	"github.com/andreas-lindfalk/pgmandate/modules/deliveries"
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 )
@@ -224,7 +226,7 @@ func (s *McpSuite) Test_AnAgentProposesAndSeesTheOutcome() {
 	s.Require().Empty(theirs["proposals"])
 
 	// A builtin definition without code in this binary is not offered.
-	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{Key: "ghost.action", Risk: mandates.RiskLow, Connector: actionsPkg.ConnectorBuiltin, MayExecute: true})
+	_, err = s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{Key: "ghost.action", Risk: mandates.RiskLow, Connector: actionsPkg.ConnectorBuiltin, MayExecute: true})
 	s.Require().NoError(err)
 	actions2, errText := s.call(session, "list_actions", nil)
 	s.Require().Empty(errText)
@@ -264,15 +266,22 @@ func (s *McpSuite) Test_AnAgentProposesAndSeesTheOutcome() {
 
 func (s *McpSuite) Test_TheAgentGetsTheConnectorsResult() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	receiver := webhook.NewReceiver("")
+	receiver := webhook.NewReceiver(testfix.Keys)
 	connector := httptest.NewServer(receiver)
 	defer connector.Close()
-	_, secret, err := s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{
+	// The system refuses a note it cannot take, on its own rules.
+	receiver.Handle = func(r webhook.Received) (any, error) {
+		if strings.Contains(string(r.Payload.Proposal.Payload), "refuse me") {
+			return nil, fmt.Errorf("notes are closed: %w", webhook.ErrRefused)
+		}
+		return map[string]any{"reference": "REF-" + r.Payload.Proposal.Id.String()[:8]}, nil
+	}
+	defined, err := s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{
 		Key: "notes.add", Risk: mandates.RiskLow, MayExecute: true, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL,
 		Schema: json.RawMessage(`{"type":"object"}`),
 	})
 	s.Require().NoError(err)
-	receiver.SetSecret(secret)
+	receiver.Trust(defined.ConnectorAudience, t.Id)
 	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"notes.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	session, err := s.connect(t.Token)
@@ -290,10 +299,19 @@ func (s *McpSuite) Test_TheAgentGetsTheConnectorsResult() {
 
 	done := s.propose(session, "notes.add", "A note", map[string]any{"text": "hello"}, nil)
 	s.Require().Equal(proposals.StatusExecuted, done["status"])
-	s.Require().Contains(done["outcome"], "delivered", "allowed and delivered are told apart")
-	s.Require().Equal("delivered", done["delivery"].(map[string]any)["status"])
+	s.Require().Contains(done["outcome"], "carried out by the system", "allowed and carried out are told apart")
+	s.Require().Equal(deliveries.StatusDone, done["delivery"].(map[string]any)["status"])
 	s.Require().Equal("REF-"+done["proposalId"].(string)[:8], done["result"].(map[string]any)["reference"], "what the connector answered comes back to the agent")
 	s.Require().Nil(done["next"])
+
+	// A refusal is final, and the agent is told nothing was done.
+	refused := s.propose(session, "notes.add", "Refused", map[string]any{"text": "refuse me"}, nil)
+	s.Require().Equal(proposals.StatusExecuted, refused["status"])
+	s.Require().Equal(deliveries.StatusRefused, refused["delivery"].(map[string]any)["status"])
+	s.Require().Contains(refused["outcome"], "NOT carried out")
+	s.Require().Contains(refused["next"], "Do not send the same request again")
+	s.Require().Nil(refused["result"])
+	s.Require().Contains(fmt.Sprint(refused["refusal"]), "notes are closed", "the refusal comes back as data")
 
 	// A connector that is down: allowed, but the agent is told it has not happened.
 	receiver.FailNext(100)
@@ -304,7 +322,7 @@ func (s *McpSuite) Test_TheAgentGetsTheConnectorsResult() {
 	s.Require().Nil(stuck["result"])
 
 	// A proposal that waits says what to do, and get_proposal can wait for the decision.
-	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{Key: "notes.purge", Risk: mandates.RiskHigh, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL, Schema: json.RawMessage(`{"type":"object"}`)})
+	_, err = s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{Key: "notes.purge", Risk: mandates.RiskHigh, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL, Schema: json.RawMessage(`{"type":"object"}`)})
 	s.Require().NoError(err)
 	waiting := s.propose(session, "notes.purge", "Purge", map[string]any{}, nil)
 	s.Require().Equal(proposals.StatusPending, waiting["status"])
@@ -326,16 +344,16 @@ func (s *McpSuite) Test_TheAgentGetsTheConnectorsResult() {
 // one execution, one delivery, one place in the budget used.
 func (s *McpSuite) Test_ARepeatedRequestIsDoneOnce() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	receiver := webhook.NewReceiver("")
+	receiver := webhook.NewReceiver(testfix.Keys)
 	connector := httptest.NewServer(receiver)
 	defer connector.Close()
 	for key, risk := range map[string]string{"notes.add": mandates.RiskLow, "notes.purge": mandates.RiskHigh} {
-		_, secret, err := s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{
+		defined, err := s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{
 			Key: key, Risk: risk, MayExecute: risk != mandates.RiskHigh, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL,
 			Schema: json.RawMessage(`{"type":"object"}`),
 		})
 		s.Require().NoError(err)
-		receiver.AddSecret(secret)
+		receiver.Trust(defined.ConnectorAudience, t.Id)
 	}
 	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"notes.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
@@ -432,15 +450,15 @@ func (s *McpSuite) Test_ARepeatedRequestIsDoneOnce() {
 // the MCP library decodes arguments into Go values.
 func (s *McpSuite) Test_APayloadKeepsEveryDigit() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	receiver := webhook.NewReceiver("")
+	receiver := webhook.NewReceiver(testfix.Keys)
 	connector := httptest.NewServer(receiver)
 	defer connector.Close()
-	_, secret, err := s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{
+	defined, err := s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{
 		Key: "wires.send", Risk: mandates.RiskLow, MayExecute: true, Connector: actionsPkg.ConnectorWebhook, Url: connector.URL,
 		Schema: json.RawMessage(`{"type":"object","properties":{"account":{"type":"integer"},"rate":{"type":"number"}}}`),
 	})
 	s.Require().NoError(err)
-	receiver.SetSecret(secret)
+	receiver.Trust(defined.ConnectorAudience, t.Id)
 	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"wires.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 5, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	session, err := s.connect(t.Token)
@@ -647,10 +665,10 @@ func (s *McpSuite) Test_TheAgentIsToldWhatItNeeds() {
 	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_, _ = w.Write([]byte(`{"refused":"refused: no such order"}`))
+		_, _ = w.Write([]byte(`{"outcome":"refused","refusal":{"reason":"no such order"}}`))
 	}))
 	defer refusing.Close()
-	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{Key: "orders.refund", Risk: mandates.RiskLow, Connector: actionsPkg.ConnectorWebhook, Url: refusing.URL, Schema: json.RawMessage(`{"type":"object"}`)})
+	_, err = s.W.Kernel.Actions.Define(t.Owner, actionsPkg.Input{Key: "orders.refund", Risk: mandates.RiskLow, Connector: actionsPkg.ConnectorWebhook, Url: refusing.URL, Schema: json.RawMessage(`{"type":"object"}`)})
 	s.Require().NoError(err)
 	refund := s.propose(session, "orders.refund", "Refund", map[string]any{"order": "B-9"}, map[string]any{"idempotency_key": "run-1:refund"})
 	_, err = s.W.Kernel.Proposals.Approve(t.Reviewer, uuid.MustParse(refund["proposalId"].(string)), proposals.Decision{Title: "Refund, checked by support"})
@@ -660,7 +678,7 @@ func (s *McpSuite) Test_TheAgentIsToldWhatItNeeds() {
 		answer, errText = s.call(session, "get_proposal", map[string]any{"proposal_id": refund["proposalId"]})
 		return errText == "" && answer["refusal"] != nil
 	}, 15*time.Second, 100*time.Millisecond)
-	s.Require().Equal(map[string]any{"refused": "refused: no such order"}, answer["refusal"])
+	s.Require().Equal(map[string]any{"reason": "no such order"}, answer["refusal"])
 	s.Require().Contains(answer["outcome"], "refused it")
 	s.Require().Contains(answer["next"], "Do not send the same request again")
 	repeat := s.propose(session, "orders.refund", "Refund", map[string]any{"order": "B-9"}, map[string]any{"idempotency_key": "run-1:refund"})

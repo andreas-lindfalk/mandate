@@ -14,7 +14,7 @@ import (
 func TestPayloadOf(t *testing.T) {
 	tenantId, decidedBy := uuid.New(), uuid.New()
 	decidedAt := "2026-11-24T10:00:05Z"
-	delivery := Delivery{Id: uuid.New(), CreatedAt: time.Date(2026, 11, 24, 11, 0, 5, 999, time.FixedZone("CET", 3600))}
+	delivery := Delivery{Id: uuid.New(), Audience: "pgm:x", NotAfter: time.Date(2026, 11, 24, 11, 0, 5, 0, time.UTC), CreatedAt: time.Date(2026, 11, 24, 11, 0, 5, 999, time.FixedZone("CET", 3600))}
 	proposal := proposals.Proposal{
 		Id: uuid.New(), AgentId: uuid.New(), Action: "tickets.create", Risk: "low", Title: "Printer", Payload: json.RawMessage(`{"subject":"Printer"}`),
 		Status: proposals.StatusApproved, DecidedBy: &decidedBy, DecidedAt: &decidedAt, CreatedAt: "2026-11-24T10:00:00Z",
@@ -22,7 +22,10 @@ func TestPayloadOf(t *testing.T) {
 
 	payload, err := payloadOf(tenantId, delivery, proposal)
 	require.NoError(t, err)
-	require.Equal(t, PayloadVersion, payload.Version)
+	require.Equal(t, 2, payload.Version)
+	require.Equal(t, "delivery", payload.Kind)
+	require.Equal(t, "pgm:x", payload.Audience)
+	require.Equal(t, "2026-11-24T11:00:05Z", payload.NotAfter)
 	require.Equal(t, proposal.Id.String(), payload.CorrelationId, "without a run, the proposal's id")
 	require.Empty(t, payload.Proposal.RunId)
 	require.Equal(t, "2026-11-24T10:00:05Z", payload.CreatedAt, "in UTC, to the second")

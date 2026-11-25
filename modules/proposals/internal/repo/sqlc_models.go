@@ -12,24 +12,24 @@ import (
 )
 
 type MandateAction struct {
-	Id              uuid.UUID
-	TenantId        uuid.UUID
-	Key             string
-	Description     string
-	Risk            string
-	WaitLimit       pgtype.Interval
-	DeliverWithin   pgtype.Interval
-	MayExecute      bool
-	Schema          []byte
-	ConnectorKind   string
-	ConnectorUrl    *string
-	ConnectorSecret []byte
-	Department      *string
-	CreatedBy       *uuid.UUID
-	CreatedAt       time.Time
-	UpdatedBy       *uuid.UUID
-	UpdatedAt       time.Time
-	RemovedAt       *time.Time
+	Id                uuid.UUID
+	TenantId          uuid.UUID
+	Key               string
+	Description       string
+	Risk              string
+	WaitLimit         pgtype.Interval
+	DeliverWithin     pgtype.Interval
+	MayExecute        bool
+	Schema            []byte
+	ConnectorKind     string
+	ConnectorUrl      *string
+	ConnectorAudience *string
+	Department        *string
+	CreatedBy         *uuid.UUID
+	CreatedAt         time.Time
+	UpdatedBy         *uuid.UUID
+	UpdatedAt         time.Time
+	RemovedAt         *time.Time
 }
 
 type MandateAgent struct {
@@ -58,19 +58,23 @@ type MandateAgentToken struct {
 }
 
 type MandateDelivery struct {
-	Id          uuid.UUID
-	TenantId    uuid.UUID
-	ProposalId  uuid.UUID
-	ActionKey   string
-	Url         string
-	Status      string
-	Attempts    int32
-	LastStatus  *int32
-	LastError   *string
-	Result      []byte
-	CreatedAt   time.Time
-	DeliveredAt *time.Time
-	FailedAt    *time.Time
+	Id              uuid.UUID
+	TenantId        uuid.UUID
+	ProposalId      uuid.UUID
+	ActionKey       string
+	Url             string
+	Audience        string
+	Status          string
+	NotAfter        time.Time
+	AttemptsStarted int32
+	AttemptsUnsent  int32
+	AttemptOpenAt   *time.Time
+	LastStatus      *int32
+	LastError       *string
+	Result          []byte
+	CreatedAt       time.Time
+	FinishedAt      *time.Time
+	SettledBy       *uuid.UUID
 }
 
 type MandateEvent struct {

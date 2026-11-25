@@ -19,7 +19,7 @@ func toAction(e actions.Action) *mandatev1.Action {
 	return &mandatev1.Action{
 		Id: e.Id.String(), Key: e.Key, Description: e.Description, Risk: e.Risk, MayExecute: e.MayExecute,
 		WaitSeconds: int64(e.WaitLimit / time.Second), DeliverSeconds: int64(e.DeliverWithin / time.Second),
-		SchemaJson: jsonText(e.Schema), Connector: e.ConnectorKind, ConnectorUrl: e.ConnectorUrl, HasSecret: e.HasSecret(),
+		SchemaJson: jsonText(e.Schema), Connector: e.ConnectorKind, ConnectorUrl: e.ConnectorUrl, Audience: e.ConnectorAudience,
 		Department: e.Department, CreatedAt: ts(e.CreatedAt), UpdatedAt: ts(e.UpdatedAt), RemovedAt: tsPtr(e.RemovedAt),
 	}
 }
@@ -54,16 +54,16 @@ func (h *actionHandler) DefineAction(ctx context.Context, req *mandatev1.DefineA
 	input := actions.Input{
 		Key: req.GetKey(), Description: req.GetDescription(), Risk: req.GetRisk(), MayExecute: req.GetMayExecute(),
 		WaitLimit: time.Duration(req.GetWaitSeconds()) * time.Second, DeliverWithin: time.Duration(req.GetDeliverSeconds()) * time.Second,
-		Connector: req.GetConnector(), Url: req.GetConnectorUrl(), RotateSecret: req.GetRotateSecret(), Department: req.GetDepartment(),
+		Connector: req.GetConnector(), Url: req.GetConnectorUrl(), Department: req.GetDepartment(),
 	}
 	if req.GetSchemaJson() != "" {
 		input.Schema = json.RawMessage(req.GetSchemaJson())
 	}
-	e, secret, err := h.kernel.Actions.Define(ctx, input)
+	e, err := h.kernel.Actions.Define(ctx, input)
 	if err != nil {
 		return nil, fault.ToConnect(err)
 	}
-	return &mandatev1.DefineActionResponse{Action: toAction(e), Secret: secret}, nil
+	return &mandatev1.DefineActionResponse{Action: toAction(e)}, nil
 }
 
 func (h *actionHandler) RemoveAction(ctx context.Context, req *mandatev1.RemoveActionRequest) (*mandatev1.RemoveActionResponse, error) {

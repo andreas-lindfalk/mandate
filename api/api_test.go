@@ -188,8 +188,7 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 		Connector:  "webhook", ConnectorUrl: "https://helpdesk.example/hooks",
 	})
 	s.Require().NoError(err)
-	s.Require().True(strings.HasPrefix(defined.GetSecret(), "mws_"))
-	s.Require().True(defined.GetAction().GetHasSecret())
+	s.Require().True(strings.HasPrefix(defined.GetAction().GetAudience(), "pgm:"), "the action's audience is shown, not a secret")
 	actionsList, err := s.actions.ListActions(reviewer, &mandatev1.ListActionsRequest{})
 	s.Require().NoError(err)
 	keys := map[string]bool{}

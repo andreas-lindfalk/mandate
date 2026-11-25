@@ -103,6 +103,9 @@ type Action struct {
 // Webhook is where a decided proposal is delivered.
 type Webhook struct {
 	Url string
+	// Audience is who its deliveries are for; the receiver is configured
+	// with it.
+	Audience string
 }
 
 // Applicable says whether a decision on the action can be carried out

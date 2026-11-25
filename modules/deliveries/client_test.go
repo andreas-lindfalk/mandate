@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -26,7 +27,7 @@ func TestClientRefusesPrivateAddressesAndRedirects(t *testing.T) {
 	_, err := newClient(false).Post(target.URL, "application/json", nil) //nolint:noctx,bodyclose // a test; the call is refused, so there is no body
 	require.ErrorIs(t, err, errBlocked, "loopback is refused by default")
 	require.Zero(t, hits)
-	require.Equal(t, "blocked: the connector address is private or local", describe(err))
+	require.Equal(t, "blocked: the receiver's address is private or local", describe(err, 0))
 
 	resp, err := newClient(true).Post(target.URL, "application/json", nil) //nolint:noctx // a test
 	require.NoError(t, err)
@@ -53,15 +54,67 @@ func TestBlockedAddresses(t *testing.T) {
 }
 
 func TestDescribeNeverLeaksTheAddress(t *testing.T) {
-	require.Equal(t, "connector answered 503", describe(&statusError{status: 503}))
-	require.Equal(t, "the connector could not be reached", describe(errors.New(`Post "http://user:secret@10.0.0.5:6379/x": dial tcp 10.0.0.5:6379: connect: connection refused`)))
+	require.Equal(t, "the receiver answered 503 without an outcome", describe(nil, 503))
+	require.Equal(t, "the receiver could not be reached", describe(errors.New(`Post "http://user:secret@10.0.0.5:6379/x": dial tcp 10.0.0.5:6379: connect: connection refused`), 0))
 }
 
-func TestPlainHttpToAPublicAddressIsRefused(t *testing.T) {
+func TestPlainHttpToAPublicAddressIsRefusedUnsent(t *testing.T) {
 	strict := &Service{client: newClient(false)}
-	_, _, err := strict.post(context.Background(), "http://connector.example/hooks", []byte("secret"), uuid.New(), []byte(`{}`))
-	require.ErrorIs(t, err, errPlain)
-	require.Equal(t, "blocked: "+errPlain.Error(), describe(err))
-	_, _, err = strict.post(context.Background(), "HTTPS://127.0.0.1:1/hooks", []byte("secret"), uuid.New(), []byte(`{}`))
-	require.ErrorIs(t, err, errBlocked, "https gets past the scheme check, and on to the address check")
+	r := strict.post(context.Background(), "http://connector.example/hooks", uuid.New(), []byte(`{}`), 1, "v2 kid=x sig=y", time.Second)
+	require.ErrorIs(t, r.err, errPlain)
+	require.False(t, r.sent, "refused before anything was written")
+	require.Equal(t, "blocked: "+errPlain.Error(), describe(r.err, 0))
+	r = strict.post(context.Background(), "HTTPS://127.0.0.1:1/hooks", uuid.New(), []byte(`{}`), 1, "v2 kid=x sig=y", time.Second)
+	require.ErrorIs(t, r.err, errBlocked, "https gets past the scheme check, and on to the address check")
+	require.False(t, r.sent)
+}
+
+// Whether an attempt may have reached the receiver is taken from whether
+// its headers were written: a refused connection did not; a server that
+// takes the request and never answers may have acted.
+func TestAnAttemptIsSentOnceItsHeadersAreWritten(t *testing.T) {
+	s := &Service{client: newClient(true), allowPrivate: true}
+	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := closed.URL
+	closed.Close()
+	r := s.post(context.Background(), url, uuid.New(), []byte(`{}`), 1, "v2 kid=x sig=y", time.Second)
+	require.Error(t, r.err)
+	require.False(t, r.sent, "nothing listened: proven unsent")
+
+	hang := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-hang }))
+	defer slow.Close()
+	defer close(hang)
+	r = s.post(context.Background(), slow.URL, uuid.New(), []byte(`{}`), 1, "v2 kid=x sig=y", time.Second)
+	require.Error(t, r.err)
+	require.True(t, r.sent, "it arrived and timed out: possibly done")
+}
+
+// Only an explicit answer is final.
+func TestOnlyAnExplicitAnswerIsFinal(t *testing.T) {
+	for name, c := range map[string]struct {
+		status  int
+		body    string
+		outcome string
+	}{
+		"done":                {200, `{"outcome":"done","result":{"id":"R-1"}}`, StatusDone},
+		"done without result": {200, `{"outcome":"done"}`, StatusDone},
+		"refused with 422":    {422, `{"outcome":"refused","refusal":{"reason":"no such order"}}`, StatusRefused},
+		"refused with 200":    {200, `{"outcome":"refused","refusal":{"reason":"no"}}`, StatusRefused},
+		"unknown":             {200, `{"outcome":"unknown","reason":"the bank timed out"}`, StatusUnknown},
+		"a proxy's 404":       {404, `<html>not found</html>`, ""},
+		"a bare 404 json":     {404, `{"error":"no route"}`, ""},
+		"a 2xx without one":   {200, `{"id":"R-1"}`, ""},
+		"done with a 500":     {500, `{"outcome":"done"}`, ""},
+		"unknown with a 409":  {409, `{"outcome":"unknown"}`, ""},
+		"a redirect":          {307, ``, ""},
+		"something else":      {200, `{"outcome":"maybe"}`, ""},
+	} {
+		outcome, _ := explicitAnswer(c.status, []byte(c.body))
+		require.Equal(t, c.outcome, outcome, name)
+	}
+	_, kept := explicitAnswer(200, []byte(`{"outcome":"done","result":{"id":"R-1"}}`))
+	require.JSONEq(t, `{"id":"R-1"}`, string(kept))
+	_, kept = explicitAnswer(422, []byte(`{"outcome":"refused","refusal":{"reason":"x"}}`))
+	require.JSONEq(t, `{"reason":"x"}`, string(kept))
 }

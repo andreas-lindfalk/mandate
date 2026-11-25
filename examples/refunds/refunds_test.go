@@ -17,20 +17,40 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/sign"
 )
 
-const secret = "mws_refunds_test_secret_0123456789"
+var (
+	now      = time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	tenantId = uuid.MustParse("7d0c0000-0000-0000-0000-000000000001")
+	audience = "pgm:7d0c0000-0000-0000-0000-000000000001:refunds.issue:0123456789abcdef"
+	signer   = mustSigner()
+)
 
-var now = time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+func mustSigner() *sign.Signer {
+	seed := make([]byte, 32)
+	for i := range seed {
+		seed[i] = byte(40 + i)
+	}
+	s, err := sign.NewSigner(seed)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+func receiver(store *refunds.Store) *httptest.Server {
+	return httptest.NewServer(store.Receiver(sign.NewKeySet(signer.PublicKey()), audience, tenantId))
+}
 
 // deliver posts a signed delivery of a refund, as pgmandate does, and
 // returns the status and the answer.
 func deliver(t *testing.T, server *httptest.Server, deliveryId, proposalId uuid.UUID, payload map[string]any) (int, map[string]any) {
-	return deliverProposedAt(t, server, deliveryId, proposalId, now, payload)
+	return send(t, server, deliveryId, proposalId, now, time.Now().Add(time.Hour), audience, payload)
 }
 
-func deliverProposedAt(t *testing.T, server *httptest.Server, deliveryId, proposalId uuid.UUID, proposedAt time.Time, payload map[string]any) (int, map[string]any) {
+func send(t *testing.T, server *httptest.Server, deliveryId, proposalId uuid.UUID, proposedAt, notAfter time.Time, to string, payload map[string]any) (int, map[string]any) {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
-		"version": 1, "deliveryId": deliveryId, "correlationId": proposalId.String(), "tenantId": uuid.New(), "createdAt": now,
+		"version": 2, "kind": "delivery", "audience": to, "tenantId": tenantId, "deliveryId": deliveryId,
+		"correlationId": proposalId.String(), "createdAt": now, "notAfter": notAfter.UTC().Format(time.RFC3339),
 		"proposal": map[string]any{"id": proposalId, "action": refunds.Action, "title": "Refund", "payload": payload, "risk": "medium", "agentId": uuid.New(), "proposedAt": proposedAt},
 		"decision": map[string]any{"status": "executed", "decidedAt": now, "edited": false},
 	})
@@ -39,7 +59,7 @@ func deliverProposedAt(t *testing.T, server *httptest.Server, deliveryId, propos
 	require.NoError(t, err)
 	timestamp := time.Now().Unix()
 	request.Header.Set(sign.HeaderTimestamp, strconv.FormatInt(timestamp, 10))
-	request.Header.Set(sign.HeaderSignature, sign.Signature([]byte(secret), timestamp, body))
+	request.Header.Set(sign.HeaderSignature, signer.Sign(timestamp, body))
 	request.Header.Set(sign.HeaderDeliveryId, deliveryId.String())
 	response, err := http.DefaultClient.Do(request)
 	require.NoError(t, err)
@@ -51,9 +71,26 @@ func deliverProposedAt(t *testing.T, server *httptest.Server, deliveryId, propos
 	return response.StatusCode, answer
 }
 
+// refusedFor is the reason of a refusal, or "" when the answer is not one.
+func refusedFor(answer map[string]any) string {
+	if answer["outcome"] != "refused" {
+		return ""
+	}
+	reason, _ := answer["refusal"].(map[string]any)["reason"].(string)
+	return reason
+}
+
+func result(answer map[string]any) map[string]any {
+	if answer["outcome"] != "done" {
+		return nil
+	}
+	r, _ := answer["result"].(map[string]any)
+	return r
+}
+
 func TestTheReceiverChecksEveryClaim(t *testing.T) {
 	store := refunds.NewStore(refunds.Order{Id: "A-1", PaidCents: 12_000, Currency: "EUR", DeliveredAt: now.Add(-3 * 24 * time.Hour)})
-	server := httptest.NewServer(store.Receiver(secret))
+	server := receiver(store)
 	defer server.Close()
 	claim := func(change func(map[string]any)) map[string]any {
 		p := map[string]any{"orderId": "A-1", "amountCents": 4_000, "currency": "EUR", "daysSinceDelivery": 3}
@@ -75,9 +112,9 @@ func TestTheReceiverChecksEveryClaim(t *testing.T) {
 	} {
 		status, answer := deliver(t, server, uuid.New(), uuid.New(), claim(c.change))
 		require.Equal(t, http.StatusUnprocessableEntity, status, name)
-		require.Contains(t, answer["refused"], c.why, name)
+		require.Contains(t, refusedFor(answer), c.why, name)
 		for _, record := range []string{"12000", "EUR", "3 days", "A-1"} {
-			require.NotContains(t, answer["refused"], record, "a refusal never tells what the records hold: "+name)
+			require.NotContains(t, refusedFor(answer), record, "a refusal never tells what the records hold: "+name)
 		}
 	}
 	order, _ := store.Order("A-1")
@@ -88,7 +125,7 @@ func TestTheReceiverChecksEveryClaim(t *testing.T) {
 	proposal, delivery := uuid.New(), uuid.New()
 	status, answer := deliver(t, server, delivery, proposal, claim(nil))
 	require.Equal(t, http.StatusOK, status)
-	require.Equal(t, "RF-"+proposal.String()[:8], answer["refundId"])
+	require.Equal(t, "RF-"+proposal.String()[:8], result(answer)["refundId"])
 	status, again := deliver(t, server, delivery, proposal, claim(nil))
 	require.Equal(t, http.StatusOK, status)
 	require.Equal(t, answer, again)
@@ -100,7 +137,7 @@ func TestTheReceiverChecksEveryClaim(t *testing.T) {
 	// What is left bounds the next refund.
 	status, answer = deliver(t, server, uuid.New(), uuid.New(), claim(func(p map[string]any) { p["amountCents"] = 8_001 }))
 	require.Equal(t, http.StatusUnprocessableEntity, status)
-	require.Contains(t, answer["refused"], "more than is left to refund")
+	require.Contains(t, refusedFor(answer), "more than is left to refund")
 
 	// A claim that makes the case look weaker than the records do stands.
 	status, _ = deliver(t, server, uuid.New(), uuid.New(), claim(func(p map[string]any) { p["daysSinceDelivery"] = 10; p["amountCents"] = 100 }))
@@ -111,10 +148,29 @@ func TestTheReceiverChecksEveryClaim(t *testing.T) {
 // days later, or a delivery retried tomorrow, still matches.
 func TestAClaimIsCheckedAsOfTheProposal(t *testing.T) {
 	store := refunds.NewStore(refunds.Order{Id: "A-1", PaidCents: 12_000, Currency: "EUR", DeliveredAt: now.Add(-4 * 24 * time.Hour)})
-	server := httptest.NewServer(store.Receiver(secret))
+	server := receiver(store)
 	defer server.Close()
 	proposedYesterday := now.Add(-24 * time.Hour)
-	status, answer := deliverProposedAt(t, server, uuid.New(), uuid.New(), proposedYesterday,
+	status, answer := send(t, server, uuid.New(), uuid.New(), proposedYesterday, time.Now().Add(time.Hour), audience,
 		map[string]any{"orderId": "A-1", "amountCents": 100, "currency": "EUR", "daysSinceDelivery": 3})
 	require.Equal(t, http.StatusOK, status, answer)
+	require.Equal(t, "done", answer["outcome"])
+}
+
+// A delivery past its notAfter is refused, one for another audience is
+// answered without an outcome, and neither moves anything.
+func TestTooLateOrNotOursMovesNothing(t *testing.T) {
+	store := refunds.NewStore(refunds.Order{Id: "A-1", PaidCents: 12_000, Currency: "EUR", DeliveredAt: now.Add(-3 * 24 * time.Hour)})
+	server := receiver(store)
+	defer server.Close()
+	claim := map[string]any{"orderId": "A-1", "amountCents": 100, "currency": "EUR", "daysSinceDelivery": 3}
+
+	_, answer := send(t, server, uuid.New(), uuid.New(), now, time.Now().Add(-time.Second), audience, claim)
+	require.Equal(t, "too_late", refusedFor(answer))
+	status, answer := send(t, server, uuid.New(), uuid.New(), now, time.Now().Add(time.Hour), audience[:len(audience)-1]+"0", claim)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Nil(t, answer["outcome"], "retried, not refused: the receiver may not know a new audience yet")
+	require.Equal(t, "not_for_this_receiver", answer["error"])
+	order, _ := store.Order("A-1")
+	require.Zero(t, order.RefundedCents)
 }

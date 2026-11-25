@@ -29,6 +29,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/events"
 	"github.com/andreas-lindfalk/pgmandate/pkg/jobs"
+	"github.com/andreas-lindfalk/pgmandate/sign"
 )
 
 // Demo is the five-minute demo: a tenant, an owner, an agent, three actions
@@ -37,14 +38,14 @@ import (
 // database refuses what no rule allows; the chain verifies; the decisions
 // export. The database must have the schema (migrate runs first). What it
 // creates stays, so the token at the end works against `pgmandate serve`.
-func Demo(ctx context.Context, appUrl, receiverAddr string, out io.Writer) error {
+func Demo(ctx context.Context, appUrl, receiverAddr string, signer *sign.Signer, out io.Writer) error {
 	pool, err := db.Open(ctx, appUrl)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 	queue := jobs.NewQueue(pool)
-	kernel := newKernel(pool, queue, true, "")
+	kernel := newKernel(pool, queue, true, "", signer)
 	if err := queue.Init(2); err != nil {
 		return err
 	}
@@ -67,7 +68,7 @@ func Demo(ctx context.Context, appUrl, receiverAddr string, out io.Writer) error
 	if err != nil {
 		return fmt.Errorf("the demo's receiver cannot listen on %s (is `pgmandate receiver` running? stop it first): %w", receiverAddr, err)
 	}
-	receiver := webhook.NewReceiver("")
+	receiver := webhook.NewReceiver(sign.NewKeySet(signer.PublicKey()))
 	helpdesk := &http.Server{Handler: receiver, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = helpdesk.Serve(listener) }()
 	defer helpdesk.Close() //nolint:errcheck
@@ -83,7 +84,7 @@ type demo struct {
 	receiver     *webhook.Receiver
 	helpdeskUrl  string
 	receiverAddr string
-	hookSecrets  []string
+	audiences    []string
 
 	tenant  tenants.Tenant
 	owner   context.Context
@@ -136,13 +137,13 @@ func (d *demo) run(ctx context.Context, url string) error {
 	} {
 		input.Connector = actions.ConnectorWebhook
 		input.Url = d.helpdeskUrl
-		defined, hookSecret, err := d.kernel.Actions.Define(d.owner, input)
+		defined, err := d.kernel.Actions.Define(d.owner, input)
 		if err != nil {
 			return err
 		}
-		d.receiver.AddSecret(hookSecret)
-		d.hookSecrets = append(d.hookSecrets, hookSecret)
-		d.say("   action   %-15s %-7s waits %s  webhook %s, secret …%s", defined.Key, defined.Risk, defined.WaitLimit, d.helpdeskUrl, hookSecret[len(hookSecret)-4:])
+		d.receiver.Trust(defined.ConnectorAudience, tenant.Id)
+		d.audiences = append(d.audiences, defined.ConnectorAudience)
+		d.say("   action   %-15s %-7s waits %s  webhook %s, audience …%s", defined.Key, defined.Risk, defined.WaitLimit, d.helpdeskUrl, defined.ConnectorAudience[len(defined.ConnectorAudience)-6:])
 	}
 	m, err := d.kernel.Mandates.Grant(d.owner, mandates.Input{
 		AgentId: &agent.Id, Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 3,
@@ -315,7 +316,7 @@ func (d *demo) run(ctx context.Context, url string) error {
 	d.say("What next")
 	d.say("  The UI:        make run, then http://127.0.0.1:8585, sign in as alice@acme.example (tenant %s)", tenant.Id)
 	d.say("  A receiver:    the demo's helpdesk stopped with it. In another terminal, so approvals have somewhere to land:")
-	d.say("                 go run ./cmd/pgmandate receiver -addr %s -secrets %s", d.receiverAddr, strings.Join(d.hookSecrets, ","))
+	d.say("                 go run ./cmd/pgmandate receiver -addr %s -tenant %s -audience %s", d.receiverAddr, tenant.Id, strings.Join(d.audiences, ","))
 	d.say("  Your agent:    claude mcp add --transport http pgmandate http://127.0.0.1:8585/mcp --header \"Authorization: Bearer %s\"", secret)
 	d.say("                 The mandate's budget is spent, so its proposals wait in the inbox until you grant another.")
 	d.say("  The queue:     go run ./cmd/pgmandate proposals -tenant %s -status pending", tenant.Id)
@@ -354,10 +355,10 @@ func (d *demo) delivered(ctx context.Context, p map[string]any) error {
 		if err != nil {
 			return err
 		}
-		if found && delivery.Status == deliveries.StatusDelivered {
+		if found && delivery.Status == deliveries.StatusDone {
 			for _, r := range d.receiver.Received() {
 				if r.Payload.Proposal.Id == proposalId {
-					d.say("     delivered to %s after %d attempt(s), signature verified; decision %s", d.helpdeskUrl, delivery.Attempts, r.Payload.Decision.Status)
+					d.say("     done by %s after %d attempt(s): signature, audience and tenant checked; decision %s", d.helpdeskUrl, delivery.AttemptsStarted, r.Payload.Decision.Status)
 					return nil
 				}
 			}
@@ -372,7 +373,7 @@ func (d *demo) delivered(ctx context.Context, p map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return fmt.Errorf("the helpdesk never received proposal %s (delivery %s, %d attempts, %s)", proposalId, delivery.Status, delivery.Attempts, delivery.LastError)
+	return fmt.Errorf("the helpdesk never received proposal %s (delivery %s, %d attempts, %s)", proposalId, delivery.Status, delivery.AttemptsStarted, delivery.LastError)
 }
 
 // call runs a tool and returns its JSON result; a tool error is returned

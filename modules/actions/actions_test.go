@@ -37,49 +37,37 @@ func webhook(key string) actions.Input {
 
 func (s *ActionsSuite) Test_OwnerDefinesWebhookActions() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	defined, secret, err := s.W.Kernel.Actions.Define(t.Owner, webhook("tickets.create"))
+	defined, err := s.W.Kernel.Actions.Define(t.Owner, webhook("tickets.create"))
 	s.Require().NoError(err)
-	s.Require().True(strings.HasPrefix(secret, actions.SecretPrefix), "the secret is shown once")
-	s.Require().True(defined.HasSecret())
-	s.Require().Equal(secret, s.connectorSecret(t, "tickets.create"))
+	audience := defined.ConnectorAudience
+	s.Require().Regexp(`^pgm:`+t.Id.String()+`:tickets\.create:[0-9a-f]{16}$`, audience, "the database draws the audience")
 	s.Require().Equal(&t.OwnerId, defined.CreatedBy)
 	s.Require().Equal("https://helpdesk.example/hooks/mandate", defined.ConnectorUrl)
 	s.Require().JSONEq(string(ticketSchema), string(defined.Schema))
 	s.Require().Equal([]string{"action.defined"}, s.eventTypes(t.Owner, defined.Id))
 
-	// Defining again changes it and keeps the secret, unless rotated.
+	// Defining again at the same address changes it and keeps the audience.
 	changed := webhook("tickets.create")
 	changed.WaitLimit = 48 * time.Hour
 	changed.DeliverWithin = 10 * time.Minute
-	again, none, err := s.W.Kernel.Actions.Define(t.Owner, changed)
+	again, err := s.W.Kernel.Actions.Define(t.Owner, changed)
 	s.Require().NoError(err)
-	s.Require().Empty(none)
 	s.Require().Equal(defined.Id, again.Id)
 	s.Require().Equal(48*time.Hour, again.WaitLimit)
 	s.Require().Equal(10*time.Minute, again.DeliverWithin)
-	s.Require().Equal(secret, s.connectorSecret(t, "tickets.create"), "defining it again keeps the secret")
-	// A new URL gets a new secret, so the old receiver cannot sign for
-	// the new one.
+	s.Require().Equal(audience, again.ConnectorAudience, "defining it again at the same address keeps the audience")
+	// A new address gets a new audience, so the old receiver accepts
+	// nothing meant for the new one.
 	moved := changed
 	moved.Url = "https://helpdesk.example/hooks/elsewhere"
-	movedAction, movedSecret, err := s.W.Kernel.Actions.Define(t.Owner, moved)
+	movedAction, err := s.W.Kernel.Actions.Define(t.Owner, moved)
 	s.Require().NoError(err)
-	s.Require().NotEmpty(movedSecret, "moving the connector rotates the secret")
-	s.Require().NotEqual(secret, movedSecret)
-	s.Require().Equal(movedSecret, s.connectorSecret(t, "tickets.create"))
+	s.Require().NotEqual(audience, movedAction.ConnectorAudience, "moving the connector draws a new audience")
+	s.Require().Regexp(`^pgm:`+t.Id.String()+`:tickets\.create:[0-9a-f]{16}$`, movedAction.ConnectorAudience)
 	s.Require().Equal("https://helpdesk.example/hooks/elsewhere", movedAction.ConnectorUrl)
-	secret = movedSecret
-	changed = moved
-	changed.RotateSecret = true
-	rotated, fresh, err := s.W.Kernel.Actions.Define(t.Owner, changed)
-	s.Require().NoError(err)
-	s.Require().NotEmpty(fresh)
-	s.Require().NotEqual(secret, fresh)
-	s.Require().Equal(fresh, s.connectorSecret(t, "tickets.create"))
-	s.Require().True(rotated.HasSecret())
-	s.Require().Equal([]string{"action.defined", "action.changed", "action.changed", "action.changed"}, s.eventTypes(t.Owner, defined.Id))
+	s.Require().Equal([]string{"action.defined", "action.changed", "action.changed"}, s.eventTypes(t.Owner, defined.Id))
 
-	// The chain shows where it delivers and what it accepts, as digests.
+	// The chain shows where it delivers, to whom and what it accepts.
 	var logged []events.Stored
 	s.Require().NoError(db.InTx(t.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
 		var err error
@@ -97,8 +85,9 @@ func (s *ActionsSuite) Test_OwnerDefinesWebhookActions() {
 	s.Require().NoError(json.Unmarshal(logged[2].Payload, &third))
 	s.Require().Equal(urlDigest("https://helpdesk.example/hooks/mandate"), first["connectorUrlSha256"])
 	s.Require().Equal(schemaDigest, first["schemaSha256"])
+	s.Require().Equal(audience, first["audience"])
 	s.Require().Equal(urlDigest("https://helpdesk.example/hooks/elsewhere"), third["connectorUrlSha256"], "a moved connector shows in the chain")
-	s.Require().Equal(true, third["secretRotated"])
+	s.Require().Equal(movedAction.ConnectorAudience, third["audience"])
 
 	list, err := s.W.Kernel.Actions.List(t.Reviewer, false)
 	s.Require().NoError(err)
@@ -114,69 +103,74 @@ func (s *ActionsSuite) Test_OwnerDefinesWebhookActions() {
 	s.Require().NoError(err)
 	s.Require().Len(all, 1)
 	s.Require().NotNil(all[0].RemovedAt)
-	restored, _, err := s.W.Kernel.Actions.Define(t.Owner, webhook("tickets.create"))
+	restored, err := s.W.Kernel.Actions.Define(t.Owner, moved)
 	s.Require().NoError(err)
 	s.Require().Nil(restored.RemovedAt, "defining a removed action restores it")
+	s.Require().Equal(moved.Url, restored.ConnectorUrl)
+	s.Require().NotEqual(movedAction.ConnectorAudience, restored.ConnectorAudience, "an action defined anew after removal gets a new audience, even at the same address")
 	s.code(s.W.Kernel.Actions.Remove(t.Owner, "nope.nothing"), fault.NotFound)
 
-	// A builtin definition has no URL and no secret.
+	// A builtin definition has no URL and no audience.
 	builtin := actions.Input{Key: "test.low", Description: "", Risk: mandates.RiskMedium, Connector: actions.ConnectorBuiltin}
-	b, none, err := s.W.Kernel.Actions.Define(t.Owner, builtin)
+	b, err := s.W.Kernel.Actions.Define(t.Owner, builtin)
 	s.Require().NoError(err)
-	s.Require().Empty(none)
-	s.Require().False(b.HasSecret())
-	// Turning a webhook into a builtin drops its secret.
+	s.Require().Empty(b.ConnectorAudience)
+	// Turning a webhook into a builtin drops its audience, and back into a
+	// webhook at the same address draws a new one.
 	asBuiltin := builtin
 	asBuiltin.Key = "tickets.create"
-	b, _, err = s.W.Kernel.Actions.Define(t.Owner, asBuiltin)
+	b, err = s.W.Kernel.Actions.Define(t.Owner, asBuiltin)
 	s.Require().NoError(err)
-	s.Require().False(b.HasSecret())
+	s.Require().Empty(b.ConnectorAudience)
 	s.Require().Empty(b.ConnectorUrl)
-}
-
-// connectorSecret reads an action's secret the one way the application
-// can: as the system, through connector_of.
-func (s *ActionsSuite) connectorSecret(t testfix.Tenant, key string) string {
-	s.T().Helper()
-	var secret []byte
-	s.Require().NoError(db.InTx(t.System, s.W.Pg.App, func(tx pgx.Tx) error {
-		return tx.QueryRow(t.System, `SELECT secret FROM mandate.connector_of($1)`, key).Scan(&secret)
-	}))
-	return string(secret)
-}
-
-// Only the system reads a connector's secret, and only through
-// connector_of: no person and no agent can, whatever SQL they run.
-func (s *ActionsSuite) Test_OnlyTheSystemReadsASecret() {
-	t := s.W.NewTenant(s.T(), "Acme")
-	_, secret, err := s.W.Kernel.Actions.Define(t.Owner, webhook("tickets.create"))
+	back, err := s.W.Kernel.Actions.Define(t.Owner, moved)
 	s.Require().NoError(err)
-	for name, ctx := range map[string]context.Context{"owner": t.Owner, "reviewer": t.Reviewer, "agent": t.Agent, "system": t.System} {
-		err := s.exec(ctx, `SELECT connector_secret FROM mandate.actions WHERE key = 'tickets.create'`)
-		s.Require().Error(err, name)
-		s.Require().Equal(fault.Name(fault.PermissionDenied), fault.Name(fault.CodeOf(fault.FromDb(err))), name)
-	}
-	for name, ctx := range map[string]context.Context{"owner": t.Owner, "reviewer": t.Reviewer, "agent": t.Agent} {
-		s.refused(ctx, `SELECT * FROM mandate.connector_of('tickets.create')`)
-		s.T().Log(name, "cannot call connector_of")
-	}
-	s.Require().Equal(secret, s.connectorSecret(t, "tickets.create"))
-	other := s.W.NewTenant(s.T(), "Other")
-	var rows int
-	s.Require().NoError(db.InTx(other.System, s.W.Pg.App, func(tx pgx.Tx) error {
-		return tx.QueryRow(other.System, `SELECT count(*) FROM mandate.connector_of('tickets.create')`).Scan(&rows)
-	}))
-	s.Require().Zero(rows, "another tenant's system finds nothing")
+	s.Require().NotEmpty(back.ConnectorAudience)
+	s.Require().NotEqual(restored.ConnectorAudience, back.ConnectorAudience)
+}
 
-	// A webhook that moves keeps its secret only if no one changes it; the
-	// table refuses a move without a new one.
-	s.refused(t.Owner, `UPDATE mandate.actions SET connector_url = 'https://elsewhere.example/hooks' WHERE key = 'tickets.create'`)
-	s.Require().NoError(s.exec(t.Owner, `UPDATE mandate.actions SET connector_url = 'https://elsewhere.example/hooks', connector_secret = decode(repeat('cd', 16), 'hex') WHERE key = 'tickets.create'`))
-	// Nor can the secret be kept through a switch to builtin and back: a
-	// builtin action has no secret.
-	s.invalid(t.Owner, `UPDATE mandate.actions SET connector_kind = 'builtin', connector_url = NULL WHERE key = 'tickets.create'`)
-	s.Require().NoError(s.exec(t.Owner, `UPDATE mandate.actions SET connector_kind = 'builtin', connector_url = NULL, connector_secret = NULL WHERE key = 'tickets.create'`))
-	s.invalid(t.Owner, `UPDATE mandate.actions SET connector_kind = 'webhook', connector_url = 'https://new.example/hooks' WHERE key = 'tickets.create'`)
+// audienceOf reads an action's audience as it is stored.
+func (s *ActionsSuite) audienceOf(t testfix.Tenant, key string) *string {
+	s.T().Helper()
+	var audience *string
+	s.Require().NoError(db.InTx(t.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
+		return tx.QueryRow(t.Owner, `SELECT connector_audience FROM mandate.actions WHERE key = $1`, key).Scan(&audience)
+	}))
+	return audience
+}
+
+// The audience is the database's to draw: whatever an owner writes in SQL,
+// the trigger draws it or keeps it, and a receiver can rely on it never
+// repeating.
+func (s *ActionsSuite) Test_NoOneChoosesTheAudience() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	defined, err := s.W.Kernel.Actions.Define(t.Owner, webhook("tickets.create"))
+	s.Require().NoError(err)
+	audience := defined.ConnectorAudience
+	const chosen = "pgm:00000000-0000-0000-0000-000000000000:tickets.create:0123456789abcdef"
+
+	// Set directly, it is kept as it was.
+	s.Require().NoError(s.exec(t.Owner, `UPDATE mandate.actions SET connector_audience = $1 WHERE key = 'tickets.create'`, chosen))
+	s.Require().Equal(audience, *s.audienceOf(t, "tickets.create"))
+	// Set along with a move, a new one is drawn, not the one chosen.
+	s.Require().NoError(s.exec(t.Owner, `UPDATE mandate.actions SET connector_url = 'https://elsewhere.example/hooks', connector_audience = $1 WHERE key = 'tickets.create'`, chosen))
+	movedTo := *s.audienceOf(t, "tickets.create")
+	s.Require().NotEqual(chosen, movedTo)
+	s.Require().NotEqual(audience, movedTo)
+	// Set on insert, it is drawn anyway.
+	s.Require().NoError(s.exec(t.Owner, `INSERT INTO mandate.actions (id, tenant_id, key, description, risk, connector_kind, connector_url, connector_audience, schema)
+		VALUES (gen_random_uuid(), $1, 'x.y', '', 'low', 'webhook', 'https://x.example/hooks', $2, '{"type":"object"}')`, t.Id, chosen))
+	inserted := *s.audienceOf(t, "x.y")
+	s.Require().NotEqual(chosen, inserted)
+	s.Require().Regexp(`^pgm:`+t.Id.String()+`:x\.y:[0-9a-f]{16}$`, inserted)
+	// Set on a builtin, it is cleared.
+	s.Require().NoError(s.exec(t.Owner, `UPDATE mandate.actions SET connector_kind = 'builtin', connector_url = NULL, connector_audience = $1 WHERE key = 'x.y'`, chosen))
+	s.Require().Nil(s.audienceOf(t, "x.y"))
+	// Only an owner writes the table at all.
+	for name, ctx := range map[string]context.Context{"reviewer": t.Reviewer, "agent": t.Agent} {
+		s.refused(ctx, `UPDATE mandate.actions SET connector_url = 'https://evil.example/hooks' WHERE key = 'tickets.create'`)
+		s.T().Log(name, "cannot move a connector")
+	}
 }
 
 func (s *ActionsSuite) Test_DefineValidation() {
@@ -200,7 +194,7 @@ func (s *ActionsSuite) Test_DefineValidation() {
 	} {
 		input := webhook("tickets.create")
 		change(&input)
-		_, _, err := s.W.Kernel.Actions.Define(t.Owner, input)
+		_, err := s.W.Kernel.Actions.Define(t.Owner, input)
 		s.code(err, fault.InvalidArgument)
 		s.T().Log(name, "refused")
 	}
@@ -208,11 +202,11 @@ func (s *ActionsSuite) Test_DefineValidation() {
 
 func (s *ActionsSuite) Test_OnlyOwnersAndTheDatabaseAgrees() {
 	t := s.W.NewTenant(s.T(), "Acme")
-	_, _, err := s.W.Kernel.Actions.Define(t.Reviewer, webhook("tickets.create"))
+	_, err := s.W.Kernel.Actions.Define(t.Reviewer, webhook("tickets.create"))
 	s.code(err, fault.PermissionDenied)
-	_, _, err = s.W.Kernel.Actions.Define(t.Agent, webhook("tickets.create"))
+	_, err = s.W.Kernel.Actions.Define(t.Agent, webhook("tickets.create"))
 	s.code(err, fault.PermissionDenied)
-	defined, _, err := s.W.Kernel.Actions.Define(t.Owner, webhook("tickets.create"))
+	defined, err := s.W.Kernel.Actions.Define(t.Owner, webhook("tickets.create"))
 	s.Require().NoError(err)
 	s.code(s.W.Kernel.Actions.Remove(t.Reviewer, "tickets.create"), fault.PermissionDenied)
 	s.refused(t.Owner, `UPDATE mandate.actions SET key = 'tickets.other' WHERE id = $1`, defined.Id)
@@ -224,8 +218,8 @@ func (s *ActionsSuite) Test_OnlyOwnersAndTheDatabaseAgrees() {
 	s.invalid(t.Owner, `INSERT INTO mandate.actions (id, tenant_id, key, description, risk, connector_kind) VALUES (gen_random_uuid(), $1, 'x.y', '', 'low', 'webhook')`, t.Id)
 	// A webhook action without a payload schema is refused by the table
 	// itself, and the same row with one is accepted.
-	const insertWebhook = `INSERT INTO mandate.actions (id, tenant_id, key, description, risk, connector_kind, connector_url, connector_secret, schema)
-		VALUES (gen_random_uuid(), $1, 'x.y', '', 'low', 'webhook', 'https://x.example/hooks', decode(repeat('ab', 16), 'hex'), $2::jsonb)`
+	const insertWebhook = `INSERT INTO mandate.actions (id, tenant_id, key, description, risk, connector_kind, connector_url, schema)
+		VALUES (gen_random_uuid(), $1, 'x.y', '', 'low', 'webhook', 'https://x.example/hooks', $2::jsonb)`
 	s.invalid(t.Owner, insertWebhook, t.Id, nil)
 	s.invalid(t.Owner, insertWebhook, t.Id, `null`)
 	s.invalid(t.Owner, insertWebhook, t.Id, `[]`)
@@ -236,7 +230,7 @@ func (s *ActionsSuite) Test_OnlyOwnersAndTheDatabaseAgrees() {
 func (s *ActionsSuite) Test_AnotherTenantSeesNoActions() {
 	a := s.W.NewTenant(s.T(), "A")
 	b := s.W.NewTenant(s.T(), "B")
-	defined, _, err := s.W.Kernel.Actions.Define(a.Owner, webhook("tickets.create"))
+	defined, err := s.W.Kernel.Actions.Define(a.Owner, webhook("tickets.create"))
 	s.Require().NoError(err)
 	list, err := s.W.Kernel.Actions.List(b.Owner, true)
 	s.Require().NoError(err)
@@ -248,7 +242,7 @@ func (s *ActionsSuite) Test_AnotherTenantSeesNoActions() {
 	still, err := s.W.Kernel.Actions.Get(a.Owner, "tickets.create")
 	s.Require().NoError(err)
 	s.Require().Nil(still.RemovedAt)
-	theirs, _, err := s.W.Kernel.Actions.Define(b.Owner, webhook("tickets.create"))
+	theirs, err := s.W.Kernel.Actions.Define(b.Owner, webhook("tickets.create"))
 	s.Require().NoError(err)
 	s.Require().NotEqual(defined.Id, theirs.Id, "the same key in two tenants is two actions")
 }

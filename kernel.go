@@ -46,6 +46,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
 	"github.com/andreas-lindfalk/pgmandate/pkg/jobs"
 	"github.com/andreas-lindfalk/pgmandate/schema"
+	"github.com/andreas-lindfalk/pgmandate/sign"
 )
 
 // Migrations is mandate's schema, to apply before the host's own.
@@ -81,6 +82,9 @@ type Options struct {
 	PublicUrl string
 	// NotifyClient replaces the HTTP client of notifications, for tests.
 	NotifyClient *http.Client
+	// Signer signs deliveries: an Ed25519 key kept outside the database.
+	// Without one, decisions are recorded but nothing is delivered.
+	Signer *sign.Signer
 }
 
 type Kernel struct {
@@ -117,9 +121,9 @@ func New(pool *pgxpool.Pool, opts Options) *Kernel {
 	k.Mandates.SetBuiltin(k.builtinSchemas)
 	k.Actions = actions.NewService(pool)
 	k.Proposals = proposals.NewService(pool, k)
-	k.Deliveries = deliveries.New(pool, opts.Queue, k.Proposals, deliveries.Options{AllowPrivate: opts.AllowPrivateConnectors})
+	k.Deliveries = deliveries.New(pool, opts.Queue, k.Proposals, deliveries.Options{AllowPrivate: opts.AllowPrivateConnectors, Signer: opts.Signer})
 	k.Proposals.SetDeliver(func(ctx context.Context, tx pgx.Tx, proposal Proposal, action Action) error {
-		return k.Deliveries.Enqueue(ctx, tx, proposal, action.Webhook.Url)
+		return k.Deliveries.Enqueue(ctx, tx, proposal, action.Webhook.Url, action.Webhook.Audience)
 	})
 	k.Actions.SetOnMoved(k.Deliveries.Retarget)
 	k.Notifications = notifications.New(pool, opts.Queue, notifications.Options{PublicUrl: opts.PublicUrl, Client: opts.NotifyClient})
@@ -270,7 +274,7 @@ func (k *Kernel) merge(defined actions.Action, code Action, hasCode bool) (Actio
 	}
 	switch defined.ConnectorKind {
 	case actions.ConnectorWebhook:
-		action.Webhook = &proposals.Webhook{Url: defined.ConnectorUrl}
+		action.Webhook = &proposals.Webhook{Url: defined.ConnectorUrl, Audience: defined.ConnectorAudience}
 	case actions.ConnectorBuiltin:
 		if hasCode {
 			action.Apply, action.Assess = code.Apply, code.Assess
@@ -483,21 +487,36 @@ type sweepTenantWorker struct {
 }
 
 func (w *sweepTenantWorker) Work(ctx context.Context, job *river.Job[SweepTenantArgs]) error {
-	_, err := w.kernel.Proposals.ExpireDue(actor.AsSystem(ctx, job.Args.TenantId))
+	scoped := actor.AsSystem(ctx, job.Args.TenantId)
+	if _, err := w.kernel.Proposals.ExpireDue(scoped); err != nil {
+		return err
+	}
+	_, err := w.kernel.Deliveries.FinishDue(scoped)
 	return err
 }
 
 // ExpireDue expires, in every tenant, the waiting proposals past their
 // deadline, and returns how many. The sweep does this every minute; a host
-// that runs the kernel without a queue calls it itself.
+// that runs the kernel without a queue calls it, and FinishDue, itself.
 func (k *Kernel) ExpireDue(ctx context.Context) (int, error) {
+	return k.forDueTenants(ctx, k.Proposals.ExpireDue)
+}
+
+// FinishDue, in every tenant, closes delivery attempts left open by a crash
+// and finishes the deliveries past the last moment an attempt may open,
+// and returns how many it finished.
+func (k *Kernel) FinishDue(ctx context.Context) (int, error) {
+	return k.forDueTenants(ctx, k.Deliveries.FinishDue)
+}
+
+func (k *Kernel) forDueTenants(ctx context.Context, do func(context.Context) (int, error)) (int, error) {
 	tenantIds, err := k.tenantsWithDueWork(ctx)
 	if err != nil {
 		return 0, err
 	}
 	total := 0
 	for _, tenantId := range tenantIds {
-		n, err := k.Proposals.ExpireDue(actor.AsSystem(ctx, tenantId))
+		n, err := do(actor.AsSystem(ctx, tenantId))
 		total += n
 		if err != nil {
 			return total, err

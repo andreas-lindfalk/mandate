@@ -16,8 +16,12 @@ service ProposalService {
   rpc GetProposal(GetProposalRequest) returns (GetProposalResponse);
   rpc ApproveProposal(ApproveProposalRequest) returns (ApproveProposalResponse);
   rpc RejectProposal(RejectProposalRequest) returns (RejectProposalResponse);
-  // RedeliverProposal sends a failed delivery again.
+  // RedeliverProposal sends again a delivery that was never sent, before
+  // its deadline.
   rpc RedeliverProposal(RedeliverProposalRequest) returns (RedeliverProposalResponse);
+  // SettleDelivery records whether a delivery whose outcome is unknown was
+  // done, once the work can no longer happen.
+  rpc SettleDelivery(SettleDeliveryRequest) returns (SettleDeliveryResponse);
 }
 
 message ExecutionBasis {
@@ -40,16 +44,40 @@ message Budget {
 
 message Delivery {
   string id = 1;
+  // pending, done, refused, not_sent, unknown, settled_done or
+  // settled_not_done.
   string status = 2;
+  // Attempts opened, and those proven never to have reached the receiver.
   int32 attempts = 3;
   string url = 4;
   string last_error = 5;
-  google.protobuf.Timestamp delivered_at = 6;
-  google.protobuf.Timestamp failed_at = 7;
-  // What the connector answered, as JSON text; empty for none.
+  google.protobuf.Timestamp finished_at = 6;
+  // When it must no longer be carried out.
+  google.protobuf.Timestamp not_after = 7;
+  // The receiver's result, its refusal, or what it said when it could not
+  // tell, as JSON text; empty for none.
   string result_json = 8;
-  // How many attempts are made before the delivery is marked failed.
+  // How many attempts are made at most.
   int32 max_attempts = 9;
+  int32 attempts_unsent = 10;
+  string audience = 11;
+  // Until when a delivery never sent may be sent again, and from when an
+  // unknown one may be settled.
+  google.protobuf.Timestamp send_again_before = 12;
+  google.protobuf.Timestamp settle_after = 13;
+  // Who settled it, when a person did.
+  string settled_by = 14;
+}
+
+message SettleDeliveryRequest {
+  // The proposal whose delivery is settled.
+  string id = 1;
+  // True: it was done. False: it was not.
+  bool done = 2;
+}
+
+message SettleDeliveryResponse {
+  Proposal proposal = 1;
 }
 
 message RedeliverProposalRequest {

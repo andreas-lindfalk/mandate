@@ -489,7 +489,11 @@ CREATE TABLE mandate.actions (
     schema            jsonb CHECK (schema IS NULL OR jsonb_typeof(schema) = 'object'),
     connector_kind    text NOT NULL CHECK (connector_kind IN ('webhook', 'builtin')),
     connector_url     text CHECK (connector_url IS NULL OR (length(connector_url) <= 2000 AND connector_url ~ '^https?://')),
-    connector_secret  bytea CHECK (connector_secret IS NULL OR length(connector_secret) BETWEEN 16 AND 256),
+    -- Who a delivery is for: pgm:<tenant>:<key>:<16 random hex digits>. The
+    -- trigger draws it, again whenever the address changes or the action is
+    -- defined anew, so an audience never repeats. A receiver accepts only its
+    -- own, and never takes it from the request.
+    connector_audience text CHECK (connector_audience IS NULL OR connector_audience ~ '^pgm:[0-9a-f-]{36}:[a-z0-9._-]+:[0-9a-f]{16}$'),
     department        text CHECK (department IS NULL OR length(department) BETWEEN 1 AND 100),
     created_by        uuid,
     created_at        timestamptz NOT NULL DEFAULT now(),
@@ -497,10 +501,9 @@ CREATE TABLE mandate.actions (
     updated_at        timestamptz NOT NULL DEFAULT now(),
     removed_at        timestamptz,
     UNIQUE (tenant_id, key),
-    -- A webhook has an address and a secret; a builtin action has neither,
-    -- so a secret cannot survive a switch to builtin and back.
+    -- A webhook has an address and an audience; a builtin action has neither.
     CHECK ((connector_kind = 'webhook') = (connector_url IS NOT NULL)),
-    CHECK ((connector_kind = 'webhook') = (connector_secret IS NOT NULL)),
+    CHECK ((connector_kind = 'webhook') = (connector_audience IS NOT NULL)),
     -- What is delivered to another system is held to a schema.
     CHECK (connector_kind <> 'webhook' OR schema IS NOT NULL)
 );
@@ -510,12 +513,7 @@ CREATE POLICY actions_scope ON mandate.actions
     USING (tenant_id = mandate.current_tenant())
     WITH CHECK (tenant_id = mandate.current_tenant());
 
--- The application reads every column but the connector's secret. Only
--- the system, sending a delivery, gets it, through connector_of below: a
--- transaction scoped as an agent or a person cannot read it.
-GRANT INSERT, UPDATE ON mandate.actions TO mandate_app;
-GRANT SELECT (id, tenant_id, key, description, risk, wait_limit, deliver_within, may_execute, schema, connector_kind, connector_url,
-    department, created_by, created_at, updated_by, updated_at, removed_at) ON mandate.actions TO mandate_app;
+GRANT SELECT, INSERT, UPDATE ON mandate.actions TO mandate_app;
 
 CREATE FUNCTION mandate.actions_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -531,12 +529,18 @@ BEGIN
         OR NEW.created_by IS DISTINCT FROM OLD.created_by OR NEW.created_at <> OLD.created_at THEN
         RAISE EXCEPTION 'an action keeps its key' USING ERRCODE = 'insufficient_privilege';
     END IF;
-    -- A webhook that moves to a new address gets a new secret: the receiver
-    -- at the old one holds the old secret and must not sign for the new.
-    IF TG_OP = 'UPDATE' AND NEW.connector_kind = 'webhook' AND OLD.connector_kind = 'webhook'
-        AND NEW.connector_url IS DISTINCT FROM OLD.connector_url
-        AND NEW.connector_secret IS NOT DISTINCT FROM OLD.connector_secret THEN
-        RAISE EXCEPTION 'a webhook moved to a new address needs a new secret' USING ERRCODE = 'insufficient_privilege';
+    -- The audience is the database's to draw, never the caller's. A new one
+    -- for a new webhook, a webhook moved to a new address, or an action
+    -- defined again after removal: the receiver at the old address, or of
+    -- the old definition, then accepts nothing meant for the new.
+    IF NEW.connector_kind <> 'webhook' THEN
+        NEW.connector_audience := NULL;
+    ELSIF TG_OP = 'INSERT' OR OLD.connector_kind <> 'webhook'
+        OR NEW.connector_url IS DISTINCT FROM OLD.connector_url
+        OR (OLD.removed_at IS NOT NULL AND NEW.removed_at IS NULL) THEN
+        NEW.connector_audience := 'pgm:' || NEW.tenant_id || ':' || NEW.key || ':' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 16);
+    ELSE
+        NEW.connector_audience := OLD.connector_audience;
     END IF;
     NEW.updated_by := mandate.current_actor();
     NEW.updated_at := now();
@@ -544,22 +548,6 @@ BEGIN
 END
 $$;
 
--- connector_of gives the system, and only the system, an action's
--- connector address and its secret together, as they are now, for the
--- tenant in scope.
-CREATE FUNCTION mandate.connector_of(p_action text) RETURNS TABLE (url text, secret bytea)
-LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = mandate, pg_temp AS $$
-BEGIN
-    IF mandate.current_actor_kind() IS DISTINCT FROM 'system' OR mandate.current_tenant() IS NULL THEN
-        RAISE EXCEPTION 'only the system reads a connector''s secret' USING ERRCODE = 'insufficient_privilege';
-    END IF;
-    RETURN QUERY SELECT a.connector_url, a.connector_secret FROM mandate.actions a
-        WHERE a.tenant_id = mandate.current_tenant() AND a.key = p_action
-            AND a.connector_kind = 'webhook' AND a.removed_at IS NULL;
-END
-$$;
-REVOKE ALL ON FUNCTION mandate.connector_of(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mandate.connector_of(text) TO mandate_app;
 
 CREATE TRIGGER actions_guard BEFORE INSERT OR UPDATE ON mandate.actions
     FOR EACH ROW EXECUTE FUNCTION mandate.actions_guard();
@@ -1166,28 +1154,42 @@ CREATE TRIGGER proposals_payload_keys BEFORE INSERT OR UPDATE OF payload ON mand
 ------------------------------------------------------------------------------
 -- Deliveries
 ------------------------------------------------------------------------------
--- A decided proposal whose action is a webhook is delivered to the
--- connector by a job. The decision stands whatever happens here; a failed
--- delivery shows in the chain and the UI, and a person can send it again.
--- The connector's answer is kept as the result, for the agent to read.
+-- A decided proposal whose action is a webhook is delivered to its
+-- receiver by a job. The decision stands whatever happens here. Delivery
+-- contract v2 (docs/design-0.1.md): only a receiver's explicit answer is
+-- final; an attempt counts as possibly sent from the moment it opens until
+-- it is proven unsent; a delivery that may or may not have happened is
+-- settled by a person, and only once the work can no longer happen.
 CREATE TABLE mandate.deliveries (
-    id            uuid PRIMARY KEY,
-    tenant_id     uuid NOT NULL REFERENCES mandate.tenants (id) ON DELETE CASCADE,
-    proposal_id   uuid NOT NULL,
-    action_key    text NOT NULL,
-    url           text NOT NULL,
-    status        text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'failed')),
-    attempts      int NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-    last_status   int,
-    last_error    text CHECK (last_error IS NULL OR length(last_error) <= 1000),
-    -- What the connector answered, when it answered with a JSON object.
-    result        jsonb CHECK (result IS NULL OR (jsonb_typeof(result) = 'object' AND octet_length(result::text) <= 16384)),
-    created_at    timestamptz NOT NULL DEFAULT now(),
-    delivered_at  timestamptz,
-    failed_at     timestamptz,
+    id               uuid PRIMARY KEY,
+    tenant_id        uuid NOT NULL REFERENCES mandate.tenants (id) ON DELETE CASCADE,
+    proposal_id      uuid NOT NULL,
+    action_key       text NOT NULL,
+    url              text NOT NULL,
+    audience         text NOT NULL,
+    status           text NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'done', 'refused', 'not_sent', 'unknown', 'settled_done', 'settled_not_done')),
+    -- The time after which it must not be carried out: the decision's time
+    -- plus the proposal's delivery window. Set by the insert trigger.
+    not_after        timestamptz NOT NULL,
+    -- Attempts opened, and those proven never to have reached the receiver.
+    -- An attempt is possibly sent from the moment it opens.
+    attempts_started int NOT NULL DEFAULT 0 CHECK (attempts_started >= 0),
+    attempts_unsent  int NOT NULL DEFAULT 0 CHECK (attempts_unsent >= 0 AND attempts_unsent <= attempts_started),
+    attempt_open_at  timestamptz,
+    last_status      int,
+    last_error       text CHECK (last_error IS NULL OR length(last_error) <= 1000),
+    -- The receiver's result, or its refusal, when it gave one.
+    result           jsonb CHECK (result IS NULL OR (jsonb_typeof(result) = 'object' AND octet_length(result::text) <= 16384)),
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    finished_at      timestamptz,
+    settled_by       uuid,
     UNIQUE (tenant_id, proposal_id),
     FOREIGN KEY (tenant_id, proposal_id) REFERENCES mandate.proposals (tenant_id, id) ON DELETE CASCADE
 );
+
+-- For the sweep: deliveries that may be due.
+CREATE INDEX deliveries_due_idx ON mandate.deliveries (not_after) WHERE status = 'pending';
 
 ALTER TABLE mandate.deliveries ENABLE ROW LEVEL SECURITY;
 CREATE POLICY deliveries_scope ON mandate.deliveries
@@ -1196,8 +1198,19 @@ CREATE POLICY deliveries_scope ON mandate.deliveries
 
 GRANT SELECT, INSERT, UPDATE ON mandate.deliveries TO mandate_app;
 
+-- The request timeout and the allowance for clocks, as the contract states
+-- them: no attempt opens later than not_after minus the timeout, an attempt
+-- open longer than the timeout and a margin was left by a crash, and a
+-- person settles only once the work can no longer happen.
+CREATE FUNCTION mandate.delivery_timeout() RETURNS interval LANGUAGE sql IMMUTABLE AS $$ SELECT interval '15 seconds' $$;
+CREATE FUNCTION mandate.delivery_skew() RETURNS interval LANGUAGE sql IMMUTABLE AS $$ SELECT interval '5 minutes' $$;
+CREATE FUNCTION mandate.delivery_stale() RETURNS interval LANGUAGE sql IMMUTABLE AS $$ SELECT interval '45 seconds' $$;
+GRANT EXECUTE ON FUNCTION mandate.delivery_timeout(), mandate.delivery_skew(), mandate.delivery_stale() TO mandate_app;
+
 CREATE FUNCTION mandate.deliveries_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
+DECLARE
+    v_possibly_sent boolean;
 BEGIN
     IF TG_OP = 'INSERT' THEN
         -- Recorded in the deciding transaction: a person's approval or the
@@ -1205,61 +1218,138 @@ BEGIN
         IF mandate.current_role() IS NULL AND mandate.current_actor_kind() IS DISTINCT FROM 'system' THEN
             RAISE EXCEPTION 'a delivery is recorded by the deciding person or the system' USING ERRCODE = 'insufficient_privilege';
         END IF;
-        -- Only a decided proposal is delivered, and only to its action's
-        -- own connector.
-        IF NOT EXISTS (
-            SELECT 1 FROM mandate.proposals p
+        -- Only a decided proposal is delivered, only to its action's own
+        -- connector and audience, and only in the transaction that decides
+        -- it: an old decision is never sent to a connector defined after it.
+        SELECT p.decided_at + p.deliver_within INTO NEW.not_after
+            FROM mandate.proposals p
             JOIN mandate.actions a ON a.tenant_id = p.tenant_id AND a.key = p.action
             WHERE p.id = NEW.proposal_id AND p.tenant_id = NEW.tenant_id AND p.status IN ('approved', 'executed')
-                -- decided in this very transaction: an old decision is
-                -- never sent to a connector defined after it
                 AND p.decided_at = now()
-                AND a.connector_kind = 'webhook' AND a.connector_url = NEW.url AND p.action = NEW.action_key) THEN
+                AND a.connector_kind = 'webhook' AND a.removed_at IS NULL
+                AND a.connector_url = NEW.url AND a.connector_audience = NEW.audience AND p.action = NEW.action_key;
+        IF NEW.not_after IS NULL THEN
             RAISE EXCEPTION 'a delivery is recorded in the transaction that decides its proposal, and goes to its action''s connector' USING ERRCODE = 'insufficient_privilege';
         END IF;
         NEW.status := 'pending';
+        NEW.attempts_started := 0;
+        NEW.attempts_unsent := 0;
+        NEW.attempt_open_at := NULL;
+        NEW.last_status := NULL;
+        NEW.last_error := NULL;
         NEW.result := NULL;
-        NEW.attempts := 0;
-        NEW.delivered_at := NULL;
-        NEW.failed_at := NULL;
+        NEW.created_at := now();
+        NEW.finished_at := NULL;
+        NEW.settled_by := NULL;
         RETURN NEW;
     END IF;
-    -- When an action's connector moves, its waiting deliveries move with it,
-    -- to the new address and nothing else: the receiver at the old one no
-    -- longer holds the secret they are signed with. The owner moves them in
-    -- the same transaction; the system moves one it finds behind, about to
-    -- send it.
-    IF (mandate.current_role() = 'owner' OR mandate.current_actor_kind() = 'system')
-        AND OLD.status = 'pending' AND NEW.status = 'pending'
-        AND NEW.url <> OLD.url
-        AND (to_jsonb(NEW) - 'url') = (to_jsonb(OLD) - 'url')
-        AND EXISTS (
-            SELECT 1 FROM mandate.actions a
-            WHERE a.tenant_id = NEW.tenant_id AND a.key = NEW.action_key
-                AND a.connector_kind = 'webhook' AND a.connector_url = NEW.url) THEN
+
+    IF NEW.id <> OLD.id OR NEW.tenant_id <> OLD.tenant_id OR NEW.proposal_id <> OLD.proposal_id
+        OR NEW.action_key <> OLD.action_key OR NEW.not_after <> OLD.not_after OR NEW.created_at <> OLD.created_at THEN
+        RAISE EXCEPTION 'a delivery keeps its proposal and its deadline' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    v_possibly_sent := OLD.attempts_started > OLD.attempts_unsent OR OLD.attempt_open_at IS NOT NULL;
+
+    -- A person settles a delivery whose outcome is unknown, once the work
+    -- can no longer happen, and changes nothing else.
+    IF OLD.status = 'unknown' AND NEW.status IN ('settled_done', 'settled_not_done') THEN
+        IF mandate.current_role() IS NULL
+            OR now() < OLD.not_after + mandate.delivery_timeout() + mandate.delivery_skew()
+            OR (to_jsonb(NEW) - 'status' - 'settled_by' - 'finished_at') <> (to_jsonb(OLD) - 'status' - 'settled_by' - 'finished_at') THEN
+            RAISE EXCEPTION 'a person settles an unknown delivery only once the work can no longer happen' USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        NEW.settled_by := mandate.current_actor();
+        NEW.finished_at := now();
         RETURN NEW;
     END IF;
-    -- A person sends a failed delivery again: back to pending, to the
-    -- action's connector as it is now, and nothing else changes.
-    IF mandate.current_role() IS NOT NULL THEN
-        IF OLD.status <> 'failed' OR NEW.status <> 'pending' OR NEW.failed_at IS NOT NULL
-            OR (to_jsonb(NEW) - 'status' - 'failed_at' - 'url') <> (to_jsonb(OLD) - 'status' - 'failed_at' - 'url')
+
+    -- A person sends a delivery that was never sent again, before it is too
+    -- late, to the action's connector and audience as they are now: same
+    -- delivery, same counters.
+    IF OLD.status = 'not_sent' AND NEW.status = 'pending' THEN
+        IF mandate.current_role() IS NULL
+            OR now() > OLD.not_after - mandate.delivery_timeout()
+            OR (to_jsonb(NEW) - 'status' - 'url' - 'audience' - 'finished_at') <> (to_jsonb(OLD) - 'status' - 'url' - 'audience' - 'finished_at')
             OR NOT EXISTS (
                 SELECT 1 FROM mandate.actions a
-                WHERE a.tenant_id = NEW.tenant_id AND a.key = NEW.action_key
-                    AND a.connector_kind = 'webhook' AND a.connector_url = NEW.url) THEN
-            RAISE EXCEPTION 'a person can only send a failed delivery again, to its action''s connector' USING ERRCODE = 'insufficient_privilege';
+                WHERE a.tenant_id = NEW.tenant_id AND a.key = NEW.action_key AND a.removed_at IS NULL
+                    AND a.connector_kind = 'webhook' AND a.connector_url = NEW.url AND a.connector_audience = NEW.audience) THEN
+            RAISE EXCEPTION 'a person sends again only a delivery never sent, before its deadline, to its action''s connector' USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        NEW.finished_at := NULL;
+        RETURN NEW;
+    END IF;
+
+    IF OLD.status <> 'pending' THEN
+        RAISE EXCEPTION 'a delivery that has left pending changes only by a person settling or sending it again' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    -- A move to the action's new address and audience: by the owner moving
+    -- the action, or the system finding it behind. Never once an attempt
+    -- may have reached the old receiver.
+    IF NEW.url <> OLD.url OR NEW.audience <> OLD.audience THEN
+        IF (mandate.current_role() IS DISTINCT FROM 'owner' AND mandate.current_actor_kind() IS DISTINCT FROM 'system')
+            OR v_possibly_sent
+            OR (to_jsonb(NEW) - 'url' - 'audience') <> (to_jsonb(OLD) - 'url' - 'audience')
+            OR NOT EXISTS (
+                SELECT 1 FROM mandate.actions a
+                WHERE a.tenant_id = NEW.tenant_id AND a.key = NEW.action_key AND a.removed_at IS NULL
+                    AND a.connector_kind = 'webhook' AND a.connector_url = NEW.url AND a.connector_audience = NEW.audience) THEN
+            RAISE EXCEPTION 'a waiting delivery moves only to its action''s connector, and never once it may have been sent' USING ERRCODE = 'insufficient_privilege';
         END IF;
         RETURN NEW;
     END IF;
+
+    -- Everything else is the system's: opening and closing attempts, and the
+    -- outcome.
     IF mandate.current_actor_kind() IS DISTINCT FROM 'system' THEN
         RAISE EXCEPTION 'only the system records delivery attempts' USING ERRCODE = 'insufficient_privilege';
     END IF;
-    IF OLD.status <> 'pending' THEN
-        RAISE EXCEPTION 'a delivery is final' USING ERRCODE = 'insufficient_privilege';
+    IF NEW.attempts_started < OLD.attempts_started OR NEW.attempts_unsent < OLD.attempts_unsent
+        OR NEW.attempts_started > OLD.attempts_started + 1 OR NEW.attempts_unsent > OLD.attempts_unsent + 1 THEN
+        RAISE EXCEPTION 'attempts are counted one at a time, and never back' USING ERRCODE = 'insufficient_privilege';
     END IF;
-    IF NEW.proposal_id <> OLD.proposal_id OR NEW.action_key <> OLD.action_key OR NEW.url <> OLD.url OR NEW.tenant_id <> OLD.tenant_id THEN
-        RAISE EXCEPTION 'a delivery keeps its proposal and its address' USING ERRCODE = 'insufficient_privilege';
+
+    -- Opening an attempt: one more, open now, never too late, and never
+    -- over an attempt still open unless that one was left by a crash.
+    IF NEW.attempts_started = OLD.attempts_started + 1 THEN
+        IF NEW.status <> 'pending' OR NEW.attempts_unsent <> OLD.attempts_unsent
+            OR now() > OLD.not_after - mandate.delivery_timeout()
+            OR (OLD.attempt_open_at IS NOT NULL AND OLD.attempt_open_at > now() - mandate.delivery_stale()) THEN
+            RAISE EXCEPTION 'an attempt opens only while the delivery waits, before its deadline, and with none open' USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        NEW.attempt_open_at := now();
+        RETURN NEW;
+    END IF;
+
+    -- Proving an attempt unsent closes it.
+    IF NEW.attempts_unsent = OLD.attempts_unsent + 1 AND (OLD.attempt_open_at IS NULL OR NEW.attempt_open_at IS NOT NULL) THEN
+        RAISE EXCEPTION 'only an open attempt is proven unsent, and that closes it' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    -- An explicit answer comes with the attempt it answers.
+    IF NEW.status IN ('done', 'refused') OR (NEW.status = 'unknown' AND NEW.result IS NOT NULL) THEN
+        IF OLD.attempt_open_at IS NULL OR NEW.attempt_open_at IS NOT NULL THEN
+            RAISE EXCEPTION 'a receiver''s answer is recorded with the attempt it answers' USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        NEW.finished_at := now();
+        RETURN NEW;
+    END IF;
+    -- Finishing without an answer: no attempt open, and not_sent only if no
+    -- attempt was possibly sent.
+    IF NEW.status IN ('unknown', 'not_sent') THEN
+        IF OLD.attempt_open_at IS NOT NULL OR NEW.attempt_open_at IS NOT NULL
+            OR (NEW.status = 'not_sent' AND NEW.attempts_started > NEW.attempts_unsent)
+            OR (NEW.status = 'unknown' AND NEW.attempts_started = NEW.attempts_unsent) THEN
+            RAISE EXCEPTION 'a delivery ends not sent only if no attempt was possibly sent, and with no attempt open' USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        NEW.finished_at := now();
+        RETURN NEW;
+    END IF;
+    IF NEW.status <> 'pending' THEN
+        RAISE EXCEPTION 'a delivery ends done, refused, unknown or not sent' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF NEW.result IS DISTINCT FROM OLD.result OR NEW.finished_at IS DISTINCT FROM OLD.finished_at OR NEW.settled_by IS DISTINCT FROM OLD.settled_by THEN
+        RAISE EXCEPTION 'a waiting delivery has no result' USING ERRCODE = 'insufficient_privilege';
     END IF;
     RETURN NEW;
 END
@@ -1406,11 +1496,18 @@ REVOKE ALL ON FUNCTION mandate.all_tenant_ids() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mandate.all_tenant_ids() TO mandate_app;
 
 -- The tenants with work the sweep must do now: a waiting proposal past its
--- deadline. Ids only; the sweep then scopes itself to each tenant.
+-- deadline, a waiting delivery past the last moment an attempt may open
+-- with none open, or an attempt left open by a crash. Ids only; the sweep
+-- then scopes itself to each tenant.
 CREATE FUNCTION mandate.tenants_with_due_work() RETURNS SETOF uuid
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = mandate, pg_temp AS $$
-    SELECT DISTINCT p.tenant_id FROM mandate.proposals p
+    SELECT p.tenant_id FROM mandate.proposals p
     WHERE p.status = 'pending' AND p.expires_at <= now()
+    UNION
+    SELECT d.tenant_id FROM mandate.deliveries d
+    WHERE d.status = 'pending' AND (
+        (d.attempt_open_at IS NULL AND d.not_after - mandate.delivery_timeout() <= now())
+        OR d.attempt_open_at <= now() - mandate.delivery_stale())
 $$;
 REVOKE ALL ON FUNCTION mandate.tenants_with_due_work() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mandate.tenants_with_due_work() TO mandate_app;

@@ -234,7 +234,7 @@ func (s *ProposalsSuite) Test_ARepeatIsAnsweredWhateverHasChangedSince() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	define := func(schema string) {
 		s.T().Helper()
-		_, _, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
+		_, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{
 			Key: "notes.add", Risk: mandates.RiskLow, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
 			Schema: json.RawMessage(schema),
 		})

@@ -48,6 +48,9 @@ const (
 	// ProposalServiceRedeliverProposalProcedure is the fully-qualified name of the ProposalService's
 	// RedeliverProposal RPC.
 	ProposalServiceRedeliverProposalProcedure = "/mandate.v1.ProposalService/RedeliverProposal"
+	// ProposalServiceSettleDeliveryProcedure is the fully-qualified name of the ProposalService's
+	// SettleDelivery RPC.
+	ProposalServiceSettleDeliveryProcedure = "/mandate.v1.ProposalService/SettleDelivery"
 )
 
 // ProposalServiceClient is a client for the mandate.v1.ProposalService service.
@@ -56,8 +59,12 @@ type ProposalServiceClient interface {
 	GetProposal(context.Context, *v1.GetProposalRequest) (*v1.GetProposalResponse, error)
 	ApproveProposal(context.Context, *v1.ApproveProposalRequest) (*v1.ApproveProposalResponse, error)
 	RejectProposal(context.Context, *v1.RejectProposalRequest) (*v1.RejectProposalResponse, error)
-	// RedeliverProposal sends a failed delivery again.
+	// RedeliverProposal sends again a delivery that was never sent, before
+	// its deadline.
 	RedeliverProposal(context.Context, *v1.RedeliverProposalRequest) (*v1.RedeliverProposalResponse, error)
+	// SettleDelivery records whether a delivery whose outcome is unknown was
+	// done, once the work can no longer happen.
+	SettleDelivery(context.Context, *v1.SettleDeliveryRequest) (*v1.SettleDeliveryResponse, error)
 }
 
 // NewProposalServiceClient constructs a client for the mandate.v1.ProposalService service. By
@@ -101,6 +108,12 @@ func NewProposalServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(proposalServiceMethods.ByName("RedeliverProposal")),
 			connect.WithClientOptions(opts...),
 		),
+		settleDelivery: connect.NewClient[v1.SettleDeliveryRequest, v1.SettleDeliveryResponse](
+			httpClient,
+			baseURL+ProposalServiceSettleDeliveryProcedure,
+			connect.WithSchema(proposalServiceMethods.ByName("SettleDelivery")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -111,6 +124,7 @@ type proposalServiceClient struct {
 	approveProposal   *connect.Client[v1.ApproveProposalRequest, v1.ApproveProposalResponse]
 	rejectProposal    *connect.Client[v1.RejectProposalRequest, v1.RejectProposalResponse]
 	redeliverProposal *connect.Client[v1.RedeliverProposalRequest, v1.RedeliverProposalResponse]
+	settleDelivery    *connect.Client[v1.SettleDeliveryRequest, v1.SettleDeliveryResponse]
 }
 
 // ListProposals calls mandate.v1.ProposalService.ListProposals.
@@ -158,14 +172,27 @@ func (c *proposalServiceClient) RedeliverProposal(ctx context.Context, req *v1.R
 	return nil, err
 }
 
+// SettleDelivery calls mandate.v1.ProposalService.SettleDelivery.
+func (c *proposalServiceClient) SettleDelivery(ctx context.Context, req *v1.SettleDeliveryRequest) (*v1.SettleDeliveryResponse, error) {
+	response, err := c.settleDelivery.CallUnary(ctx, connect.NewRequest(req))
+	if response != nil {
+		return response.Msg, err
+	}
+	return nil, err
+}
+
 // ProposalServiceHandler is an implementation of the mandate.v1.ProposalService service.
 type ProposalServiceHandler interface {
 	ListProposals(context.Context, *v1.ListProposalsRequest) (*v1.ListProposalsResponse, error)
 	GetProposal(context.Context, *v1.GetProposalRequest) (*v1.GetProposalResponse, error)
 	ApproveProposal(context.Context, *v1.ApproveProposalRequest) (*v1.ApproveProposalResponse, error)
 	RejectProposal(context.Context, *v1.RejectProposalRequest) (*v1.RejectProposalResponse, error)
-	// RedeliverProposal sends a failed delivery again.
+	// RedeliverProposal sends again a delivery that was never sent, before
+	// its deadline.
 	RedeliverProposal(context.Context, *v1.RedeliverProposalRequest) (*v1.RedeliverProposalResponse, error)
+	// SettleDelivery records whether a delivery whose outcome is unknown was
+	// done, once the work can no longer happen.
+	SettleDelivery(context.Context, *v1.SettleDeliveryRequest) (*v1.SettleDeliveryResponse, error)
 }
 
 // NewProposalServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -205,6 +232,12 @@ func NewProposalServiceHandler(svc ProposalServiceHandler, opts ...connect.Handl
 		connect.WithSchema(proposalServiceMethods.ByName("RedeliverProposal")),
 		connect.WithHandlerOptions(opts...),
 	)
+	proposalServiceSettleDeliveryHandler := connect.NewUnaryHandlerSimple(
+		ProposalServiceSettleDeliveryProcedure,
+		svc.SettleDelivery,
+		connect.WithSchema(proposalServiceMethods.ByName("SettleDelivery")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/mandate.v1.ProposalService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ProposalServiceListProposalsProcedure:
@@ -217,6 +250,8 @@ func NewProposalServiceHandler(svc ProposalServiceHandler, opts ...connect.Handl
 			proposalServiceRejectProposalHandler.ServeHTTP(w, r)
 		case ProposalServiceRedeliverProposalProcedure:
 			proposalServiceRedeliverProposalHandler.ServeHTTP(w, r)
+		case ProposalServiceSettleDeliveryProcedure:
+			proposalServiceSettleDeliveryHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -244,4 +279,8 @@ func (UnimplementedProposalServiceHandler) RejectProposal(context.Context, *v1.R
 
 func (UnimplementedProposalServiceHandler) RedeliverProposal(context.Context, *v1.RedeliverProposalRequest) (*v1.RedeliverProposalResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mandate.v1.ProposalService.RedeliverProposal is not implemented"))
+}
+
+func (UnimplementedProposalServiceHandler) SettleDelivery(context.Context, *v1.SettleDeliveryRequest) (*v1.SettleDeliveryResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mandate.v1.ProposalService.SettleDelivery is not implemented"))
 }

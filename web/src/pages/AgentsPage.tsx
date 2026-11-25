@@ -300,7 +300,7 @@ function NewAgent({ onCreated }: { onCreated: () => void }) {
   );
 }
 
-function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Action; allowBuiltin: boolean; onDone: (secret: string) => void }) {
+function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Action; allowBuiltin: boolean; onDone: (defined?: Action, before?: Action) => void }) {
   const [open, setOpen] = React.useState(false);
   const [key, setKey] = React.useState("");
   const [description, setDescription] = React.useState("");
@@ -312,7 +312,6 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
   const [url, setUrl] = React.useState("");
   const [schema, setSchema] = React.useState("");
   const [department, setDepartment] = React.useState("");
-  const [rotate, setRotate] = React.useState(false);
   // The schema's error shows once the field has been left or a save tried,
   // not on a dialog that has only just opened.
   const [schemaTouched, setSchemaTouched] = React.useState(false);
@@ -329,7 +328,6 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
     setUrl(existing?.connectorUrl ?? "");
     setSchema(existing?.schemaJson ? JSON.stringify(JSON.parse(existing.schemaJson), null, 2) : "");
     setDepartment(existing?.department ?? "");
-    setRotate(false);
     setSchemaTouched(false);
   };
   const onOpenChange = (next: boolean) => {
@@ -359,12 +357,11 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
         connectorUrl: connector === "webhook" ? url.trim() : "",
         schemaJson: schema.trim(),
         department,
-        rotateSecret: rotate,
       }),
     onSuccess: (response) => {
       toast.success(existing ? "Action updated" : "Action defined");
       setOpen(false);
-      onDone(response.secret);
+      onDone(response.action, existing);
     },
     onError: (error) => toast.error("Could not define", { description: errorText(error) }),
   });
@@ -482,10 +479,10 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
               </Field>
             </div>
           </div>
-          {existing?.hasSecret && connector === "webhook" ? (
-            <label className="flex items-center gap-2 text-[13.5px]">
-              <input type="checkbox" checked={rotate} onChange={(e) => setRotate(e.target.checked)} /> Rotate the signing secret
-            </label>
+          {existing?.connector === "webhook" && connector === "webhook" && url.trim() !== existing.connectorUrl ? (
+            <p className="text-[13px] text-muted">
+              A new URL gives the action a new audience: the receiver at the old one accepts nothing more, and the new one must be told the new audience.
+            </p>
           ) : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
@@ -501,7 +498,7 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
   );
 }
 
-function ActionRow({ action, isOwner, allowBuiltin, onChanged }: { action: Action; isOwner: boolean; allowBuiltin: boolean; onChanged: (secret: string) => void }) {
+function ActionRow({ action, isOwner, allowBuiltin, onChanged }: { action: Action; isOwner: boolean; allowBuiltin: boolean; onChanged: (defined?: Action, before?: Action) => void }) {
   const [confirming, setConfirming] = React.useState(false);
   const queryClient = useQueryClient();
   const remove = useMutation({
@@ -544,9 +541,14 @@ function ActionRow({ action, isOwner, allowBuiltin, onChanged }: { action: Actio
       {action.description ? <p className="mt-1 text-[13.5px]">{action.description}</p> : null}
       <p className="mt-1 flex items-center gap-1.5 text-[12.5px] text-muted">
         <Webhook className="size-3.5" aria-hidden />
-        {action.connector === "webhook" ? `${action.connectorUrl} · ${action.hasSecret ? "signing secret set" : "no secret"}` : "builtin code"}
+        {action.connector === "webhook" ? action.connectorUrl : "builtin code"}
         {action.department ? ` · ${action.department}` : ""}
       </p>
+      {action.audience ? (
+        <p className="mt-1 break-all font-mono text-[12px] text-muted" title="The audience its receiver accepts">
+          {action.audience}
+        </p>
+      ) : null}
     </li>
   );
 }
@@ -557,12 +559,13 @@ export function AgentsPage() {
   const agents = useQuery({ queryKey: ["agents"], queryFn: () => api.agents.listAgents({}) });
   const actions = useQuery({ queryKey: ["actions"], queryFn: () => api.actions.listActions({}) });
   const [secret, setSecret] = React.useState<string | null>(null);
-  const [hookSecret, setHookSecret] = React.useState<string | null>(null);
+  // A webhook defined, or moved to a new audience: its receiver must be told.
+  const [receiverFor, setReceiverFor] = React.useState<Action | null>(null);
   // The built-in connector is offered only where this server has built-in actions.
   const allowBuiltin = (actions.data?.actions ?? []).some((a) => a.builtinOnly || a.connector === "builtin");
-  const onActionChanged = (s: string) => {
+  const onActionChanged = (defined?: Action, before?: Action) => {
     queryClient.invalidateQueries({ queryKey: ["actions"] });
-    if (s) setHookSecret(s);
+    if (defined?.audience && defined.audience !== before?.audience) setReceiverFor(defined);
   };
   return (
     <div>
@@ -604,18 +607,23 @@ export function AgentsPage() {
             {session.isOwner ? <DefineActionDialog allowBuiltin={allowBuiltin} onDone={onActionChanged} /> : null}
           </div>
           <p className="text-[14px] text-muted">
-            What agents may propose. A decision on a webhook action is delivered to its URL, signed with the action's secret.
+            What agents may propose. A decision on a webhook action is delivered to its URL, signed with this server's key and addressed to the
+            action's audience.
           </p>
-          {hookSecret ? (
+          {receiverFor ? (
             <Card className="border-accent/60 p-5">
-              <p className="font-serif text-[18px]">Signing secret</p>
-              <p className="mt-1 text-[13.5px] text-muted">Shown once. The receiver verifies every delivery's Mandate-Signature with it.</p>
-              <div className="mt-3">
-                <Snippet title="Secret" text={hookSecret} />
+              <p className="font-serif text-[18px]">Tell the receiver</p>
+              <p className="mt-1 text-[13.5px] text-muted">
+                The receiver at {receiverFor.connectorUrl} accepts only deliveries for this audience, and verifies each one with the published keys. Neither is
+                a secret.
+              </p>
+              <div className="mt-3 flex flex-col gap-3">
+                <Snippet title="Audience" text={receiverFor.audience} />
+                <Snippet title="Keys" text={`${window.location.origin}/.well-known/pgmandate-keys`} />
               </div>
               <div className="mt-4 flex justify-end">
-                <Button size="sm" onClick={() => setHookSecret(null)}>
-                  I have saved it
+                <Button size="sm" onClick={() => setReceiverFor(null)}>
+                  Done
                 </Button>
               </div>
             </Card>

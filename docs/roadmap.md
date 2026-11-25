@@ -81,7 +81,7 @@ This is the critical path, so it starts at once.
 
 ### Contracts fixed before others build on them
 
-8. **Delivery contract v2.** Receivers, templates and the conformance test are written against it, so it comes first. It has to hold what phase 2 adds without a v3.
+8. **Delivery contract v2.** Built (build step 2 of [design-0.1.md](design-0.1.md)). Receivers, templates and the conformance test are written against it, so it comes first. It has to hold what phase 2 adds without a v3.
    - **Signed with a key pair (Ed25519).**
      - The signing key is kept outside the database, in an environment secret or a key management service. A receiver holds only the public key, so neither a receiver nor a copy of the database can forge a delivery.
      - The signature carries a key id, for rotation, and an audience. pgmandate assigns the audience per tenant and connector, and signs it. Moving an action to a new address gives it a new audience.
