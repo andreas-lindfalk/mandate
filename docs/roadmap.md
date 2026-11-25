@@ -13,9 +13,7 @@ That depends more on one real team than on more features. So the roadmap has thr
 - **Phase 1** makes pgmandate easy to try and safe to pilot, and fixes the contracts others will build on.
 - **Phase 2** is a list to choose from. What gets built, and in what order, follows what that team runs into.
 
-Rough size, for one person working evenings with AI agents: phase 1 is three to four months. If it runs long, two items wait:
-- item 4, one version everywhere
-- MCP on the agent contract in item 9. HTTP comes first, and today's MCP server keeps working until then
+Rough size, for one person working evenings with AI agents: phase 1 is three to four months. The two items planned to wait if it ran long, one version everywhere (item 4) and MCP on the agent contract (item 9), are built.
 
 Phase 2 is more than anyone needs; a first team will need a part of it.
 
@@ -53,7 +51,7 @@ This is the critical path, so it starts at once.
    - checks the application role's attributes and refuses to go on if they are wrong, including when the role owns pgmandate's tables, or has SUPERUSER, BYPASSRLS or CREATEROLE, or can switch through membership to a role that does, such as a managed service's admin role (`rds_superuser`, `cloudsqlsuperuser`). Each of these gets past row level security or the append-only guard
    - can skip creating the role when a DBA created it beforehand
    - revokes `CREATE` on `public` only when asked to
-4. **One version everywhere.** The binary, the MCP server and the command line's own MCP client all report the release they were built from, and `pgmandate version` prints it. Today the server says `0.1`, the client says `1` and calls itself `mandate-cli`, and that name reaches the log as provenance.
+4. **One version everywhere.** Built. The binary, the MCP server and the command line's own MCP client all report the release they were built from, and `pgmandate version` prints it. Before, the server said `0.1`, and the client said `1` and called itself `mandate-cli`, the name that reached the log as provenance.
 
 ### Safe to pilot
 

@@ -44,6 +44,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/events"
 	"github.com/andreas-lindfalk/pgmandate/pkg/jobs"
+	"github.com/andreas-lindfalk/pgmandate/pkg/version"
 	"github.com/andreas-lindfalk/pgmandate/schema"
 	"github.com/andreas-lindfalk/pgmandate/sign"
 	"github.com/andreas-lindfalk/pgmandate/web"
@@ -53,8 +54,9 @@ const usage = `pgmandate: agents propose, a person or a mandate decides, Postgre
 
   pgmandate migrate                  create the app role and apply the schema (needs the owner connection)
   pgmandate serve                    migrate when the owner connection is given, then serve the UI, the API
-                                     and MCP (/mcp) on $MANDATE_HTTP_ADDR
+                                     and the agent contract over MCP (/mcp) and HTTP on $MANDATE_HTTP_ADDR
   pgmandate demo                     the five-minute demo (needs a running Postgres)
+  pgmandate version                  the release this binary was built from
   pgmandate receiver -tenant ID -audience A1,A2 [-keys K1,K2 | -keys-url URL] [-addr 127.0.0.1:8586]
                                      a local receiver that prints the deliveries it accepts; it trusts the
                                      server's published keys unless -keys names them
@@ -210,6 +212,16 @@ func main() {
 }
 
 func run(ctx context.Context, command string, args []string, out io.Writer) error {
+	// The version and the help need no configuration, so they answer even
+	// when the environment is wrong: that is when an operator asks.
+	switch command {
+	case "version", "--version":
+		fmt.Fprintf(out, "pgmandate %s\n", version.String())
+		return nil
+	case "help", "-h", "--help":
+		fmt.Fprint(out, usage)
+		return nil
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -245,9 +257,6 @@ func run(ctx context.Context, command string, args []string, out io.Writer) erro
 		return admin(ctx, cfg, command, args, out)
 	case "verify-export":
 		return verifyExport(args, out)
-	case "help", "-h", "--help":
-		fmt.Fprint(out, usage)
-		return nil
 	}
 	return fmt.Errorf("unknown command %q", command)
 }
@@ -451,7 +460,7 @@ func serve(ctx context.Context, cfg config) error {
 			slog.Error("the job queue did not stop cleanly", "error", err)
 		}
 	}()
-	slog.Info("mandate serving", "ui", cfg.publicUrl, "mcp", cfg.publicUrl+"/mcp", "devLogin", cfg.devLogin, "oidc", cfg.oidc != nil,
+	slog.Info("pgmandate serving", "version", version.String(), "ui", cfg.publicUrl, "mcp", cfg.publicUrl+"/mcp", "devLogin", cfg.devLogin, "oidc", cfg.oidc != nil,
 		"privateConnectors", cfg.allowPrivate)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -637,7 +646,9 @@ func proposeCommand(ctx context.Context, cfg config, args []string, out io.Write
 	if *key == "" {
 		*key = *runId + ":1"
 	}
-	client := sdk.NewClient(&sdk.Implementation{Name: "mandate-cli", Version: "1"}, nil)
+	// The client's name and version reach the log as the proposal's
+	// provenance: this command line, at this release.
+	client := sdk.NewClient(&sdk.Implementation{Name: "pgmandate-cli", Version: version.String()}, nil)
 	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{
 		Endpoint: *endpoint, HTTPClient: &http.Client{Transport: bearer{*token}}, MaxRetries: -1,
 	}, nil)

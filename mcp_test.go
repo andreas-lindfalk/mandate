@@ -17,6 +17,7 @@ import (
 
 	actionsPkg "github.com/andreas-lindfalk/pgmandate/modules/actions"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
+	"github.com/andreas-lindfalk/pgmandate/pkg/version"
 
 	"github.com/andreas-lindfalk/pgmandate/examples/webhook"
 	"github.com/andreas-lindfalk/pgmandate/internal/testfix"
@@ -128,6 +129,8 @@ func (s *McpSuite) Test_TokensGateTheServer() {
 	session, err := s.connect(secret)
 	s.Require().NoError(err)
 	defer session.Close() //nolint:errcheck
+	s.Require().Equal("pgmandate", session.InitializeResult().ServerInfo.Name)
+	s.Require().Equal(version.String(), session.InitializeResult().ServerInfo.Version, "the server reports the release it was built from")
 	tools, err := session.ListTools(context.Background(), nil)
 	s.Require().NoError(err)
 	var names []string

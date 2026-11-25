@@ -2,7 +2,12 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
-## 2026-11-26: build step 4, the dry run
+## 2026-11-25: one version, and diagrams GitHub draws as intended
+
+- **One version** (`pkg/version`): what a release build sets with `-ldflags -X`, otherwise what Go stamps from git (a tag or a pseudo-version, `+dirty` for uncommitted changes), otherwise `dev`. `pgmandate version`, the server's start-up log, the MCP server and the command line's own MCP client report it. The client now calls itself `pgmandate-cli`, the name that reaches the log as provenance. The image takes it as the `VERSION` build argument, the release's tag, since `.git` is not in the build context; compose passes `MANDATE_VERSION`, and the build refuses a value the log could not keep as provenance. A tagged release reports the same string either way; between releases a local build reports Go's pseudo-version and an image `dev`. `-v` is not an alias, so that it stays free for verbosity.
+- **Diagrams.** GitHub clipped the labels of the Mermaid diagrams and drew the agent on the far right. They now use SVG labels (`htmlLabels: false`), which are measured in the font they are drawn in, and one two-way edge per pair instead of a separate edge back, so every node keeps its place from left to right.
+
+## 2026-11-25: build step 4, the dry run
 
 Built as [design-0.1.md](design-0.1.md) section 1 sets out.
 
@@ -15,7 +20,7 @@ Built as [design-0.1.md](design-0.1.md) section 1 sets out.
 - **The record.** Every event of a dry run carries `dryRun: true`; the evidence page marks them. The decisions export already took only approved, rejected and executed, so dry runs stay out. There are no agreement figures yet to keep them out of.
 - **The demo** gains a step: a second agent in dry run, a *would allow* with nothing delivered or spent, and a dismissal.
 
-## 2026-11-26: build step 3, the agent contract
+## 2026-11-25: build step 3, the agent contract
 
 Built as [design-0.1.md](design-0.1.md) section 5 sets out.
 
@@ -28,7 +33,7 @@ Built as [design-0.1.md](design-0.1.md) section 5 sets out.
 - **A new code, `FailedPrecondition`,** for a change to a proposal that no longer waits: decided, withdrawn or expired. It replaces `Conflict` there for people too (`failed_precondition` in the people's API, where `already_exists` was). MCP keeps its readable name, `conflict`, for both that and a reused key.
 - **Found on the way: a grant could start in the database's future.** A mandate's `valid_from` was the server's clock, and `basis_holds` checks it against the database's. With the database's clock behind, an execution right after a grant was refused; on Docker for Mac this made `Test_ApplyFailureLeavesItPending` fail now and then, on `main` too. A grant now starts at the earlier of the two clocks, with its length kept. The rest of the mandates' reads still use the server's clock, which tests fake; moving them onto the database's clock is a change of its own.
 
-## 2026-11-26: build step 2, delivery contract v2
+## 2026-11-25: build step 2, delivery contract v2
 
 Built as [design-0.1.md](design-0.1.md) sections 3 and 4 set out. v1 and its shared secrets are gone, with nothing kept compatible.
 
@@ -43,7 +48,7 @@ Built as [design-0.1.md](design-0.1.md) sections 3 and 4 set out. v1 and its sha
 - **Rotation is by restart.** The new key signs at once. A receiver that meets a key id it does not know fetches the published set again, at most once a minute (`sign.Fetch`, and `Refresh` in `examples/webhook`); until it has, it answers 401 and the attempt is retried. Publishing a next key before it signs was not needed for 0.1.0.
 - **A body for an audience the receiver does not know is retried, not refused.** A delivery that moves with its action carries the new audience before anyone can have told the receiver at the new address, so a final refusal would lose approved work over a configuration step. The reference receiver answers 403 without an outcome.
 
-## 2026-11-26: build step 1, the fresh schema and expiry
+## 2026-11-25: build step 1, the fresh schema and expiry
 
 - **One fresh migration.** 0001 to 0008 are folded into one `0001_init`. Before the step's own changes, the fold was checked against the old chain: the two schema dumps differ only in the order of two equivalent check constraints' generated names. A local database from before is reset with `make reset`.
 - **Budgets count executions.** `budget_units` is `budget_count`, and actions and proposals no longer carry a cost. The basis cites `budgets: [{kind: "count", limit, spent}]`, and `basis_holds` accepts exactly that one budget, with the spend the database counts and room for one more. Delivery contract v1 carries the same list until v2 replaces it.
@@ -52,7 +57,7 @@ Built as [design-0.1.md](design-0.1.md) sections 3 and 4 set out. v1 and its sha
 - **What "the action changed" means now:** a payload that no longer fits the schema, or a webhook action's raised risk.
 - **Found on the way:** an execution can take up to about a second to start, because River fetches on an interval when it is not woken. `main` behaves the same. The agent-facing tests that wait two seconds for an execution can therefore fail on a loaded machine. That is worth a look of its own; this step does not change it.
 
-## 2026-11-26: the design of what 0.1.0 freezes
+## 2026-11-25: the design of what 0.1.0 freezes
 
 [design-0.1.md](design-0.1.md) designs proposal expiry, the dry run, delivery contract v2 and the agent contract together. Two reviews (protocol and security, and fit with the code) shaped it. The choices that matter:
 
@@ -79,7 +84,7 @@ Three critical readings of the scope and the roadmap each came back "go, with ch
   - a budget block with a kind, so that money is an addition
   - `notAfter`, so an expired decision is not carried out late
   - the *outcome unknown* status
-  - a result reported later, authenticated by a single-use token per delivery (revised 2026-11-26: left out of 0.1.0, see above)
+  - a result reported later, authenticated by a single-use token per delivery (revised 2026-11-25: left out of 0.1.0, see above)
 
   The agent's operations become one Connect contract that MCP, HTTP and the clients share.
 - **River in a schema of its own.** Queue names alone would not separate pgmandate's jobs from a host's, and its tables live in the host's `public` schema today.

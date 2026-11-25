@@ -42,7 +42,7 @@ modules/<module>/       The domain: tenants, agents, actions, mandates, proposal
                         test_base_test.go. auth is tested through api/.
 pkg/                    Shared packages without domain logic: actor (request scope), db (pools, scoped
                         transactions, migrations), events (the hash chain), fault (coded errors),
-                        injection, jobs (River), testkit (Postgres for tests)
+                        injection, jobs (River), testkit (Postgres for tests), version (the release a binary reports)
 schema/                 The migrations, one set for all modules (NNNN_name.up.sql / .down.sql)
 api/                    The Connect handlers for people
 modules/agentapi/       The agent contract (mandate.agent.v1), served as JSON over HTTP; the one place for

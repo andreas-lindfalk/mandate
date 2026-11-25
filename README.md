@@ -10,13 +10,12 @@ pgmandate is a write authority layer between AI agents and the systems they chan
 - a **mandate** that a person granted earlier allows it at once, and the decision records exactly which mandate, which policy, which risk limit and how much of the budget allowed it.
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": false}}}%%
 flowchart LR
-    A[Agent<br/>no credentials] -- propose --> P[(pgmandate<br/>on your Postgres)]
-    H[Person] -- decide, grant mandates --> P
-    P -- signed delivery --> R[Receiver<br/>holds the credential]
-    R -- write --> S[Your system]
-    R -- result --> P
-    P -- decision and result --> A
+    A["Agent<br/>no credentials"] <-- "propose /<br/>decision and result" --> P[("pgmandate<br/>on your Postgres")]
+    H["Person"] -- "decide,<br/>grant mandates" --> P
+    P <-- "signed delivery /<br/>result" --> R["Receiver<br/>holds the credential"]
+    R -- "write" --> S["Your system"]
 ```
 
 > **Status: early, a working demonstration (0.0.1, Apache-2.0).**
@@ -197,6 +196,7 @@ One image, one Postgres. A one-off `migrate` container holds the database owner'
 ```sh
 export MANDATE_APP_PASSWORD=$(openssl rand -hex 16) MANDATE_OWNER_PASSWORD=$(openssl rand -hex 16)
 export MANDATE_SIGNING_KEY=$(openssl rand -base64 32)
+export MANDATE_VERSION=v0.1.0                         # the release's tag, as `pgmandate version` reports it
 export MANDATE_OIDC_ISSUER=... MANDATE_OIDC_CLIENT_ID=... MANDATE_OIDC_CLIENT_SECRET=...
 docker compose -f deploy/compose.yaml -f deploy/compose.server.yaml up -d --build
 ```
