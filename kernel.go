@@ -38,6 +38,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/modules/agents"
 	"github.com/andreas-lindfalk/pgmandate/modules/deliveries"
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
+	"github.com/andreas-lindfalk/pgmandate/modules/notifications"
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 	"github.com/andreas-lindfalk/pgmandate/modules/tenants"
 	"github.com/andreas-lindfalk/pgmandate/pkg/actor"
@@ -74,18 +75,24 @@ type Options struct {
 	// private addresses: for local development and for an on-premise
 	// install whose connectors are internal.
 	AllowPrivateConnectors bool
+	// PublicUrl is where people open the web app, for links in
+	// notifications.
+	PublicUrl string
+	// NotifyClient replaces the HTTP client of notifications, for tests.
+	NotifyClient *http.Client
 }
 
 type Kernel struct {
 	pool  *pgxpool.Pool
 	queue *jobs.Queue
 
-	Tenants    *tenants.Service
-	Agents     *agents.Service
-	Mandates   *mandates.Service
-	Proposals  *proposals.Service
-	Actions    *actions.Service
-	Deliveries *deliveries.Service
+	Tenants       *tenants.Service
+	Agents        *agents.Service
+	Mandates      *mandates.Service
+	Proposals     *proposals.Service
+	Actions       *actions.Service
+	Deliveries    *deliveries.Service
+	Notifications *notifications.Service
 
 	mu       sync.RWMutex
 	builtin  map[string]Action
@@ -106,6 +113,7 @@ func New(pool *pgxpool.Pool, opts Options) *Kernel {
 	k.Tenants = tenants.NewService(pool)
 	k.Agents = agents.NewService(pool)
 	k.Mandates = mandates.NewService(pool)
+	k.Mandates.SetBuiltin(k.builtinSchemas)
 	k.Actions = actions.NewService(pool)
 	k.Proposals = proposals.NewService(pool, k)
 	k.Deliveries = deliveries.New(pool, opts.Queue, k.Proposals, deliveries.Options{AllowPrivate: opts.AllowPrivateConnectors})
@@ -113,6 +121,9 @@ func New(pool *pgxpool.Pool, opts Options) *Kernel {
 		return k.Deliveries.Enqueue(ctx, tx, proposal, action.Webhook.Url)
 	})
 	k.Actions.SetOnMoved(k.Deliveries.Retarget)
+	k.Notifications = notifications.New(pool, opts.Queue, notifications.Options{PublicUrl: opts.PublicUrl, Client: opts.NotifyClient})
+	k.Notifications.SetDescribe(k.describeWaiting)
+	k.Proposals.SetOnWaiting(k.Notifications.Enqueue)
 	if opts.Now != nil {
 		k.Agents.SetNow(opts.Now)
 		k.Mandates.SetNow(opts.Now)
@@ -185,6 +196,18 @@ func (k *Kernel) Builtin() []Action {
 		result = append(result, action)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Key < result[j].Key })
+	return result
+}
+
+// builtinSchemas lists the builtin actions by key with their schemas, for
+// checking a mandate's condition at the grant.
+func (k *Kernel) builtinSchemas() map[string]json.RawMessage {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	result := make(map[string]json.RawMessage, len(k.builtin))
+	for key, action := range k.builtin {
+		result[key] = action.Schema
+	}
 	return result
 }
 
@@ -287,6 +310,11 @@ func (k *Kernel) Handler() http.Handler {
 	return mcp.NewHandler(k)
 }
 
+// Unmet implements mcp.Host: what in a payload no mandate's condition took.
+func (k *Kernel) Unmet(ctx context.Context, agentId uuid.UUID, action, risk string, payload json.RawMessage) ([]string, error) {
+	return k.Mandates.Unmet(ctx, agentId, action, risk, payload)
+}
+
 // LiveMandates implements mcp.Host: the mandates that hold now for an agent.
 func (k *Kernel) LiveMandates(ctx context.Context) ([]Mandate, error) {
 	a, ok := actor.From(ctx)
@@ -361,6 +389,37 @@ func (k *Kernel) ExecuteJob(ctx context.Context, job *river.Job[ExecuteArgs]) er
 		}
 	}
 	return err
+}
+
+// describeWaiting says what a notification about a proposal says: the
+// action, its risk, the agent's registered name and why it waits. Nothing
+// the agent wrote. False when the proposal no longer waits.
+func (k *Kernel) describeWaiting(ctx context.Context, proposalId uuid.UUID) (notifications.Message, bool, error) {
+	p, err := k.Proposals.Get(ctx, proposalId)
+	if fault.CodeOf(err) == fault.NotFound {
+		return notifications.Message{}, false, nil
+	}
+	if err != nil || p.Status != proposals.StatusPending {
+		return notifications.Message{}, false, err
+	}
+	agent, err := k.Agents.Get(ctx, p.AgentId)
+	if err != nil {
+		return notifications.Message{}, false, err
+	}
+	reason, found, err := k.Proposals.SkipReason(ctx, proposalId)
+	if err != nil {
+		return notifications.Message{}, false, err
+	}
+	if !found {
+		action, ok, err := k.Lookup(ctx, p.Action)
+		if err != nil {
+			return notifications.Message{}, false, err
+		}
+		if ok {
+			reason = proposals.WhyNotCandidate(action, p)
+		}
+	}
+	return notifications.Message{ProposalId: p.Id, Action: p.Action, Risk: p.Risk, Agent: agent.Name, Reason: reason}, true, nil
 }
 
 // enqueueExecution queues the execution in the transaction that stores the

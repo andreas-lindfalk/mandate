@@ -87,7 +87,12 @@
               "type": "integer",
               "minimum": 0
             },
-            "costUnits": { "type": "integer", "minimum": 0 }
+            "costUnits": { "type": "integer", "minimum": 0 },
+            "condition": {
+              "description": "The mandate's condition on the payload, which held for it, for the record. Left out when the mandate has none. Do not evaluate it again: check the facts in the payload against your own records.",
+              "type": "string",
+              "maxLength": 2000
+            }
           }
         }
       },

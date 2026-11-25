@@ -40,14 +40,19 @@ const (
 	// StatusExecuted marks a proposal the system carried out under a
 	// mandate, without a person.
 	StatusExecuted = "executed"
+	// StatusWithdrawn marks a proposal its agent took back before anyone
+	// decided it.
+	StatusWithdrawn = "withdrawn"
 
-	// FlagSteeringText marks a proposal whose title or payload holds text
-	// that tries to steer a model. Such a proposal is high risk and is never
+	// FlagSteeringText marks a proposal whose title, payload or account
+	// holds text that tries to steer a model. Such a proposal is high risk and is never
 	// executed without a person.
 	FlagSteeringText = "steering_text"
 
 	maxTitle     = 200
 	maxNote      = 1000
+	maxRationale = 8000
+	maxEvidence  = 20
 	maxListLimit = 500
 
 	// rapidApprovalLimit approvals within a minute by one person is written
@@ -112,6 +117,12 @@ type Actions interface {
 type Deliver func(ctx context.Context, tx pgx.Tx, proposal Proposal, action Action) error
 
 type Proposal struct {
+	// Rationale, Evidence and Provenance are the agent's account, as given.
+	// A proposal made before rationales existed has none.
+	Rationale  string
+	Evidence   []Evidence
+	Provenance Provenance
+
 	Id      uuid.UUID
 	AgentId uuid.UUID
 	RunId   string
@@ -147,6 +158,8 @@ type ExecutionBasis struct {
 	BudgetUnits int64     `json:"budgetUnits"`
 	SpentUnits  int64     `json:"spentUnits"`
 	CostUnits   int64     `json:"costUnits"`
+	// Condition is the mandate's condition, which held for the payload.
+	Condition string `json:"condition,omitempty"`
 }
 
 type Input struct {
@@ -158,6 +171,81 @@ type Input struct {
 	// one, whatever has happened to it since, and the same key with another
 	// action or payload is refused.
 	IdempotencyKey string
+	// Rationale is the agent's account of why it proposes this: what it
+	// found and how it concluded. Required. It is not part of the request a
+	// key names: a repeat with other words is still the same request.
+	Rationale string
+	// Evidence is what the agent looked at, at most 20 items.
+	Evidence []Evidence
+	// Provenance says who wrote the proposal.
+	Provenance Provenance
+}
+
+// Evidence is one thing the agent looked at: where, an id a person can
+// follow, and what it showed. It is the agent's claim, for a person to
+// check, never a fact the service has checked.
+type Evidence struct {
+	Source  string `json:"source"`
+	Ref     string `json:"ref,omitempty"`
+	Summary string `json:"summary"`
+}
+
+// Provenance says who wrote a proposal: the MCP client as it introduced
+// itself, and the model and the agent's version as the agent states them.
+// They are labels the agent chooses, kept as written in the log.
+type Provenance struct {
+	Client        string `json:"client,omitempty"`
+	ClientVersion string `json:"clientVersion,omitempty"`
+	Model         string `json:"model,omitempty"`
+	AgentVersion  string `json:"agentVersion,omitempty"`
+}
+
+// ProvenancePattern is what a provenance label may be: a name or a
+// version, never prose, so no spaces. The log keeps labels as written, and
+// the database holds them to the same.
+var ProvenancePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+()-]{0,99}$`)
+
+// label is one provenance label: its name in the log, its name as an
+// agent sends it over MCP, and its value.
+type label struct{ logged, sent, value string }
+
+func (p Provenance) labels() []label {
+	return []label{
+		{"client", "client", p.Client}, {"clientVersion", "client_version", p.ClientVersion},
+		{"model", "model", p.Model}, {"agentVersion", "agent_version", p.AgentVersion},
+	}
+}
+
+// checkAccount validates the agent's account of a proposal and returns it
+// trimmed.
+func checkAccount(input Input) (string, []Evidence, error) {
+	rationale := strings.TrimSpace(input.Rationale)
+	if rationale == "" || utf8.RuneCountInString(rationale) > maxRationale {
+		return "", nil, fault.New(fault.InvalidArgument, fmt.Sprintf(
+			"a rationale is required: up to %d characters on why you propose this, what you found and how you concluded, for the person who decides", maxRationale))
+	}
+	if len(input.Evidence) > maxEvidence {
+		return "", nil, fault.New(fault.InvalidArgument, fmt.Sprintf("at most %d evidence items", maxEvidence))
+	}
+	evidence := make([]Evidence, 0, len(input.Evidence))
+	for i, e := range input.Evidence {
+		e = Evidence{Source: strings.TrimSpace(e.Source), Ref: strings.TrimSpace(e.Ref), Summary: strings.TrimSpace(e.Summary)}
+		switch n := utf8.RuneCountInString; {
+		case e.Source == "" || n(e.Source) > 100:
+			return "", nil, fault.New(fault.InvalidArgument, fmt.Sprintf("evidence %d: source is 1 to 100 characters, where you looked", i+1))
+		case e.Summary == "" || n(e.Summary) > 1000:
+			return "", nil, fault.New(fault.InvalidArgument, fmt.Sprintf("evidence %d: summary is 1 to 1000 characters, what it showed", i+1))
+		case n(e.Ref) > 500:
+			return "", nil, fault.New(fault.InvalidArgument, fmt.Sprintf("evidence %d: ref is at most 500 characters", i+1))
+		}
+		evidence = append(evidence, e)
+	}
+	for _, l := range input.Provenance.labels() {
+		if l.value != "" && !ProvenancePattern.MatchString(l.value) {
+			return "", nil, fault.New(fault.InvalidArgument, l.sent+" is a name or a version of up to 100 characters: letters, digits and . _ : / @ + ( ) -, no spaces")
+		}
+	}
+	return rationale, evidence, nil
 }
 
 type Decision struct {
@@ -192,10 +280,25 @@ type Service struct {
 	actions    Actions
 	afterStore AfterStore
 	deliver    Deliver
+	onWaiting  AfterStore
 }
 
 func NewService(pool *pgxpool.Pool, actions Actions) *Service {
 	return &Service{pool: pool, actions: actions}
+}
+
+// SetOnWaiting is called, inside the transaction, whenever a proposal is
+// left for a person: when it is stored and no mandate can allow it, and
+// when an execution is skipped. The kernel connects the notifications.
+func (s *Service) SetOnWaiting(hook AfterStore) {
+	s.onWaiting = hook
+}
+
+func (s *Service) waiting(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	if s.onWaiting == nil {
+		return nil
+	}
+	return s.onWaiting(ctx, tx, id)
 }
 
 // SetAfterStore connects the execution queue. Nil means nothing is ever
@@ -272,6 +375,18 @@ func (s *Service) Propose(ctx context.Context, input Input) (Proposal, bool, err
 	if title == "" || utf8.RuneCountInString(title) > maxTitle {
 		return Proposal{}, false, fault.New(fault.InvalidArgument, fmt.Sprintf("the title must be 1 to %d characters", maxTitle))
 	}
+	rationale, evidence, err := checkAccount(input)
+	if err != nil {
+		return Proposal{}, false, err
+	}
+	evidenceJson, err := json.Marshal(evidence)
+	if err != nil {
+		return Proposal{}, false, err
+	}
+	provenanceJson, err := json.Marshal(input.Provenance)
+	if err != nil {
+		return Proposal{}, false, err
+	}
 	payload, object, err := checkPayload(action, input.Payload)
 	if err != nil {
 		return Proposal{}, false, err
@@ -287,7 +402,14 @@ func (s *Service) Propose(ctx context.Context, input Input) (Proposal, bool, err
 	// An agent may have been steered by what it read. The same text that
 	// would steer a model is flagged here, and the flag makes the proposal
 	// high risk: a person looks closer, and no mandate covers it.
-	if signals := injection.Signals(append(stringsOf(object), title)...); len(signals) > 0 {
+	texts := append(stringsOf(object), title, rationale)
+	for _, e := range evidence {
+		texts = append(texts, e.Source, e.Ref, e.Summary)
+	}
+	for _, l := range input.Provenance.labels() {
+		texts = append(texts, l.value)
+	}
+	if signals := injection.Signals(texts...); len(signals) > 0 {
 		flags = append(flags, FlagSteeringText)
 		risk = mandates.RiskHigh
 	}
@@ -299,6 +421,7 @@ func (s *Service) Propose(ctx context.Context, input Input) (Proposal, bool, err
 		id, err := q.InsertProposal(ctx, repo.InsertProposalParams{
 			Id: uuid.New(), TenantId: tenantId, AgentId: a.Id, Action: action.Key, Risk: risk, Title: title,
 			Payload: payload, CostUnits: action.CostUnits, Flags: flags, IdempotencyKey: input.IdempotencyKey, RequestHash: request,
+			Rationale: rationale, Evidence: evidenceJson, Provenance: provenanceJson,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Another copy of the request got there first, between the
@@ -319,24 +442,47 @@ func (s *Service) Propose(ctx context.Context, input Input) (Proposal, bool, err
 			return err
 		}
 		result = toProposal(row)
-		// The chain is permanent: the agent's title and payload stay on the
-		// proposal row, never in the chain. The chain holds the payload's
-		// digest, so a payload changed in the table later shows.
+		// The chain is permanent: the agent's title, payload and account stay
+		// on the proposal row, never in the chain. The chain holds their
+		// digests, so a change in the table later shows, and the provenance
+		// labels and the version of the action's schema as they were.
 		payloadDigest, err := events.Digest(result.Payload)
 		if err != nil {
 			return err
 		}
-		if _, err := events.Append(ctx, tx, events.Event{
-			Type: "proposal.created", SubjectId: id,
-			Payload: map[string]any{
-				"action": action.Key, "risk": risk, "flags": flags, "costUnits": action.CostUnits, "titleChars": utf8.RuneCountInString(title),
-				"payloadSha256": payloadDigest, "requestSha256": hex.EncodeToString(request),
-			},
-		}); err != nil {
+		rationaleDigest, err := events.Digest(rationale)
+		if err != nil {
+			return err
+		}
+		evidenceDigest, err := events.Digest(evidence)
+		if err != nil {
+			return err
+		}
+		fields := map[string]any{
+			"action": action.Key, "risk": risk, "flags": flags, "costUnits": action.CostUnits, "titleChars": utf8.RuneCountInString(title),
+			"payloadSha256": payloadDigest, "requestSha256": hex.EncodeToString(request),
+			"rationaleSha256": rationaleDigest, "evidenceSha256": evidenceDigest, "evidenceItems": len(evidence),
+		}
+		provenance := map[string]any{}
+		for _, l := range input.Provenance.labels() {
+			if l.value != "" {
+				provenance[l.logged] = l.value
+			}
+		}
+		fields["provenance"] = provenance
+		if len(action.Schema) > 0 {
+			if fields["actionSchemaSha256"], err = events.Digest(action.Schema); err != nil {
+				return err
+			}
+		}
+		if _, err := events.Append(ctx, tx, events.Event{Type: "proposal.created", SubjectId: id, Payload: fields}); err != nil {
 			return err
 		}
 		if s.afterStore != nil && Candidate(action, result) {
 			return s.afterStore(ctx, tx, id)
+		}
+		if err := s.waiting(ctx, tx, id); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -368,6 +514,10 @@ func WhyNotCandidate(action Action, proposal Proposal) string {
 }
 
 func checkPayload(action Action, payload json.RawMessage) (json.RawMessage, map[string]any, error) {
+	if key, ambiguous := ambiguousKey(payload); ambiguous {
+		return nil, nil, fault.New(fault.InvalidArgument, fmt.Sprintf(
+			"the payload has a key a receiver could read as another (%q): use each key once, in one spelling, with plain letters", key))
+	}
 	var object map[string]any
 	if err := json.Unmarshal(payload, &object); err != nil || object == nil {
 		return nil, nil, fault.New(fault.InvalidArgument, "the payload must be a JSON object")
@@ -504,6 +654,54 @@ func (s *Service) SkipReason(ctx context.Context, id uuid.UUID) (string, bool, e
 // and payload, and lets the action apply it. Only a person may.
 func (s *Service) Approve(ctx context.Context, id uuid.UUID, decision Decision) (Proposal, error) {
 	return s.decide(ctx, id, StatusApproved, decision)
+}
+
+// Withdraw takes back a waiting proposal, as the agent that made it: one
+// it proposes again with a correction, or no longer wants. The reason is
+// kept as the proposal's note. A proposal already decided is a Conflict.
+func (s *Service) Withdraw(ctx context.Context, id uuid.UUID, reason string) (Proposal, error) {
+	a, ok := actor.From(ctx)
+	if !ok || a.Kind != actor.Agent {
+		return Proposal{}, fault.New(fault.PermissionDenied, "only the agent that proposed it withdraws a proposal")
+	}
+	reason = strings.TrimSpace(reason)
+	if utf8.RuneCountInString(reason) > maxNote {
+		return Proposal{}, fault.New(fault.InvalidArgument, fmt.Sprintf("the reason can be at most %d characters", maxNote))
+	}
+	var note *string
+	if reason != "" {
+		note = &reason
+	}
+	var result Proposal
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		q := repo.New(tx)
+		row, err := q.GetProposalForUpdate(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && row.AgentId != a.Id) {
+			return fault.New(fault.NotFound, "no proposal of yours with that id")
+		}
+		if err != nil {
+			return err
+		}
+		if row.Status != StatusPending {
+			return fault.New(fault.Conflict, "the proposal is already "+row.Status+": only a waiting proposal can be withdrawn")
+		}
+		if _, err := q.WithdrawProposal(ctx, repo.WithdrawProposalParams{Id: id, Note: note}); err != nil {
+			return err
+		}
+		withdrawn, err := q.GetProposal(ctx, id)
+		if err != nil {
+			return err
+		}
+		result = toProposal(withdrawn)
+		_, err = events.Append(ctx, tx, events.Event{
+			Type: "proposal.withdrawn", SubjectId: id, Payload: map[string]any{"reasonChars": utf8.RuneCountInString(reason)},
+		})
+		return err
+	})
+	if err != nil {
+		return Proposal{}, fault.FromDb(err)
+	}
+	return result, nil
 }
 
 // Reject decides a proposal as rejected. Only a person may.
@@ -713,10 +911,12 @@ func (s *Service) Execute(ctx context.Context, id uuid.UUID, basisFor BasisFor) 
 		proposal := toProposal(row)
 		skip := func(reason string) error {
 			skipped = reason
-			_, err := events.Append(ctx, tx, events.Event{
+			if _, err := events.Append(ctx, tx, events.Event{
 				Type: "proposal.execution_skipped", SubjectId: id, Payload: map[string]any{"reason": reason, "action": proposal.Action},
-			})
-			return err
+			}); err != nil {
+				return err
+			}
+			return s.waiting(ctx, tx, id)
 		}
 		action, ok, err := s.actions.LookupIn(ctx, tx, proposal.Action)
 		if err != nil {
@@ -782,10 +982,12 @@ func (s *Service) Execute(ctx context.Context, id uuid.UUID, basisFor BasisFor) 
 // when the database refused the execution itself.
 func (s *Service) RecordSkip(ctx context.Context, id uuid.UUID, reason string) error {
 	return db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
-		_, err := events.Append(ctx, tx, events.Event{
+		if _, err := events.Append(ctx, tx, events.Event{
 			Type: "proposal.execution_skipped", SubjectId: id, Payload: map[string]any{"reason": reason},
-		})
-		return err
+		}); err != nil {
+			return err
+		}
+		return s.waiting(ctx, tx, id)
 	})
 }
 
@@ -956,6 +1158,14 @@ func toProposal(row repo.MandateProposal) Proposal {
 	if result.Flags == nil {
 		result.Flags = []string{}
 	}
+	result.Rationale = deref(row.Rationale)
+	result.Evidence = []Evidence{}
+	if err := json.Unmarshal(row.Evidence, &result.Evidence); err != nil && len(row.Evidence) > 0 {
+		slog.Error("proposal has unreadable evidence", "proposal", row.Id, "error", err)
+	}
+	if err := json.Unmarshal(row.Provenance, &result.Provenance); err != nil && len(row.Provenance) > 0 {
+		slog.Error("proposal has an unreadable provenance", "proposal", row.Id, "error", err)
+	}
 	if row.DecidedAt != nil {
 		at := row.DecidedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 		result.DecidedAt = &at
@@ -976,4 +1186,56 @@ func deref(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// ambiguousKey finds, in a JSON text, a key that a receiver could take for
+// another in the same object: the same key twice, two keys that differ only
+// in case, or a key with a letter some decoders fold into ASCII (the long
+// s, the Kelvin sign). Many JSON decoders match keys without regard to case
+// and keep the first or the last, so a condition checked on one key could
+// be carried out on the other. The database refuses the case variants too.
+func ambiguousKey(raw json.RawMessage) (string, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	type frame struct {
+		object  bool
+		wantKey bool
+		keys    map[string]bool
+	}
+	var stack []*frame
+	valueDone := func() {
+		if n := len(stack); n > 0 && stack[n-1].object {
+			stack[n-1].wantKey = true
+		}
+	}
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			// The end, or a text the payload check refuses anyway.
+			return "", false
+		}
+		if delim, ok := token.(json.Delim); ok {
+			switch delim {
+			case '{':
+				stack = append(stack, &frame{object: true, wantKey: true, keys: map[string]bool{}})
+			case '[':
+				stack = append(stack, &frame{})
+			default:
+				stack = stack[:len(stack)-1]
+				valueDone()
+			}
+			continue
+		}
+		if n := len(stack); n > 0 && stack[n-1].object && stack[n-1].wantKey {
+			key, _ := token.(string)
+			folded := strings.ToLower(key)
+			if strings.ContainsAny(key, "\u017f\u212a") || stack[n-1].keys[folded] {
+				return key, true
+			}
+			stack[n-1].keys[folded] = true
+			stack[n-1].wantKey = false
+			continue
+		}
+		valueDone()
+	}
 }

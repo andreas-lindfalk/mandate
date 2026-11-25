@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -68,7 +69,7 @@ func (s *DeliveriesSuite) defineWebhook(t testfix.Tenant, mayExecute bool) host 
 
 func (s *DeliveriesSuite) propose(t testfix.Tenant, subject string) proposals.Proposal {
 	s.T().Helper()
-	p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: subject, Payload: json.RawMessage(`{"subject":"` + subject + `"}`)})
+	p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: subject, Payload: json.RawMessage(`{"subject":"` + subject + `"}`)})
 	s.Require().NoError(err)
 	return p
 }
@@ -195,9 +196,9 @@ func (s *DeliveriesSuite) Test_TheBodyIsThePublishedContract() {
 	_, err = s.W.Kernel.Proposals.Approve(t.Reviewer, approved.Id, proposals.Decision{Note: "ok"})
 	s.Require().NoError(err)
 	// An execution under a mandate, in a run the agent named.
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 5, PolicyRef: "P-1", Days: 30})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 5, PolicyRef: "P-1", Days: 30, Condition: `payload.subject != ""`})
 	s.Require().NoError(err)
-	inRun, _, err := s.W.Kernel.Proposals.Propose(actor.WithRun(t.Agent, "run-42"), proposals.Input{IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: "Toner", Payload: json.RawMessage(`{"subject":"Toner"}`)})
+	inRun, _, err := s.W.Kernel.Proposals.Propose(actor.WithRun(t.Agent, "run-42"), proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: "Toner", Payload: json.RawMessage(`{"subject":"Toner"}`)})
 	s.Require().NoError(err)
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, inRun.Id))
 
@@ -233,6 +234,7 @@ func (s *DeliveriesSuite) Test_TheBodyIsThePublishedContract() {
 	s.Require().Nil(second.Decision.DecidedBy)
 	s.Require().NotNil(second.Decision.ExecutionBasis)
 	s.Require().Equal("P-1", second.Decision.ExecutionBasis.PolicyRef)
+	s.Require().Equal(`payload.subject != ""`, second.Decision.ExecutionBasis.Condition, "the receiver sees the condition that held")
 	for _, p := range payloads {
 		for name, at := range map[string]time.Time{"createdAt": p.CreatedAt, "proposedAt": p.Proposal.ProposedAt, "decidedAt": p.Decision.DecidedAt} {
 			s.Require().False(at.Before(started), name)
@@ -435,7 +437,7 @@ func (s *DeliveriesSuite) Test_FailuresRetryAndFinallyFail() {
 	defer refusing.Close()
 	_, _, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "refused.always", Risk: mandates.RiskLow, Connector: actions.ConnectorWebhook, Url: refusing.URL, Schema: json.RawMessage(`{"type":"object"}`)})
 	s.Require().NoError(err)
-	final, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{IdempotencyKey: uuid.NewString(), Action: "refused.always", Title: "Refused for good", Payload: json.RawMessage(`{}`)})
+	final, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "refused.always", Title: "Refused for good", Payload: json.RawMessage(`{}`)})
 	s.Require().NoError(err)
 	_, err = s.W.Kernel.Proposals.Approve(t.Owner, final.Id, proposals.Decision{})
 	s.Require().NoError(err)
@@ -455,7 +457,7 @@ func (s *DeliveriesSuite) Test_FailuresRetryAndFinallyFail() {
 	_, bigSecret, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "numbers.add", Risk: mandates.RiskLow, Connector: actions.ConnectorWebhook, Url: big.URL, Schema: json.RawMessage(`{"type":"object"}`)})
 	s.Require().NoError(err)
 	s.Require().NotEmpty(bigSecret)
-	numbers, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{IdempotencyKey: uuid.NewString(), Action: "numbers.add", Title: "numbers", Payload: json.RawMessage(`{}`)})
+	numbers, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: "numbers.add", Title: "numbers", Payload: json.RawMessage(`{}`)})
 	s.Require().NoError(err)
 	_, err = s.W.Kernel.Proposals.Approve(t.Owner, numbers.Id, proposals.Decision{})
 	s.Require().NoError(err)
@@ -479,6 +481,55 @@ func (s *DeliveriesSuite) Test_FailuresRetryAndFinallyFail() {
 	s.Require().NoError(err)
 	s.Require().Nil(unreachable.LastStatus)
 	s.Require().NotEmpty(unreachable.LastError)
+}
+
+// A receiver's reason for refusing is kept with the failed delivery, named
+// in the log by digest, for the person and the agent to read. A reason sent
+// with an answer that will be retried is not kept: nothing is settled yet.
+func (s *DeliveriesSuite) Test_ARefusalKeepsItsReason() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	status := http.StatusUnprocessableEntity
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"refused":"refused: no such order"}`))
+	}))
+	defer refusing.Close()
+	_, _, err := s.W.Kernel.Actions.Define(t.Owner, actions.Input{Key: "refunds.issue", Risk: mandates.RiskLow, Connector: actions.ConnectorWebhook, Url: refusing.URL, Schema: json.RawMessage(`{"type":"object"}`)})
+	s.Require().NoError(err)
+	deliver := func() deliveries.Delivery {
+		p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Why.", IdempotencyKey: uuid.NewString(), Action: "refunds.issue", Title: "Refund", Payload: json.RawMessage(`{}`)})
+		s.Require().NoError(err)
+		_, err = s.W.Kernel.Proposals.Approve(t.Owner, p.Id, proposals.Decision{})
+		s.Require().NoError(err)
+		d, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
+		s.Require().NoError(err)
+		s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false))
+		after, _, err := s.W.Kernel.Deliveries.Get(t.Owner, p.Id)
+		s.Require().NoError(err)
+		return after
+	}
+	refused := deliver()
+	s.Require().Equal(deliveries.StatusFailed, refused.Status)
+	s.Require().JSONEq(`{"refused":"refused: no such order"}`, string(refused.Result))
+	var failed map[string]any
+	s.Require().NoError(db.InTx(t.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
+		event, ok, err := events.Last(t.Owner, tx, refused.ProposalId, "delivery.failed")
+		s.Require().True(ok)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(event.Payload, &failed)
+	}))
+	digest, err := events.Digest(refused.Result)
+	s.Require().NoError(err)
+	s.Require().Equal(digest, failed["resultSha256"])
+	s.Require().NotContains(fmt.Sprint(failed), "no such order", "the log holds the reason's digest, not its text")
+
+	status = http.StatusServiceUnavailable
+	retried := deliver()
+	s.Require().Equal(deliveries.StatusPending, retried.Status)
+	s.Require().Empty(retried.Result, "an answer to an attempt that will be retried settles nothing")
 }
 
 func (s *DeliveriesSuite) Test_DatabaseGuardsDeliveries() {

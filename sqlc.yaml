@@ -52,6 +52,13 @@ sql:
         out: modules/proposals/internal/repo
   - engine: postgresql
     schema: schema
+    queries: modules/notifications/internal/repo/queries
+    gen:
+      go:
+        <<: *go
+        out: modules/notifications/internal/repo
+  - engine: postgresql
+    schema: schema
     queries: modules/actions/internal/repo/queries
     gen:
       go: &go

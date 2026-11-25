@@ -2,6 +2,7 @@ package mandates_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -46,7 +47,7 @@ func (s *MandatesSuite) resolve(ctx context.Context, agentId uuid.UUID, action, 
 	var r mandates.Resolution
 	s.Require().NoError(db.InTx(ctx, s.W.Pg.App, func(tx pgx.Tx) error {
 		var err error
-		r, err = s.W.Kernel.Mandates.Resolve(ctx, tx, agentId, action, risk, cost)
+		r, err = s.W.Kernel.Mandates.Resolve(ctx, tx, agentId, action, risk, json.RawMessage(`{}`), cost)
 		return err
 	}))
 	return r

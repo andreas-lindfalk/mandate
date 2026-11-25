@@ -12,6 +12,129 @@ import { errorText } from "@/lib/errors";
 import { formatDate, roleLabel } from "@/lib/format";
 import { useSession } from "@/lib/session";
 
+/** Where people are told that a proposal waits for them. */
+function NotifierCard({ isOwner }: { isOwner: boolean }) {
+  const queryClient = useQueryClient();
+  const notifier = useQuery({ queryKey: ["notifier"], queryFn: () => api.notifiers.getNotifier({}) });
+  const [kind, setKind] = React.useState("slack");
+  const [url, setUrl] = React.useState("");
+  const done = (message: string) => {
+    toast.success(message);
+    setUrl("");
+    queryClient.invalidateQueries({ queryKey: ["notifier"] });
+    queryClient.invalidateQueries({ queryKey: ["chain"] });
+  };
+  const set = useMutation({
+    mutationFn: () => api.notifiers.setNotifier({ kind, url: url.trim() }),
+    onSuccess: () => done("Notifications are on"),
+    onError: (error) => toast.error("Could not set notifications", { description: errorText(error) }),
+  });
+  const remove = useMutation({
+    mutationFn: () => api.notifiers.removeNotifier({}),
+    onSuccess: () => {
+      setConfirmingOff(false);
+      done("Notifications are off");
+    },
+    onError: (error) => toast.error("Could not turn notifications off", { description: errorText(error) }),
+  });
+  const test = useMutation({
+    mutationFn: () => api.notifiers.testNotifier({}),
+    onSuccess: () => toast.success("A test message was sent: check the channel"),
+    onError: (error) => toast.error("The test message did not arrive", { description: errorText(error) }),
+  });
+  const [confirmingOff, setConfirmingOff] = React.useState(false);
+  const current = notifier.data?.notifier;
+  const kindLabel: Record<string, string> = { slack: "Slack", discord: "Discord" };
+  return (
+    <Card className="mb-6 p-5">
+      <SectionLabel>Notifications</SectionLabel>
+      <p className="mt-2 max-w-2xl text-[13.5px] text-muted">
+        A message in a chat channel when a proposal waits for a person: the action, its risk, the agent, why it waits and a link here. Nothing the
+        agent wrote is sent there.
+      </p>
+      {notifier.isPending ? (
+        <Skeleton className="mt-3 h-9" />
+      ) : notifier.isError ? (
+        <ErrorState error={notifier.error} onRetry={() => notifier.refetch()} />
+      ) : (
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-[13.5px]">
+          {current ? (
+            <>
+              <Badge tone="success">On</Badge>
+              <span>
+                To a {kindLabel[current.kind] ?? current.kind} channel, since {formatDate(current.createdAt)}. The address is kept secret and is not shown.
+              </span>
+              {isOwner ? (
+                <div className="ml-auto flex gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => test.mutate()} loading={test.isPending}>
+                    Send a test message
+                  </Button>
+                  {confirmingOff ? (
+                    <>
+                      <Button variant="ghost" size="sm" onClick={() => setConfirmingOff(false)}>
+                        Cancel
+                      </Button>
+                      <Button variant="danger" size="sm" onClick={() => remove.mutate()} loading={remove.isPending}>
+                        Turn off now
+                      </Button>
+                    </>
+                  ) : (
+                    <Button variant="secondary" size="sm" onClick={() => setConfirmingOff(true)}>
+                      Turn off
+                    </Button>
+                  )}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <Badge tone="neutral">Off</Badge>
+              <span className="text-muted">{isOwner ? "Paste a channel's incoming webhook to turn them on." : "An owner can turn them on."}</span>
+            </>
+          )}
+        </div>
+      )}
+      {isOwner ? (
+        <form
+          className="mt-4 grid gap-3 sm:grid-cols-[140px_1fr_auto] sm:items-end"
+          onSubmit={(e) => {
+            e.preventDefault();
+            set.mutate();
+          }}
+        >
+          <Field label="Chat tool" htmlFor="notifier-kind">
+            <Select
+              id="notifier-kind"
+              value={kind}
+              onValueChange={setKind}
+              options={[
+                { value: "slack", label: "Slack" },
+                { value: "discord", label: "Discord" },
+              ]}
+            />
+          </Field>
+          <Field label={current ? "New incoming webhook, replacing the current one" : "Incoming webhook"} htmlFor="notifier-url">
+            <Input
+              id="notifier-url"
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
+              data-1p-ignore
+              data-lpignore="true"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder={kind === "slack" ? "https://hooks.slack.com/services/..." : "https://discord.com/api/webhooks/..."}
+            />
+          </Field>
+          <Button type="submit" disabled={!url.trim()} loading={set.isPending}>
+            {current ? "Replace" : "Turn on"}
+          </Button>
+        </form>
+      ) : null}
+    </Card>
+  );
+}
+
 function PersonRow({ person, canRemove, onChanged }: { person: Person; canRemove: boolean; onChanged: () => void }) {
   const [confirming, setConfirming] = React.useState(false);
   const remove = useMutation({
@@ -125,6 +248,7 @@ export function PeoplePage() {
         ) : (
           <p className="text-[13.5px] text-muted">You are a reviewer here. Owners add and remove people.</p>
         )}
+        <NotifierCard isOwner={session.isOwner} />
         {people.isPending ? (
           <Skeleton className="h-32" />
         ) : people.isError ? (

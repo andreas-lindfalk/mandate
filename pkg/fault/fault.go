@@ -21,6 +21,8 @@ const (
 	PermissionDenied
 	Unauthenticated
 	Conflict
+	// RateLimited is a limit on how often reached: try again later.
+	RateLimited
 )
 
 type Error struct {
@@ -69,6 +71,8 @@ func Name(code Code) string {
 		return "unauthenticated"
 	case Conflict:
 		return "conflict"
+	case RateLimited:
+		return "rate_limited"
 	}
 	return "internal"
 }
@@ -109,6 +113,10 @@ func FromDb(err error) error {
 		return Wrap(InvalidArgument, "refused by the database: "+pgErr.Message, err)
 	case "23505":
 		return Wrap(Conflict, "already exists", err)
+	// pgmandate's own code for a limit reached, such as an agent's
+	// proposals per minute. Postgres's own limits stay internal.
+	case "MD429":
+		return Wrap(RateLimited, pgErr.Message, err)
 	}
 	return err
 }
@@ -139,6 +147,8 @@ func connectCode(code Code) connect.Code {
 		return connect.CodeUnauthenticated
 	case Conflict:
 		return connect.CodeAlreadyExists
+	case RateLimited:
+		return connect.CodeResourceExhausted
 	default:
 		return connect.CodeInternal
 	}

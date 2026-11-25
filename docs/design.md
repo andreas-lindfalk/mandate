@@ -31,13 +31,40 @@ An embedded host can also register actions in code. A tenant's own definition of
 
 ## The life of a proposal
 
-1. The agent calls `propose` with an idempotency key. The payload is checked against the schema, the risk is set, the text is scanned, and the proposal is stored as waiting. If it could be allowed by a mandate, a job is inserted in the same transaction. The same key again returns this proposal and does nothing else.
-2. The job asks, in one transaction with the mandate rows locked: is there a live mandate for this agent that covers the action, at this risk, with budget left, and is the action still as it was (its schema, cost and risk)? If so, the proposal becomes allowed, with the basis recorded. If not, it stays waiting and the reason goes to the log.
-3. A person approves, edits and approves, or rejects what waits. An approval is held to the action as it is then: the payload to its schema, at its current risk if that is higher. The payload as the agent proposed it is kept beside an edit.
+1. The agent calls `propose` with an idempotency key and its account: a rationale (required), evidence (what it looked at: a source, a reference to find it again, what it showed) and provenance (the MCP client as it introduced itself, the model and its own version as it states them). The payload is checked against the schema, the risk is set, the text is scanned, including the account, and the proposal is stored as waiting, unless the agent is past its limit for the minute or the hour, which the database refuses. The account is not part of the request a key names: a retry in other words is the same request. If it could be allowed by a mandate, a job is inserted in the same transaction. The same key again returns this proposal and does nothing else.
+2. The job asks, in one transaction with the mandate rows locked: is there a live mandate for this agent that covers the action, at this risk, whose condition holds for the payload, with budget left, and is the action still as it was (its schema, cost and risk)? If so, the proposal becomes allowed, with the basis recorded. If not, it stays waiting and the reason goes to the log.
+3. A person approves, edits and approves, or rejects what waits, reading the agent's account beside the payload, and, when a condition stopped it, which comparison failed and what the payload had instead. When the tenant has a notifier, a Slack or Discord channel is told once that the proposal waits: the action, its risk, the agent's registered name, why it waits and a link, never the agent's text. An approval is held to the action as it is then: the payload to its schema, at its current risk if that is higher. The payload as the agent proposed it is kept beside an edit.
 4. For a webhook action, the deciding transaction also records a delivery and inserts its job, on a queue of its own so a slow connector does not hold up decisions. The job posts the decision, signed, and records the answer as the result, or retries, or marks it failed. A person can send a failed delivery again.
 5. The agent reads the decision, the delivery state and the result with `get_proposal`, which can wait for them.
 
 The decision is final in the database whatever the connector does. "Allowed" and "delivered" are separate facts, and the agent is told both.
+
+## Conditions
+
+A mandate may narrow what it allows by the content of a proposal, with a condition in CEL: `payload.amount <= 500 && payload.currency in ["EUR", "SEK"]`. Only what the database can check as well is accepted: payload fields (`payload.a.b`, `payload["a-b"]`) and `action` compared with literal values by `==`, `!=`, `<`, `<=`, `>`, `>=` or `in [...]`, combined with `&&`, `||` and `!`, and `has(payload.field)`.
+
+At the grant the service parses and type-checks the condition with cel-go, compiles it to a plan (a small JSON tree), and checks the fields against the schemas of the actions the mandate covers at that moment, defined or builtin (when one of them has no schema, the fields are not checked). The mandate row keeps the text and the plan, and neither changes. At execution the service evaluates the plan to choose a mandate, and the trigger evaluates the same plan with `mandate.condition_holds`. The two agree case for case:
+
+- numbers compare exactly as decimals, strings by their bytes (collation "C"), booleans only by equality;
+- a step into anything but an object, a missing field, or a value of another type than the literal is unknown, as SQL's NULL: `&&` and `||` follow SQL's three-valued logic, `!` keeps unknown, and only true allows.
+
+The execution's basis records the condition, and the delivery carries it to the receiver.
+
+## The agent's account
+
+The rationale, the evidence and the provenance are kept on the proposal as the agent gave them, and no update can change them, a person's included; the person's view goes in the decision note. The proposal event in the log holds their digests, the provenance labels, which are short names in a narrow alphabet, and the digest of the action's schema the proposal was made against, so the record says which version of the agent, the model and the action were involved without holding prose. The account is evidence about the agent's reasoning, not about the world: a mandate never reads it, and a receiver that acts on facts checks them in its own records (see `examples/refunds`).
+
+## Taking a proposal back
+
+An agent may withdraw its own waiting proposal, with a reason the person reads, as when it proposes again with a correction. The proposal is then decided as withdrawn: no person can approve it, no mandate executes it, and nothing is delivered. The database lets only the proposing agent do it, only while it waits, and changes nothing else with it.
+
+## A receiver's refusal
+
+A receiver that refuses a delivery with a 4xx answers once and for all. When its answer is a JSON object of at most 4 kB, it is kept with the failed delivery, named in the log by digest, shown in the inbox and given to the agent as `refusal`, with advice not to send the same request again. An answer to an attempt that will be retried is not kept.
+
+## Limits per agent
+
+Each agent may make at most so many proposals a minute and an hour, 30 and 300 unless an owner sets others. A trigger counts the agent's recent proposals under a lock per agent, so two at once cannot both take the last place, and refuses the rest with SQLSTATE MD429, pgmandate's own code, which reaches the agent as `rate_limited`. A repeat of a request inserts nothing and is not counted, also when it waited while its first copy took the last place.
 
 ## Enforcement
 
@@ -63,4 +90,4 @@ One image, built in two stages so the web app is embedded in the binary. Configu
 
 ## Not built
 
-Passkeys. Expiry and withdrawal of proposals. Replay of a task. Conditions on a mandate, such as an amount limit. Budgets per tenant across mandates. Encryption of connector secrets at rest. Pagination and streaming exports. Self-service sign-up.
+Passkeys. Expiry of proposals. Replay of a task. Conditions beyond comparisons with literal values, and a cost taken from the payload. Budgets per tenant across mandates. Encryption of connector secrets at rest. Pagination and streaming exports. Self-service sign-up.

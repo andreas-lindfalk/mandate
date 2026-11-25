@@ -32,6 +32,9 @@ message Mandate {
   google.protobuf.Timestamp valid_until = 11;
   google.protobuf.Timestamp revoked_at = 12;
   string revoked_by = 13;
+  // The CEL condition on the payload the mandate was granted with; empty
+  // when it has none.
+  string condition = 14;
 }
 
 message ListMandatesRequest {
@@ -50,6 +53,9 @@ message GrantMandateRequest {
   string policy_ref = 5;
   int32 days = 6;
   string department = 7;
+  // Optional: narrows the mandate by the content of a proposal, such as
+  // payload.amount <= 500 && payload.currency in ["EUR", "SEK"].
+  string condition = 8;
 }
 
 message GrantMandateResponse {

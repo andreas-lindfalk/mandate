@@ -33,6 +33,7 @@ const tabs = [
   { key: "executed", label: "Allowed by mandate" },
   { key: "approved", label: "Approved" },
   { key: "rejected", label: "Rejected" },
+  { key: "withdrawn", label: "Withdrawn" },
 ] as const;
 
 function RiskBadge({ risk }: { risk: string }) {
@@ -91,7 +92,7 @@ function Row({ proposal, description, selected, onSelect }: { proposal: Proposal
         aria-current={selected || undefined}
         className={cn("flex w-full flex-col gap-1.5 border-t border-border px-5 py-4 text-left transition-colors hover:bg-row-hover", selected && "bg-selected")}
       >
-        <div className="flex flex-wrap items-center gap-2">
+        <span className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[12px] text-accent">{proposal.action}</span>
           <RiskBadge risk={proposal.risk} />
           {proposal.flags.length ? (
@@ -101,18 +102,18 @@ function Row({ proposal, description, selected, onSelect }: { proposal: Proposal
           ) : null}
           <DeliveryBadge delivery={proposal.delivery} />
           <span className="ml-auto text-[12px] text-muted">{formatRelative(proposal.createdAt)}</span>
-        </div>
+        </span>
         {/* What the action does leads; the agent's own words follow, marked as theirs. */}
-        <p className="font-medium">{description || proposal.action}</p>
-        <p className="text-[13px]">
+        <span className="block font-medium">{description || proposal.action}</span>
+        <span className="block text-[13px]">
           <span className="text-muted">Agent's summary: </span>
           {proposal.title}
-        </p>
-        <p className="text-[12.5px] text-muted">
+        </span>
+        <span className="block text-[12.5px] text-muted">
           <Bot className="mr-1 inline size-3.5" aria-hidden />
           {proposal.agentName || shortId(proposal.agentId)}
           {proposal.status === "pending" && proposal.skipReason ? ` · ${skipLabel[proposal.skipReason] ?? proposal.skipReason}` : ""}
-        </p>
+        </span>
       </button>
     </li>
   );
@@ -159,11 +160,20 @@ function DeliveryCard({ proposalId, delivery, onChanged }: { proposalId: string;
   if (delivery.status === "failed") {
     return (
       <Card className="border-danger/30 bg-danger-soft p-4 text-[13.5px] text-danger-ink">
-        <p className="font-medium">Decided, but not delivered.</p>
+        <p className="font-medium">{delivery.resultJson ? "Decided, but refused by the receiving system." : "Decided, but not delivered."}</p>
         <p className="mt-1">
           {host} did not accept it after {delivery.attempts} {delivery.attempts === 1 ? "attempt" : "attempts"}
           {delivery.lastError ? `: ${delivery.lastError}` : ""}. The decision stands; the receiving system has not acted on it.
         </p>
+        {delivery.resultJson ? (
+          <>
+            <p className="mt-2">Its reason, as it gave it:</p>
+            <pre className="mt-1 overflow-x-auto font-mono text-[12px]" aria-label="The receiving system's reason">
+              {prettyJson(delivery.resultJson)}
+            </pre>
+            <p className="mt-2">Sending it again helps only once the cause is fixed.</p>
+          </>
+        ) : null}
         <Button variant="secondary" size="sm" className="mt-3" onClick={() => redeliver.mutate()} loading={redeliver.isPending}>
           <RotateCw /> Send again
         </Button>
@@ -189,6 +199,101 @@ function DeliveryCard({ proposalId, delivery, onChanged }: { proposalId: string;
         </pre>
       ) : null}
     </Card>
+  );
+}
+
+/** What pgmandate itself checked, apart from what the agent claims. */
+function Checks({ proposal, hasSchema }: { proposal: Proposal; hasSchema: boolean }) {
+  const flagged = proposal.flags.length > 0;
+  const items: { ok: boolean; text: string }[] = [
+    { ok: true, text: `Proposed by ${proposal.agentName || shortId(proposal.agentId)}, with that agent's own token.` },
+    hasSchema
+      ? { ok: true, text: "The payload fits the action's schema." }
+      : { ok: false, text: "The action has no payload schema, so the payload's shape was not checked." },
+    flagged
+      ? { ok: false, text: "What the agent wrote holds text that tries to steer a model: the risk is high and no mandate allows it." }
+      : { ok: true, text: "No known phrasing that tries to steer a model was found. This is a tripwire, not a guarantee." },
+    { ok: true, text: `The risk, ${riskLabel[proposal.risk]?.toLowerCase() ?? proposal.risk}, is set by the action and these checks, not by the agent.` },
+  ];
+  return (
+    <section aria-labelledby="checks-heading">
+      <p id="checks-heading" className="label-mono mb-2 text-[12px] text-muted">
+        Checked by pgmandate
+      </p>
+      <ul className="flex flex-col gap-1 text-[13.5px]">
+        {items.map((item) => (
+          <li key={item.text} className="flex items-start gap-2">
+            {item.ok ? (
+              <CircleCheck className="mt-0.5 size-4 shrink-0 text-success" aria-label="Checked" />
+            ) : (
+              <ShieldAlert className="mt-0.5 size-4 shrink-0 text-danger" aria-label="Look closer" />
+            )}
+            <span>{item.text}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** The agent's account: its rationale, what it says it looked at, and who
+ * wrote it. It argues for the proposal, so it comes after the facts,
+ * folded, in the agent's colour, and hidden when it was flagged. */
+function Account({ proposal }: { proposal: Proposal }) {
+  const flagged = proposal.flags.length > 0;
+  const [open, setOpen] = React.useState(false);
+  const [revealed, setRevealed] = React.useState(false);
+  const provenance = proposal.provenance;
+  const written = [
+    provenance?.client ? `${provenance.client}${provenance.clientVersion ? ` ${provenance.clientVersion}` : ""}` : "",
+    provenance?.model ? `model ${provenance.model}` : "",
+    provenance?.agentVersion ? `agent ${provenance.agentVersion}` : "",
+  ].filter(Boolean);
+  const long = proposal.rationale.length > 400 || proposal.evidence.length > 0;
+  return (
+    <section aria-labelledby="account-heading">
+      <p id="account-heading" className="label-mono mb-2 flex items-center gap-1.5 text-[12px] text-ai">
+        <Bot className="size-3.5" aria-hidden /> Claimed by the agent, not checked
+      </p>
+      {!proposal.rationale ? (
+        <p className="text-[13.5px] text-muted">No rationale: this was proposed before agents had to give one.</p>
+      ) : flagged && !revealed ? (
+        <Card className="bg-danger-soft p-4 text-[13.5px] text-danger-ink">
+          The agent's account holds text that tries to steer a model, so it is hidden. Read it knowing that.
+          <Button variant="secondary" size="sm" className="mt-3 block" onClick={() => setRevealed(true)}>
+            Show the flagged text
+          </Button>
+        </Card>
+      ) : (
+        <Card className="border-l-2 border-l-ai bg-ai-soft/40 p-4">
+          <p id="account-text" className={cn("whitespace-pre-wrap text-[14px] leading-relaxed", !open && long && "line-clamp-4")}>
+            {proposal.rationale}
+          </p>
+          {open && proposal.evidence.length > 0 ? (
+            <div className="mt-4">
+              <p className="label-mono mb-2 text-[11px] text-muted">What it says it looked at</p>
+              <ul className="flex flex-col gap-2">
+                {proposal.evidence.map((e, i) => (
+                  <li key={i} className="text-[13.5px]">
+                    <span className="font-medium">{e.source}</span>
+                    {e.ref ? <span className="ml-2 break-all font-mono text-[12px] text-muted select-all">{e.ref}</span> : null}
+                    <p className="text-muted">{e.summary}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {long ? (
+            <Button variant="ghost" size="sm" className="mt-2 -ml-2" aria-expanded={open} aria-controls="account-text" onClick={() => setOpen(!open)}>
+              {open ? "Show less" : proposal.evidence.length > 0 ? `Read it all, with ${proposal.evidence.length} references` : "Read it all"}
+            </Button>
+          ) : null}
+          <p className="mt-3 text-[12px] text-muted">
+            Written by the agent{written.length ? ` (${written.join(", ")})` : ""}. The references are text to look up yourself, never links.
+          </p>
+        </Card>
+      )}
+    </section>
   );
 }
 
@@ -268,17 +373,17 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
   const raisedToHigh = p.risk !== "high" && approvalRisk === "high";
   const needsConfirm = approvalRisk === "high" || confirmAsked;
   const actionGone = pending && !p.approvalRisk;
-  const decision = one.data.history.find((e) => e.type === "proposal.approved" || e.type === "proposal.rejected");
+  const decision = one.data.history.find((e) => e.type === "proposal.approved" || e.type === "proposal.rejected" || e.type === "proposal.withdrawn");
   return (
     <div className="flex flex-col gap-5">
-      <Link to="/inbox" className="flex items-center gap-1 text-[13px] text-muted hover:text-foreground lg:hidden">
+      <Link to="/inbox" className="-my-2 flex min-h-11 items-center gap-1 text-[13px] text-muted hover:text-foreground lg:hidden">
         <ArrowLeft className="size-3.5" /> Back to the inbox
       </Link>
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[12px] text-accent">{p.action}</span>
           <RiskBadge risk={p.risk} />
-          <Badge tone={p.status === "pending" ? "warning" : p.status === "rejected" ? "neutral" : "success"}>{statusLabel[p.status] ?? p.status}</Badge>
+          <Badge tone={p.status === "pending" ? "warning" : p.status === "rejected" || p.status === "withdrawn" ? "neutral" : "success"}>{statusLabel[p.status] ?? p.status}</Badge>
           {p.flags.map((flag) => (
             <Badge key={flag} tone="danger">
               {flagLabel[flag] ?? flag}
@@ -303,7 +408,16 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
 
       {p.delivery ? <DeliveryCard proposalId={p.id} delivery={p.delivery} onChanged={invalidate} /> : null}
       {pending && p.skipReason ? (
-        <Card className="bg-warning-soft p-4 text-[13.5px] text-warning-ink">Waits for a person: {skipLabel[p.skipReason] ?? p.skipReason}.</Card>
+        <Card className="bg-warning-soft p-4 text-[13.5px] text-warning-ink">
+          Waits for a person: {skipLabel[p.skipReason] ?? p.skipReason}.
+          {p.unmetConditions.length > 0 ? (
+            <ul className="mt-2 flex flex-col gap-1 font-mono text-[12px]">
+              {p.unmetConditions.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
+        </Card>
       ) : null}
       {p.executionBasis ? (
         <Card className="bg-success-soft p-4 text-[13.5px] text-success">
@@ -313,11 +427,19 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
           </Link>{" "}
           ({p.executionBasis.policyRef}), up to {riskLabel[p.executionBasis.maxRisk]?.toLowerCase()} risk. {Number(p.executionBasis.spentUnits)} of{" "}
           {Number(p.executionBasis.budgetUnits)} units of this month's budget were used before this one.
+          {p.executionBasis.condition ? (
+            <>
+              {" "}
+              Its condition held: <code className="font-mono text-[12px]">{p.executionBasis.condition}</code>
+            </>
+          ) : null}
         </Card>
       ) : null}
       {decision ? (
         <Card className="bg-sunken p-4 text-[13.5px]">
-          {statusLabel[p.status]} by {decision.actorName || "a person"}, {formatDateTime(p.decidedAt)}
+          {p.status === "withdrawn"
+            ? `Withdrawn by the agent, ${formatDateTime(p.decidedAt)}`
+            : `${statusLabel[p.status]} by ${decision.actorName || "a person"}, ${formatDateTime(p.decidedAt)}`}
           {p.decisionNote ? `: “${p.decisionNote}”` : "."}
         </Card>
       ) : null}
@@ -378,6 +500,9 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
         ) : null}
       </div>
 
+      <Checks proposal={p} hasSchema={!!action?.schemaJson} />
+      <Account proposal={p} />
+
       {pending ? (
         <div className="flex flex-col gap-3 border-t border-border pt-5">
           <Field label="Note" htmlFor="note" hint="Kept in the audit trail with the decision. Required to reject: the agent and the auditor will read it.">
@@ -399,10 +524,22 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
                 <Check /> {changed ? "Approve with edits" : "Approve"}
               </Button>
             )}
-            <Button variant="danger" className="ml-auto" onClick={() => reject.mutate()} loading={reject.isPending} disabled={!note.trim()}>
+            <Button
+              variant="danger"
+              className="ml-auto"
+              onClick={() => reject.mutate()}
+              loading={reject.isPending}
+              disabled={!note.trim()}
+              aria-describedby={note.trim() ? undefined : "reject-why"}
+            >
               <X /> Reject
             </Button>
           </div>
+          {note.trim() ? null : (
+            <p id="reject-why" className="text-[12px] text-muted">
+              A rejection needs a note.
+            </p>
+          )}
         </div>
       ) : null}
 

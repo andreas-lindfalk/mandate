@@ -210,18 +210,25 @@ func (q *Queries) MarkDelivered(ctx context.Context, arg MarkDeliveredParams) er
 }
 
 const markFailed = `-- name: MarkFailed :exec
-UPDATE mandate.deliveries SET status = 'failed', attempts = attempts + 1, last_status = $1, last_error = $2, failed_at = now()
-WHERE id = $3
+UPDATE mandate.deliveries SET status = 'failed', attempts = attempts + 1, last_status = $1, last_error = $2,
+    result = $3, failed_at = now()
+WHERE id = $4
 `
 
 type MarkFailedParams struct {
 	LastStatus *int32
 	LastError  *string
+	Result     []byte
 	Id         uuid.UUID
 }
 
 func (q *Queries) MarkFailed(ctx context.Context, arg MarkFailedParams) error {
-	_, err := q.db.Exec(ctx, markFailed, arg.LastStatus, arg.LastError, arg.Id)
+	_, err := q.db.Exec(ctx, markFailed,
+		arg.LastStatus,
+		arg.LastError,
+		arg.Result,
+		arg.Id,
+	)
 	return err
 }
 

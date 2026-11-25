@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/AppShell";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
-import { Badge, Card, EmptyState, ErrorState, Field, Input, Skeleton } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState, ErrorState, Field, Input, Skeleton, Textarea } from "@/components/ui/primitives";
 import { Select } from "@/components/ui/select";
 import type { Mandate } from "@/gen/mandate/v1/mandates_pb";
 import { api } from "@/lib/api";
@@ -32,6 +32,7 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
   const [policy, setPolicy] = React.useState("");
   const [days, setDays] = React.useState("90");
   const [department, setDepartment] = React.useState("");
+  const [condition, setCondition] = React.useState("");
   // The terms the person said they are accountable for; ticked only while
   // the terms are still those.
   const [accountableFor, setAccountableFor] = React.useState<string | null>(null);
@@ -48,6 +49,7 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
       setPolicy("");
       setDays("90");
       setDepartment("");
+      setCondition("");
       setAccountableFor(null);
     }
     setOpen(next);
@@ -55,7 +57,7 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
 
   // "I am accountable" is for the terms as they were when it was ticked;
   // any change to them asks for it again.
-  const terms = [agentId, picked.join(","), pattern, maxRisk, budget, policy, days].join("|");
+  const terms = [agentId, picked.join(","), pattern, maxRisk, budget, policy, days, condition.trim()].join("|");
   const accountable = accountableFor === terms;
 
   const patterns = picked.concat(pattern.split(",").map((e) => e.trim()).filter(Boolean));
@@ -77,6 +79,7 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
         policyRef: policy,
         days: Number(days),
         department,
+        condition,
       }),
     onSuccess: () => {
       toast.success("Mandate granted");
@@ -84,8 +87,15 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
       setAccountableFor(null);
       onDone();
     },
-    onError: (error) => toast.error("Could not grant", { description: errorText(error) }),
+    onError: (error) => {
+      if (!isConditionError(errorText(error))) toast.error("Could not grant", { description: errorText(error) });
+    },
   });
+  // A refusal of the condition is shown at the field, where it can be fixed:
+  // only when there is one, and the server's message is about it.
+  const isConditionError = (text: string) => !!condition.trim() && /\bcondition\b/i.test(text);
+  const refusal = grant.isError ? errorText(grant.error) : "";
+  const conditionError = isConditionError(refusal) ? refusal : "";
   const agentOptions = (agents.data?.agents ?? [])
     .filter((a) => !a.revokedAt)
     .map((a) => ({ value: a.id, label: a.name }))
@@ -183,13 +193,52 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
           </div>
             </div>
           </div>
+          <Field
+            label="Condition on the payload, optional"
+            htmlFor="condition"
+            hint={
+              'Narrows the mandate to proposals whose payload meets it, such as payload.amount <= 500 && payload.currency in ["EUR", "SEK"]. ' +
+              "Fields are compared with values (== != < <= > >= in) and combined with && || !. The database checks it again on every use."
+            }
+          >
+            <Textarea
+              id="condition"
+              value={condition}
+              onChange={(e) => {
+                setCondition(e.target.value);
+                if (grant.isError) grant.reset();
+              }}
+              rows={2}
+              className="font-mono text-[12.5px]"
+              placeholder="payload.amount <= 500"
+              spellCheck={false}
+              aria-invalid={!!conditionError}
+              aria-errormessage={conditionError ? "condition-error" : undefined}
+              aria-describedby={conditionError ? "condition-error" : undefined}
+            />
+          </Field>
+          {conditionError ? (
+            <p id="condition-error" role="alert" className="-mt-2 overflow-x-auto whitespace-pre font-mono text-[12px] text-danger-ink">
+              {conditionError}
+            </p>
+          ) : null}
           {agentId && patterns.length > 0 ? (
             <Card className="bg-warning-soft p-4 text-[13.5px] text-warning-ink">
               <p>
                 <span className="font-medium">{agentName}</span> will have{" "}
                 {effective.length ? effective.map((a) => a.key).join(", ") : "nothing that is defined today"} carried out{" "}
                 <span className="font-medium">without anyone looking</span>, up to {maxRisk} risk and {budget || 0} units a month, for {days} days
-                {policy.trim() ? `, under ${policy.trim()}` : ""}.
+                {policy.trim() ? `, under ${policy.trim()}` : ""}
+                {condition.trim() ? (
+                  <>
+                    , and only when the payload meets <code className="font-mono text-[12px]">{condition.trim()}</code>
+                  </>
+                ) : (
+                  <>
+                    , <span className="font-medium">whatever the payload says</span>: no condition limits an amount or any other field
+                  </>
+                )}
+                . A unit is the action's cost as defined, not money.
               </p>
               {patterns.includes("*") ? <p className="mt-1">The pattern * also covers every action defined later.</p> : null}
               {covered.length > effective.length ? (
@@ -260,6 +309,12 @@ function MandateRow({ mandate, agentName, canRevoke, onChanged }: { mandate: Man
           </div>
         ) : null}
       </div>
+      {mandate.condition ? (
+        <p className="mt-1 text-[13px]">
+          <span className="text-muted">Only when </span>
+          <code className="font-mono text-[12px]">{mandate.condition}</code>
+        </p>
+      ) : null}
       <p className="mt-1 text-[12.5px] text-muted">
         Policy {mandate.policyRef} · valid {formatDate(mandate.validFrom)} to {formatDate(mandate.validUntil)} · {shortId(mandate.id)}
       </p>

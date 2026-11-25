@@ -5,6 +5,7 @@ import { ActionService } from "@/gen/mandate/v1/actions_pb";
 import { AgentService } from "@/gen/mandate/v1/agents_pb";
 import { EvidenceService } from "@/gen/mandate/v1/evidence_pb";
 import { MandateService } from "@/gen/mandate/v1/mandates_pb";
+import { NotifierService } from "@/gen/mandate/v1/notifiers_pb";
 import { PersonService } from "@/gen/mandate/v1/persons_pb";
 import { ProposalService } from "@/gen/mandate/v1/proposals_pb";
 
@@ -66,4 +67,5 @@ export const api = {
   mandates: createClient(MandateService, transport),
   proposals: createClient(ProposalService, transport),
   evidence: createClient(EvidenceService, transport),
+  notifiers: createClient(NotifierService, transport),
 };

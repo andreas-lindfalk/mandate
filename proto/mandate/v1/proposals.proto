@@ -27,6 +27,8 @@ message ExecutionBasis {
   int64 budget_units = 4;
   int64 spent_units = 5;
   int64 cost_units = 6;
+  // The mandate's condition, which held for the payload; empty when it has none.
+  string condition = 7;
 }
 
 message Delivery {
@@ -79,6 +81,32 @@ message Proposal {
   // would run at, under the action as it is now. Empty when the action is
   // gone and it can only be rejected.
   string approval_risk = 21;
+  // The agent's account: why it proposes this, what it looked at, and who
+  // wrote it. As the agent gave it, never edited. Empty for a proposal made
+  // before rationales existed.
+  string rationale = 22;
+  repeated Evidence evidence = 23;
+  Provenance provenance = 24;
+  // For a waiting proposal read on its own, left for a person because no
+  // mandate's condition held: what in the payload stood in the way, per
+  // mandate, as the mandates are now.
+  repeated string unmet_conditions = 25;
+}
+
+// One thing the agent says it looked at. A claim for a person to check.
+message Evidence {
+  string source = 1;
+  string ref = 2;
+  string summary = 3;
+}
+
+// Who wrote a proposal: the MCP client as it introduced itself, and the
+// model and the agent's version as the agent states them.
+message Provenance {
+  string client = 1;
+  string client_version = 2;
+  string model = 3;
+  string agent_version = 4;
 }
 
 message ListProposalsRequest {

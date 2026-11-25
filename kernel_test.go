@@ -32,7 +32,7 @@ func (s *KernelSuite) propose(ctx context.Context, action string, payload map[st
 	s.T().Helper()
 	raw, err := json.Marshal(payload)
 	s.Require().NoError(err)
-	p, _, err := s.W.Kernel.Proposals.Propose(ctx, proposals.Input{IdempotencyKey: uuid.NewString(), Action: action, Title: "Proposal for " + action, Payload: raw})
+	p, _, err := s.W.Kernel.Proposals.Propose(ctx, proposals.Input{Rationale: "Test rationale.", IdempotencyKey: uuid.NewString(), Action: action, Title: "Proposal for " + action, Payload: raw})
 	s.Require().NoError(err)
 	return p
 }
@@ -115,6 +115,38 @@ func (s *KernelSuite) Test_TheChainExecutesWithinTheMandate() {
 		return err
 	}))
 	s.Require().Greater(count, int64(10))
+}
+
+func (s *KernelSuite) Test_TheChainFollowsTheCondition() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{
+		AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "Refunds v2", Days: 30,
+		Condition: `payload.amount <= 500 && payload.currency in ["EUR", "SEK"]`,
+	})
+	s.Require().NoError(err)
+
+	small := s.propose(t.Agent, "test.low", map[string]any{"amount": 499.5, "currency": "SEK"})
+	status, reason := s.execute(t, small)
+	s.Require().Equal(proposals.StatusExecuted, status)
+	s.Require().Empty(reason)
+	executed, err := s.W.Kernel.Proposals.Get(t.Owner, small.Id)
+	s.Require().NoError(err)
+	s.Require().Equal(&proposals.ExecutionBasis{
+		MandateId: m.Id, PolicyRef: "Refunds v2", MaxRisk: mandates.RiskLow, BudgetUnits: 10, SpentUnits: 0, CostUnits: 1, Condition: m.Condition,
+	}, executed.ExecutionBasis)
+
+	for _, payload := range []map[string]any{
+		{"amount": 501, "currency": "SEK"},
+		{"amount": 100, "currency": "USD"},
+		{"amount": "100", "currency": "SEK"},
+		{"currency": "SEK"},
+	} {
+		p := s.propose(t.Agent, "test.low", payload)
+		status, reason := s.execute(t, p)
+		s.Require().Equal(proposals.StatusPending, status, payload)
+		s.Require().Equal(pgmandate.SkipConditionUnmet, reason, payload)
+	}
+	s.Require().Equal([]uuid.UUID{small.Id}, s.W.Applied()[len(s.W.Applied())-1:], "only the proposal within the condition was applied")
 }
 
 func (s *KernelSuite) Test_TheChainLeavesTheRestForAPerson() {

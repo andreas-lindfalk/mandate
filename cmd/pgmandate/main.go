@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -50,7 +51,7 @@ const usage = `pgmandate: agents propose, the database decides.
                                      and MCP (/mcp) on $MANDATE_HTTP_ADDR
   pgmandate demo                     the five-minute demo (needs a running Postgres)
   pgmandate receiver -secrets S1,S2  a local receiver that prints the deliveries it accepts [-addr 127.0.0.1:8586]
-  pgmandate propose -token mnd_... -action a.b -title T -payload '{...}' [-key K] [-run R] [-url U]
+  pgmandate propose -token mnd_... -action a.b -title T -rationale WHY -payload '{...}' [-evidence '[...]'] [-key K] [-run R] [-url U]
                                      propose as an agent over MCP, as any agent would, and print the answer
 
 The commands below act on the database directly, as the person named with -as. Run migrate or serve first.
@@ -70,11 +71,18 @@ The commands below act on the database directly, as the person named with -as. R
   pgmandate action remove -tenant ID -as EMAIL -key a.b
   pgmandate actions -tenant ID [-all]
   pgmandate grant -tenant ID -as EMAIL [-agent ID] -actions a.b,c.* [-max-risk low|medium] -budget N -policy REF
-                  [-days 90] [-department D]
-                  Without -agent the mandate covers every agent of the tenant.
+                  [-days 90] [-department D] [-condition 'payload.amount <= 500']
+                  Without -agent the mandate covers every agent of the tenant. -condition narrows it by the
+                  payload: fields compared with literals (== != < <= > >= in), combined with && || !.
+  pgmandate agent limits -tenant ID -as EMAIL -agent ID -per-minute 30 -per-hour 300
+                  How many proposals the agent may make; the database refuses the rest.
+  pgmandate notify set -tenant ID -as EMAIL -kind slack|discord < address-file   (or -url https://hooks.slack.com/...)
+  pgmandate notify test -tenant ID -as EMAIL
+                  A message in that channel when a proposal waits for a person: the action, its risk, the
+                  agent, why it waits and a link, nothing the agent wrote. notify remove turns it off.
   pgmandate revoke -tenant ID -as EMAIL -mandate ID
   pgmandate mandates -tenant ID [-all]
-  pgmandate proposals -tenant ID [-status pending|approved|rejected|executed] [-limit 50]
+  pgmandate proposals -tenant ID [-status pending|approved|rejected|executed|withdrawn] [-limit 50]
   pgmandate approve -tenant ID -as EMAIL -proposal ID [-note TEXT] [-confirm]
   pgmandate reject -tenant ID -as EMAIL -proposal ID [-note TEXT]
   pgmandate redeliver -tenant ID -as EMAIL -proposal ID        send a failed delivery again
@@ -166,6 +174,9 @@ func env(key, fallback string) string {
 	return fallback
 }
 
+// stdin is where commands read a secret from, so tests can give one.
+var stdin io.Reader = os.Stdin
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
@@ -200,7 +211,7 @@ func run(ctx context.Context, command string, args []string, out io.Writer) erro
 		return receiver(ctx, cfg, args, out)
 	case "propose":
 		return proposeCommand(ctx, cfg, args, out)
-	case "tenant", "person", "agent", "action":
+	case "tenant", "person", "agent", "action", "notify":
 		if len(args) == 0 {
 			return fmt.Errorf("%s needs a subcommand", command)
 		}
@@ -256,8 +267,8 @@ func openApp(ctx context.Context, cfg config) (*pgxpool.Pool, error) {
 // newKernel wires the kernel with a queue. serve and demo start the queue
 // and run its jobs; the command line only inserts them, so an approval
 // made there is delivered once a server runs.
-func newKernel(pool *pgxpool.Pool, queue *jobs.Queue, allowPrivate bool) *pgmandate.Kernel {
-	return pgmandate.New(pool, pgmandate.Options{Queue: queue, AllowPrivateConnectors: allowPrivate})
+func newKernel(pool *pgxpool.Pool, queue *jobs.Queue, allowPrivate bool, publicUrl string) *pgmandate.Kernel {
+	return pgmandate.New(pool, pgmandate.Options{Queue: queue, AllowPrivateConnectors: allowPrivate, PublicUrl: publicUrl})
 }
 
 func serve(ctx context.Context, cfg config) error {
@@ -281,7 +292,7 @@ func serve(ctx context.Context, cfg config) error {
 	}
 	defer pool.Close()
 	queue := jobs.NewQueue(pool)
-	kernel := newKernel(pool, queue, cfg.allowPrivate)
+	kernel := newKernel(pool, queue, cfg.allowPrivate, cfg.publicUrl)
 	if err := queue.Init(4); err != nil {
 		return err
 	}
@@ -459,13 +470,19 @@ func proposeCommand(ctx context.Context, cfg config, args []string, out io.Write
 	action := flags.String("action", "", "the action key")
 	title := flags.String("title", "", "a title for the person who may decide it")
 	payload := flags.String("payload", "{}", "the payload, a JSON object")
+	rationale := flags.String("rationale", "", "why: the account the person deciding reads")
+	evidenceList := flags.String("evidence", "[]", `what was looked at, a JSON array of {"source", "ref", "summary"}`)
 	runId := flags.String("run", "", "the run id; a new one when empty")
 	key := flags.String("key", "", "the idempotency key; <run>:1 when empty. Send the same key to retry")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("propose: %w", err)
 	}
-	if *token == "" || *action == "" || *title == "" {
-		return errors.New("propose needs -token, -action and -title")
+	if *token == "" || *action == "" || *title == "" || *rationale == "" {
+		return errors.New("propose needs -token, -action, -title and -rationale")
+	}
+	var evidence []map[string]string
+	if err := json.Unmarshal([]byte(*evidenceList), &evidence); err != nil {
+		return errors.New(`-evidence must be a JSON array of {"source", "ref", "summary"}`)
 	}
 	if *runId == "" {
 		*runId = "cli-" + uuid.NewString()[:8]
@@ -487,7 +504,9 @@ func proposeCommand(ctx context.Context, cfg config, args []string, out io.Write
 	if err := json.Unmarshal([]byte(*payload), &object); err != nil || object == nil {
 		return errors.New("-payload must be a JSON object")
 	}
-	fields, err := json.Marshal(map[string]string{"action": *action, "title": *title, "run_id": *runId, "idempotency_key": *key})
+	fields, err := json.Marshal(map[string]any{
+		"action": *action, "title": *title, "run_id": *runId, "idempotency_key": *key, "rationale": *rationale, "evidence": evidence,
+	})
 	if err != nil {
 		return err
 	}
@@ -538,6 +557,10 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 	schemaText := flags.String("schema", "", "payload schema, JSON")
 	schemaFile := flags.String("schema-file", "", "payload schema file")
 	department := flags.String("department", "", "department label")
+	condition := flags.String("condition", "", "a CEL condition on the payload that narrows the mandate")
+	kind := flags.String("kind", "", "for notify: slack or discord")
+	perMinute := flags.Int("per-minute", 30, "for agent limits: proposals a minute")
+	perHour := flags.Int("per-hour", 300, "for agent limits: proposals an hour")
 	rotate := flags.Bool("rotate", false, "rotate the webhook secret")
 	actionList := flags.String("actions", "", "comma separated action patterns")
 	maxRisk := flags.String("max-risk", mandates.RiskLow, "low or medium")
@@ -561,7 +584,7 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 	}
 	defer pool.Close()
 	queue := jobs.NewQueue(pool)
-	kernel := newKernel(pool, queue, cfg.allowPrivate)
+	kernel := newKernel(pool, queue, cfg.allowPrivate, cfg.publicUrl)
 	if err := queue.Init(1); err != nil {
 		return err
 	}
@@ -668,6 +691,42 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 		if secret != "" {
 			fmt.Fprintf(out, "secret %s\n\nThe secret is shown once. The connector verifies every delivery's Mandate-Signature with it.\n", secret)
 		}
+	case "agent limits":
+		id, err := uuid.Parse(*agentId)
+		if err != nil {
+			return errors.New("-agent must be an agent id")
+		}
+		a, err := kernel.Agents.SetLimits(scoped, id, *perMinute, *perHour)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "agent %s may make %d proposals a minute and %d an hour\n", a.Id, a.MaxPerMinute, a.MaxPerHour)
+	case "notify set":
+		// The address is a secret: read from standard input when -url is
+		// not given, so it stays out of the shell's history and ps.
+		address := *url
+		if address == "" {
+			line, err := bufio.NewReader(stdin).ReadString('\n')
+			if err != nil && line == "" {
+				return errors.New("give the incoming webhook's address on standard input, or with -url")
+			}
+			address = strings.TrimSpace(line)
+		}
+		n, err := kernel.Notifications.Set(scoped, *kind, address)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "notifications go to a %s channel (notifier %s)\n", n.Kind, n.Id)
+	case "notify test":
+		if err := kernel.Notifications.SendTest(scoped); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "a test message was sent")
+	case "notify remove":
+		if err := kernel.Notifications.Remove(scoped); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "notifications are off")
 	case "action remove":
 		if err := kernel.Actions.Remove(scoped, *key); err != nil {
 			return err
@@ -682,7 +741,9 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 			printAction(out, e)
 		}
 	case "grant":
-		input := mandates.Input{Actions: splitList(*actionList), MaxRisk: *maxRisk, BudgetUnits: *budget, PolicyRef: *policy, Days: *days, Department: *department}
+		input := mandates.Input{
+			Actions: splitList(*actionList), MaxRisk: *maxRisk, BudgetUnits: *budget, PolicyRef: *policy, Days: *days, Department: *department, Condition: *condition,
+		}
 		if *agentId != "" {
 			id, err := uuid.Parse(*agentId)
 			if err != nil {
@@ -867,6 +928,9 @@ func printMandate(out io.Writer, m mandates.Mandate, spent int64) {
 	}
 	fmt.Fprintf(out, "mandate %s: %s may %s up to %s risk, %d of %d units this month, policy %q, %s\n",
 		m.Id, agent, strings.Join(m.Actions, ", "), m.MaxRisk, spent, m.BudgetUnits, m.PolicyRef, state)
+	if m.Condition != "" {
+		fmt.Fprintf(out, "  when %s\n", m.Condition)
+	}
 }
 
 func printAction(out io.Writer, e actions.Action) {

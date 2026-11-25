@@ -13,7 +13,7 @@ import (
 )
 
 const getAgent = `-- name: GetAgent :one
-SELECT id, tenant_id, name, department, created_by, created_at, revoked_at, revoked_by FROM mandate.agents WHERE id = $1
+SELECT id, tenant_id, name, department, created_by, created_at, revoked_at, revoked_by, max_per_minute, max_per_hour FROM mandate.agents WHERE id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (MandateAgent, error) {
@@ -28,6 +28,8 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (MandateAgent, err
 		&i.CreatedAt,
 		&i.RevokedAt,
 		&i.RevokedBy,
+		&i.MaxPerMinute,
+		&i.MaxPerHour,
 	)
 	return i, err
 }
@@ -99,7 +101,7 @@ func (q *Queries) InsertToken(ctx context.Context, arg InsertTokenParams) error 
 }
 
 const listAgents = `-- name: ListAgents :many
-SELECT id, tenant_id, name, department, created_by, created_at, revoked_at, revoked_by FROM mandate.agents ORDER BY revoked_at IS NOT NULL, created_at, id
+SELECT id, tenant_id, name, department, created_by, created_at, revoked_at, revoked_by, max_per_minute, max_per_hour FROM mandate.agents ORDER BY revoked_at IS NOT NULL, created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context) ([]MandateAgent, error) {
@@ -120,6 +122,8 @@ func (q *Queries) ListAgents(ctx context.Context) ([]MandateAgent, error) {
 			&i.CreatedAt,
 			&i.RevokedAt,
 			&i.RevokedBy,
+			&i.MaxPerMinute,
+			&i.MaxPerHour,
 		); err != nil {
 			return nil, err
 		}
@@ -195,6 +199,24 @@ UPDATE mandate.agent_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at 
 func (q *Queries) RevokeToken(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, revokeToken, id)
 	return err
+}
+
+const setAgentLimits = `-- name: SetAgentLimits :execrows
+UPDATE mandate.agents SET max_per_minute = $1, max_per_hour = $2 WHERE id = $3 AND revoked_at IS NULL
+`
+
+type SetAgentLimitsParams struct {
+	MaxPerMinute int32
+	MaxPerHour   int32
+	Id           uuid.UUID
+}
+
+func (q *Queries) SetAgentLimits(ctx context.Context, arg SetAgentLimitsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAgentLimits, arg.MaxPerMinute, arg.MaxPerHour, arg.Id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchToken = `-- name: TouchToken :exec

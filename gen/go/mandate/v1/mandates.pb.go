@@ -31,14 +31,17 @@ type Mandate struct {
 	MaxRisk     string   `protobuf:"bytes,4,opt,name=max_risk,json=maxRisk,proto3" json:"max_risk,omitempty"`
 	BudgetUnits int64    `protobuf:"varint,5,opt,name=budget_units,json=budgetUnits,proto3" json:"budget_units,omitempty"`
 	// What this month's executions under the mandate have cost.
-	SpentUnits    int64                  `protobuf:"varint,6,opt,name=spent_units,json=spentUnits,proto3" json:"spent_units,omitempty"`
-	PolicyRef     string                 `protobuf:"bytes,7,opt,name=policy_ref,json=policyRef,proto3" json:"policy_ref,omitempty"`
-	Department    string                 `protobuf:"bytes,8,opt,name=department,proto3" json:"department,omitempty"`
-	GrantedBy     string                 `protobuf:"bytes,9,opt,name=granted_by,json=grantedBy,proto3" json:"granted_by,omitempty"`
-	ValidFrom     *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=valid_from,json=validFrom,proto3" json:"valid_from,omitempty"`
-	ValidUntil    *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
-	RevokedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
-	RevokedBy     string                 `protobuf:"bytes,13,opt,name=revoked_by,json=revokedBy,proto3" json:"revoked_by,omitempty"`
+	SpentUnits int64                  `protobuf:"varint,6,opt,name=spent_units,json=spentUnits,proto3" json:"spent_units,omitempty"`
+	PolicyRef  string                 `protobuf:"bytes,7,opt,name=policy_ref,json=policyRef,proto3" json:"policy_ref,omitempty"`
+	Department string                 `protobuf:"bytes,8,opt,name=department,proto3" json:"department,omitempty"`
+	GrantedBy  string                 `protobuf:"bytes,9,opt,name=granted_by,json=grantedBy,proto3" json:"granted_by,omitempty"`
+	ValidFrom  *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=valid_from,json=validFrom,proto3" json:"valid_from,omitempty"`
+	ValidUntil *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
+	RevokedAt  *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
+	RevokedBy  string                 `protobuf:"bytes,13,opt,name=revoked_by,json=revokedBy,proto3" json:"revoked_by,omitempty"`
+	// The CEL condition on the payload the mandate was granted with; empty
+	// when it has none.
+	Condition     string `protobuf:"bytes,14,opt,name=condition,proto3" json:"condition,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -164,6 +167,13 @@ func (x *Mandate) GetRevokedBy() string {
 	return ""
 }
 
+func (x *Mandate) GetCondition() string {
+	if x != nil {
+		return x.Condition
+	}
+	return ""
+}
+
 type ListMandatesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	IncludeEnded  bool                   `protobuf:"varint,1,opt,name=include_ended,json=includeEnded,proto3" json:"include_ended,omitempty"`
@@ -253,14 +263,17 @@ func (x *ListMandatesResponse) GetMandates() []*Mandate {
 }
 
 type GrantMandateRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	Actions       []string               `protobuf:"bytes,2,rep,name=actions,proto3" json:"actions,omitempty"`
-	MaxRisk       string                 `protobuf:"bytes,3,opt,name=max_risk,json=maxRisk,proto3" json:"max_risk,omitempty"`
-	BudgetUnits   int64                  `protobuf:"varint,4,opt,name=budget_units,json=budgetUnits,proto3" json:"budget_units,omitempty"`
-	PolicyRef     string                 `protobuf:"bytes,5,opt,name=policy_ref,json=policyRef,proto3" json:"policy_ref,omitempty"`
-	Days          int32                  `protobuf:"varint,6,opt,name=days,proto3" json:"days,omitempty"`
-	Department    string                 `protobuf:"bytes,7,opt,name=department,proto3" json:"department,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	AgentId     string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	Actions     []string               `protobuf:"bytes,2,rep,name=actions,proto3" json:"actions,omitempty"`
+	MaxRisk     string                 `protobuf:"bytes,3,opt,name=max_risk,json=maxRisk,proto3" json:"max_risk,omitempty"`
+	BudgetUnits int64                  `protobuf:"varint,4,opt,name=budget_units,json=budgetUnits,proto3" json:"budget_units,omitempty"`
+	PolicyRef   string                 `protobuf:"bytes,5,opt,name=policy_ref,json=policyRef,proto3" json:"policy_ref,omitempty"`
+	Days        int32                  `protobuf:"varint,6,opt,name=days,proto3" json:"days,omitempty"`
+	Department  string                 `protobuf:"bytes,7,opt,name=department,proto3" json:"department,omitempty"`
+	// Optional: narrows the mandate by the content of a proposal, such as
+	// payload.amount <= 500 && payload.currency in ["EUR", "SEK"].
+	Condition     string `protobuf:"bytes,8,opt,name=condition,proto3" json:"condition,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -340,6 +353,13 @@ func (x *GrantMandateRequest) GetDays() int32 {
 func (x *GrantMandateRequest) GetDepartment() string {
 	if x != nil {
 		return x.Department
+	}
+	return ""
+}
+
+func (x *GrantMandateRequest) GetCondition() string {
+	if x != nil {
+		return x.Condition
 	}
 	return ""
 }
@@ -473,7 +493,7 @@ var File_mandate_v1_mandates_proto protoreflect.FileDescriptor
 const file_mandate_v1_mandates_proto_rawDesc = "" +
 	"\n" +
 	"\x19mandate/v1/mandates.proto\x12\n" +
-	"mandate.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdd\x03\n" +
+	"mandate.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfb\x03\n" +
 	"\aMandate\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12\x18\n" +
@@ -497,11 +517,12 @@ const file_mandate_v1_mandates_proto_rawDesc = "" +
 	"\n" +
 	"revoked_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\x12\x1d\n" +
 	"\n" +
-	"revoked_by\x18\r \x01(\tR\trevokedBy\":\n" +
+	"revoked_by\x18\r \x01(\tR\trevokedBy\x12\x1c\n" +
+	"\tcondition\x18\x0e \x01(\tR\tcondition\":\n" +
 	"\x13ListMandatesRequest\x12#\n" +
 	"\rinclude_ended\x18\x01 \x01(\bR\fincludeEnded\"G\n" +
 	"\x14ListMandatesResponse\x12/\n" +
-	"\bmandates\x18\x01 \x03(\v2\x13.mandate.v1.MandateR\bmandates\"\xdb\x01\n" +
+	"\bmandates\x18\x01 \x03(\v2\x13.mandate.v1.MandateR\bmandates\"\xf9\x01\n" +
 	"\x13GrantMandateRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x18\n" +
 	"\aactions\x18\x02 \x03(\tR\aactions\x12\x19\n" +
@@ -512,7 +533,8 @@ const file_mandate_v1_mandates_proto_rawDesc = "" +
 	"\x04days\x18\x06 \x01(\x05R\x04days\x12\x1e\n" +
 	"\n" +
 	"department\x18\a \x01(\tR\n" +
-	"department\"E\n" +
+	"department\x12\x1c\n" +
+	"\tcondition\x18\b \x01(\tR\tcondition\"E\n" +
 	"\x14GrantMandateResponse\x12-\n" +
 	"\amandate\x18\x01 \x01(\v2\x13.mandate.v1.MandateR\amandate\"&\n" +
 	"\x14RevokeMandateRequest\x12\x0e\n" +

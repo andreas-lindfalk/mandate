@@ -14,7 +14,10 @@ type agentHandler struct{ *Handler }
 var _ mandatev1connect.AgentServiceHandler = (*agentHandler)(nil)
 
 func toAgent(a agents.Agent) *mandatev1.Agent {
-	return &mandatev1.Agent{Id: a.Id.String(), Name: a.Name, Department: a.Department, CreatedAt: ts(a.CreatedAt), RevokedAt: tsPtr(a.RevokedAt)}
+	return &mandatev1.Agent{
+		Id: a.Id.String(), Name: a.Name, Department: a.Department, CreatedAt: ts(a.CreatedAt), RevokedAt: tsPtr(a.RevokedAt),
+		MaxPerMinute: int32(a.MaxPerMinute), MaxPerHour: int32(a.MaxPerHour), //nolint:gosec // bounded by the database
+	}
 }
 
 func toToken(t agents.Token) *mandatev1.Token {
@@ -53,6 +56,18 @@ func (h *agentHandler) RevokeAgent(ctx context.Context, req *mandatev1.RevokeAge
 		return nil, fault.ToConnect(err)
 	}
 	return &mandatev1.RevokeAgentResponse{}, nil
+}
+
+func (h *agentHandler) SetAgentLimits(ctx context.Context, req *mandatev1.SetAgentLimitsRequest) (*mandatev1.SetAgentLimitsResponse, error) {
+	id, err := parseId(req.GetId(), "agent id")
+	if err != nil {
+		return nil, err
+	}
+	agent, err := h.kernel.Agents.SetLimits(ctx, id, int(req.GetMaxPerMinute()), int(req.GetMaxPerHour()))
+	if err != nil {
+		return nil, fault.ToConnect(err)
+	}
+	return &mandatev1.SetAgentLimitsResponse{Agent: toAgent(agent)}, nil
 }
 
 func (h *agentHandler) IssueToken(ctx context.Context, req *mandatev1.IssueTokenRequest) (*mandatev1.IssueTokenResponse, error) {

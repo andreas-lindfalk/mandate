@@ -111,6 +111,28 @@ function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean
   });
   const [confirming, setConfirming] = React.useState(false);
   const [revoking, setRevoking] = React.useState<string | null>(null);
+  const [editingLimits, setEditingLimits] = React.useState(false);
+  const [perMinute, setPerMinute] = React.useState(String(agent.maxPerMinute));
+  const [perHour, setPerHour] = React.useState(String(agent.maxPerHour));
+  const minute = Number(perMinute);
+  const hour = Number(perHour);
+  const limitsProblem =
+    !perMinute.trim() || !perHour.trim() || !Number.isInteger(minute) || !Number.isInteger(hour)
+      ? "Give whole numbers."
+      : minute < 1 || minute > 10000
+        ? "A minute takes 1 to 10000."
+        : hour < minute || hour > 100000
+          ? "An hour takes at least the minute's number, and at most 100000."
+          : "";
+  const setLimits = useMutation({
+    mutationFn: () => api.agents.setAgentLimits({ id: agent.id, maxPerMinute: Number(perMinute), maxPerHour: Number(perHour) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      setEditingLimits(false);
+      toast.success("Limits set");
+    },
+    onError: (error) => toast.error("Could not set the limits", { description: errorText(error) }),
+  });
   const live = !agent.revokedAt;
   return (
     <Card className="p-5">
@@ -122,6 +144,51 @@ function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean
         <span className="ml-auto text-[12px] text-muted">since {formatDateTime(agent.createdAt)}</span>
       </div>
       <p className="mt-1 font-mono text-[11px] text-muted">{agent.id}</p>
+      {editingLimits ? (
+        <form
+          className="mt-3 flex flex-wrap items-end gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setLimits.mutate();
+          }}
+        >
+          <Field label="Proposals a minute" htmlFor={`per-minute-${agent.id}`} className="w-40">
+            <Input id={`per-minute-${agent.id}`} type="number" min={1} max={10000} value={perMinute} onChange={(e) => setPerMinute(e.target.value)} />
+          </Field>
+          <Field label="Proposals an hour" htmlFor={`per-hour-${agent.id}`} className="w-40">
+            <Input id={`per-hour-${agent.id}`} type="number" min={1} max={100000} value={perHour} onChange={(e) => setPerHour(e.target.value)} />
+          </Field>
+          <Button type="submit" variant="secondary" loading={setLimits.isPending} disabled={!!limitsProblem} aria-describedby={limitsProblem ? `limits-problem-${agent.id}` : undefined}>
+            Set limits
+          </Button>
+          <Button type="button" variant="ghost" onClick={() => setEditingLimits(false)}>
+            Cancel
+          </Button>
+          {limitsProblem ? (
+            <p id={`limits-problem-${agent.id}`} className="w-full text-[12px] text-danger-ink">
+              {limitsProblem}
+            </p>
+          ) : null}
+        </form>
+      ) : (
+        <p className="mt-1 text-[12.5px] text-muted">
+          Up to {agent.maxPerMinute} proposals a minute and {agent.maxPerHour} an hour; the database refuses more.
+          {isOwner && live ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-1"
+              onClick={() => {
+                setPerMinute(String(agent.maxPerMinute));
+                setPerHour(String(agent.maxPerHour));
+                setEditingLimits(true);
+              }}
+            >
+              Change
+            </Button>
+          ) : null}
+        </p>
+      )}
       <ul className="mt-3 flex flex-col gap-1 text-[13px]">
         {(tokens.data?.tokens ?? []).map((token) => {
           const state = tokenState(token);

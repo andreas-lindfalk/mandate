@@ -9,6 +9,7 @@ import (
 	mandatev1 "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1"
 	"github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1/mandatev1connect"
 	"github.com/andreas-lindfalk/pgmandate/modules/deliveries"
+	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
 )
@@ -21,7 +22,7 @@ func toBasis(b *proposals.ExecutionBasis) *mandatev1.ExecutionBasis {
 	if b == nil {
 		return nil
 	}
-	return &mandatev1.ExecutionBasis{MandateId: b.MandateId.String(), PolicyRef: b.PolicyRef, MaxRisk: b.MaxRisk, BudgetUnits: b.BudgetUnits, SpentUnits: b.SpentUnits, CostUnits: b.CostUnits}
+	return &mandatev1.ExecutionBasis{MandateId: b.MandateId.String(), PolicyRef: b.PolicyRef, MaxRisk: b.MaxRisk, BudgetUnits: b.BudgetUnits, SpentUnits: b.SpentUnits, CostUnits: b.CostUnits, Condition: b.Condition}
 }
 
 func toDelivery(d deliveries.Delivery) *mandatev1.Delivery {
@@ -36,7 +37,13 @@ func toProposal(p proposals.Proposal, agentName, skipReason string, delivery *de
 		Id: p.Id.String(), AgentId: p.AgentId.String(), AgentName: agentName, RunId: p.RunId, Action: p.Action, Risk: p.Risk, Title: p.Title,
 		PayloadJson: string(p.Payload), CostUnits: p.CostUnits, Flags: p.Flags, Status: p.Status, Edited: p.Edited, DecidedBy: idText(p.DecidedBy),
 		DecidedAt: tsText(p.DecidedAt), DecisionNote: p.DecisionNote, CreatedAt: tsText(&p.CreatedAt), ExecutionBasis: toBasis(p.ExecutionBasis),
-		SkipReason: skipReason, ProposedPayloadJson: string(p.ProposedPayload),
+		SkipReason: skipReason, ProposedPayloadJson: string(p.ProposedPayload), Rationale: p.Rationale,
+		Provenance: &mandatev1.Provenance{
+			Client: p.Provenance.Client, ClientVersion: p.Provenance.ClientVersion, Model: p.Provenance.Model, AgentVersion: p.Provenance.AgentVersion,
+		},
+	}
+	for _, e := range p.Evidence {
+		out.Evidence = append(out.Evidence, &mandatev1.Evidence{Source: e.Source, Ref: e.Ref, Summary: e.Summary})
 	}
 	if delivery != nil {
 		out.Delivery = toDelivery(*delivery)
@@ -144,6 +151,11 @@ func (h *proposalHandler) GetProposal(ctx context.Context, req *mandatev1.GetPro
 		}
 		if found {
 			resp.Proposal.ApprovalRisk = proposals.RiskAtApproval(action, p)
+		}
+		if resp.Proposal.SkipReason == mandates.SkipConditionUnmet {
+			if resp.Proposal.UnmetConditions, err = h.kernel.Mandates.Unmet(ctx, p.AgentId, p.Action, p.Risk, p.Payload); err != nil {
+				return nil, fault.ToConnect(err)
+			}
 		}
 	}
 	for _, e := range history {

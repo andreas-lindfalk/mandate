@@ -1,6 +1,8 @@
 -- name: InsertProposal :one
-INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash)
-VALUES (@id, @tenant_id, @agent_id, @action, @risk, @title, @payload, @cost_units, @flags::text[], @idempotency_key, @request_hash)
+INSERT INTO mandate.proposals (id, tenant_id, agent_id, action, risk, title, payload, cost_units, flags, idempotency_key, request_hash,
+    rationale, evidence, provenance)
+VALUES (@id, @tenant_id, @agent_id, @action, @risk, @title, @payload, @cost_units, @flags::text[], @idempotency_key, @request_hash,
+    @rationale::text, @evidence::jsonb, @provenance::jsonb)
 ON CONFLICT (tenant_id, agent_id, idempotency_key) DO NOTHING
 RETURNING id;
 
@@ -46,3 +48,6 @@ ORDER BY subject_id, seq DESC;
 -- name: CountRecentApprovals :one
 SELECT count(*) FROM mandate.events
 WHERE type = 'proposal.approved' AND actor_id = @actor_id AND created_at > now() - interval '1 minute';
+
+-- name: WithdrawProposal :execrows
+UPDATE mandate.proposals SET status = 'withdrawn', decision_note = sqlc.narg('note') WHERE id = @id AND status = 'pending';

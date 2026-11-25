@@ -38,6 +38,7 @@ export const statusLabel: Record<string, string> = {
   approved: "Approved",
   rejected: "Rejected",
   executed: "Allowed by mandate",
+  withdrawn: "Withdrawn",
 };
 
 export const flagLabel: Record<string, string> = {
@@ -67,6 +68,12 @@ export const eventLabel: Record<string, string> = {
   "proposal.executed": "Allowed by a mandate",
   "proposal.execution_skipped": "Left for a person",
   "proposal.rapid_approvals": "Many approvals in a short time",
+  "proposal.withdrawn": "Withdrawn by the agent",
+  "proposal.notified": "Chat channel told",
+  "agent.limits_set": "Agent's limits set",
+  "notifier.set": "Notifications set",
+  "notifier.removed": "Notifications turned off",
+  "delivery.retargeted": "Delivery moved with its action",
   "delivery.delivered": "Delivered",
   "delivery.failed": "Delivery failed",
   "delivery.retried": "Delivery sent again",
@@ -90,6 +97,7 @@ export const skipLabel: Record<string, string> = {
   no_mandate: "No mandate covers this action for the agent",
   risk_above_mandate: "The risk is above what the mandate allows",
   budget_spent: "The mandate's budget for this month is spent",
+  condition_not_met: "The payload does not meet the mandate's condition",
   flagged: "Flagged: the proposal carries text that tries to steer a model",
   action_not_executable: "This action is never carried out without a person",
   action_failed: "The system that carries it out refused it",

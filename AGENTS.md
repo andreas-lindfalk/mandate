@@ -16,8 +16,10 @@ It is not an agent framework, an LLM gateway or an orchestrator, and it is small
 
 ## Fixed principles
 
-- **Opt-in in every layer.** Nothing is allowed without a person unless the action is defined as delegable, a person has granted a live mandate that covers the agent and the action, the proposal's risk is within the mandate, nothing is flagged, and the month's budget has room. Any of these missing leaves the proposal for a person, and the log says why.
+- **Opt-in in every layer.** Nothing is allowed without a person unless the action is defined as delegable, a person has granted a live mandate that covers the agent and the action, the proposal's risk is within the mandate, the mandate's condition, if it has one, is true for the payload, nothing is flagged, and the month's budget has room. Any of these missing leaves the proposal for a person, and the log says why.
 - **High risk is never delegated.** A mandate allows low or medium risk.
+- **An agent explains itself.** Every proposal carries the agent's rationale, kept as written; it informs a person and is never read by a mandate. What a chat channel is told carries nothing the agent wrote.
+- **A condition is one text with one meaning.** It is written in CEL and only the part the database can evaluate is accepted; the service and the database evaluate the same compiled plan, a test keeps them in step, and anything that cannot be evaluated does not allow.
 - **The rules are enforced twice.** The service checks them and explains refusals; the database checks them again with policies and triggers. A rule that lives only in the service is listed as such in `docs/threat-model.md`. Do not claim more than that document says.
 - **Agents are principals of their own.** They act as actor kind `agent`, and the database writes the actor of every log event from the session.
 - **The log is append-only**, hash linked, and verifiable without the database. It is tamper-evident, not tamper-proof. An event names what it is about by digest (`events.Digest`) rather than by content, so payloads stay off the permanent record and a later change to them still shows.
@@ -35,7 +37,7 @@ Go (library plus one binary), Postgres 18 with RLS, River for jobs in Postgres, 
 kernel.go, execute.go   The kernel: actions (data and builtin), the MCP handler, the execution path.
                         At the root so an embedded host writes pgmandate.New.
 sign/                   Signing and verification of deliveries. At the root: the one package receivers import.
-modules/<module>/       The domain: tenants, agents, actions, mandates, proposals, deliveries, auth.
+modules/<module>/       The domain: tenants, agents, actions, mandates, proposals, deliveries, notifications, auth.
                         Each has internal/repo (sqlc) and, except auth, its own tests with a
                         test_base_test.go. auth is tested through api/.
 pkg/                    Shared packages without domain logic: actor (request scope), db (pools, scoped
@@ -49,6 +51,7 @@ web/                    The UI (React, Vite, Tailwind); embed.go serves the buil
 internal/testfix/       The shared fixture of the integration tests
 examples/helpdesk/      An embedded host: a ticket table guarded by mandate.may_write_for and builtin actions
 examples/webhook/       A receiver of deliveries that verifies signatures
+examples/refunds/       A receiver that checks each claim in the payload against its own records
 cmd/pgmandate/          The service binary and the operator's command line, with the demo
 deploy/                 Compose and Dockerfile
 docs/                   design.md, threat-model.md, roadmap.md, decisions.md

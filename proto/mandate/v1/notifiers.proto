@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package mandate.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1;mandatev1";
+
+// Where a tenant's people are told that a proposal waits for them: a Slack
+// or Discord incoming webhook. Owners set and remove it; its address is
+// never returned.
+service NotifierService {
+  rpc GetNotifier(GetNotifierRequest) returns (GetNotifierResponse);
+  rpc SetNotifier(SetNotifierRequest) returns (SetNotifierResponse);
+  rpc RemoveNotifier(RemoveNotifierRequest) returns (RemoveNotifierResponse);
+  // Posts a test message, so an owner sees that the channel gets them.
+  rpc TestNotifier(TestNotifierRequest) returns (TestNotifierResponse);
+}
+
+message Notifier {
+  string id = 1;
+  // slack or discord.
+  string kind = 2;
+  string created_by = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message GetNotifierRequest {}
+
+message GetNotifierResponse {
+  // Unset when none is set.
+  Notifier notifier = 1;
+}
+
+message SetNotifierRequest {
+  string kind = 1;
+  // The chat tool's incoming webhook address.
+  string url = 2;
+}
+
+message SetNotifierResponse {
+  Notifier notifier = 1;
+}
+
+message RemoveNotifierRequest {}
+
+message RemoveNotifierResponse {}
+
+message TestNotifierRequest {}
+
+message TestNotifierResponse {}
