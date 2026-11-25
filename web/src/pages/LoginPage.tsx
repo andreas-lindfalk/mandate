@@ -38,11 +38,11 @@ export function LoginPage() {
         <div className="relative z-10 max-w-lg">
           <h1 className="font-serif text-[52px] font-medium leading-[1.05] tracking-[-0.015em]">
             <span className="block">Agents propose.</span>
-            <span className="block">The database decides.</span>
+            <span className="block">You and your mandates decide.</span>
           </h1>
           <p className="mt-5 text-[17px] leading-relaxed text-cream/65">
-            The system of record for what your agents are allowed to do, what they did, and who said so. Mandates are rows, every
-            decision is evidence, and <em className="font-serif text-cream">nothing runs without a person or a mandate a person granted</em>.
+            Write authority for AI agents. Agents hold no credentials and only propose. Mandates are rows, every
+            decision names its authority, and <em className="font-serif text-cream">nothing runs without a person or a mandate a person granted</em>.
           </p>
         </div>
         <div className="label-mono flex gap-6 text-[11px] text-cream/65">

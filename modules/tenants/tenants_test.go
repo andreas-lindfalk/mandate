@@ -183,6 +183,37 @@ func (s *TenantsSuite) Test_PersonsAreAppendOnly() {
 	s.refused(t.Reviewer, `INSERT INTO mandate.persons (id, tenant_id, email, name, role) VALUES (gen_random_uuid(), $1, 'me@test.example', 'Me', 'owner')`, t.Id)
 }
 
+// Any role can set mandate.allow_purge. Even with a DELETE right granted by
+// mistake, the application role must not be able to remove append-only rows
+// with it; only the table's owner, as in purge_tenant, may.
+func (s *TenantsSuite) Test_ThePurgeSettingAloneDeletesNothing() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	bg := context.Background()
+	_, err := s.W.Pg.Owner.Exec(bg, `GRANT DELETE ON mandate.events TO mandate_app`)
+	s.Require().NoError(err)
+	defer func() {
+		_, err := s.W.Pg.Owner.Exec(bg, `REVOKE DELETE ON mandate.events FROM mandate_app`)
+		s.Require().NoError(err)
+	}()
+	var before int
+	s.Require().NoError(s.W.Pg.Owner.QueryRow(bg, `SELECT count(*) FROM mandate.events WHERE tenant_id = $1`, t.Id).Scan(&before))
+	s.Require().Positive(before, "the tenant has events to try to delete")
+
+	err = db.InTx(t.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(t.Owner, `SELECT set_config('mandate.allow_purge', 'on', true)`); err != nil {
+			return err
+		}
+		_, err := tx.Exec(t.Owner, `DELETE FROM mandate.events WHERE tenant_id = $1`, t.Id)
+		return err
+	})
+	s.Require().Error(err, "the setting does not open the table to the app role")
+	s.Require().Contains(err.Error(), "append-only", "the guard refused it, not a missing grant")
+
+	var after int
+	s.Require().NoError(s.W.Pg.Owner.QueryRow(bg, `SELECT count(*) FROM mandate.events WHERE tenant_id = $1`, t.Id).Scan(&after))
+	s.Require().Equal(before, after, "no event was removed")
+}
+
 func (s *TenantsSuite) Test_AnotherTenantSeesNothing() {
 	a := s.W.NewTenant(s.T(), "A")
 	b := s.W.NewTenant(s.T(), "B")

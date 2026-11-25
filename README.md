@@ -1,21 +1,61 @@
 # pgmandate
 
-**Agents propose. A person, or a person's standing permission, decides. Postgres is the last gate.**
+**Agents propose. A person, or a standing permission a person granted, decides. Postgres enforces the rules a second time.**
 
-pgmandate is a reference implementation of write authority for AI agents. The idea: an agent should hold no credentials to the systems it changes. It can only *propose* an action. Then one of two things happens:
+Think of pull requests for agent actions. A proposal is the pull request. A mandate is the branch rule that allows auto-merge. The log is the history.
 
-- a **person** approves, edits or rejects the proposal in an inbox, or
-- a **mandate** that a person granted earlier allows it at once, and the proposal records exactly which mandate, which policy, which risk limit and how much of the budget allowed it.
+pgmandate is a write authority layer between AI agents and the systems they change. An agent holds no credentials to the systems it changes. It can only *propose* an action, such as a refund. Then one of two things decides:
 
-A mandate is data, not prompt text: *this agent's proposals for these actions may be carried out without a person, up to this risk, within this budget per month, until this date*, with a reference to the policy it rests on. (The reference is recorded with every decision it allows; the document itself is not stored or checked.) A mandate can also carry a condition on the payload, such as `payload.amount <= 500 && payload.currency in ["EUR", "SEK"]`, and then allows only what meets it; the database evaluates the condition again on every execution. The decided proposal is then delivered, signed, to the system that carries it out, and what that system answers comes back to the agent.
+- a **person** approves, edits or rejects the proposal in an inbox, notified in Slack or Discord when something waits, or
+- a **mandate** that a person granted earlier allows it at once, and the decision records exactly which mandate, which policy, which risk limit and how much of the budget allowed it.
 
-The rules are enforced twice: in the service, and again in Postgres with row level security and triggers, so a bug in the service cannot record or allow what the rules refuse. Every proposal, decision, delivery and refusal is a row in a hash linked log that can be checked without the server.
+```mermaid
+flowchart LR
+    A[Agent<br/>no credentials] -- propose --> P[(pgmandate<br/>on your Postgres)]
+    H[Person] -- decide, grant mandates --> P
+    P -- signed delivery --> R[Receiver<br/>holds the credential]
+    R -- write --> S[Your system]
+    R -- result --> P
+    P -- decision and result --> A
+```
 
-Think of pull requests for agent actions: a proposal is the pull request, a mandate is the branch rule that allows auto-merge, the log is the history.
+> **Status: early, a working demonstration (0.0.1, Apache-2.0).**
+> - It runs, it is tested against a real Postgres, and the demo below shows the core loop.
+> - It has no production users and no external security review.
+> - Connector secrets are stored unencrypted, and every system it protects needs a receiver written for it.
+> - Nothing is kept compatible until 0.1.0: the schema and the delivery contract will change. Try it locally now, and [pilot on 0.1.0](docs/scope.md#piloting-it).
+>
+> Read [the threat model](docs/threat-model.md) before relying on it.
 
-**Why not give the agent an API key and an approval step in its framework?** That works for one agent in one framework, and the agent still holds a key it could use without asking. Gateways fix the key, and some let an approval cover the next minutes or exempt a trusted agent. A mandate is a different kind of permission: it carries a budget, a risk limit, a policy reference and an end date, it is a row a named person granted, and Postgres checks it again on every decision it allows.
+**Who it is for:** teams that let agents make consequential changes, such as refunds, account changes or messages that leave the company. Those teams must also be willing to:
+- take the agents' credentials to those systems away
+- run a small receiver next to each system
+- run Postgres
 
-> **Status: early, a working demonstration.** It runs, it is tested against a real Postgres, and the demo below shows all of it. It has no production users and no external security review, connector secrets are stored unencrypted, and every system it protects needs a receiver written for it. Read [the threat model](docs/threat-model.md) before relying on it.
+The agent can be written in any language and use any framework.
+
+**What it is not:** a gateway, an identity provider, a policy engine or an agent framework. It works next to those.
+
+A mandate is data, not prompt text. For example, *this agent's refunds may be carried out without a person, at most 40 a month, under policy AI-POLICY-2026-01 §4, until March, when*
+
+```
+payload.amount <= 200 && payload.currency in ["EUR", "SEK"]
+```
+
+That rule on the payload is written in CEL, the expression language Kubernetes uses for its validation rules.
+- It is checked against the actions' schemas when the mandate is granted.
+- The service evaluates it to choose a mandate, and Postgres evaluates it again on the payload actually executed.
+- Anything it cannot evaluate goes to a person. See [rules on the payload](docs/scope.md#rules-on-the-payload).
+
+Each action has a risk its owner sets: low, medium or high. A mandate covers actions only up to the risk it names, and high risk always goes to a person. This example assumes refunds are defined as medium risk; in the demo below they are high, so they always wait. The budget of 40 counts each refund at its action's cost of 1.
+
+The decided proposal is delivered, signed, to a small receiver next to your system, which checks the facts it is given and does the write. What the receiver answers goes back to the agent.
+
+Postgres checks the rules a second time, with row level security and triggers. As long as the service states each transaction's scope truthfully, a bug in it cannot record or allow what the rules refuse. The [threat model](docs/threat-model.md) lists the few rules only the service holds. Every proposal, decision, delivery and refusal is a row in a hash linked log. Anyone who keeps its latest hash outside the database can check it without the server. Each proposal also keeps the agent's justification as written: its rationale, its evidence and the model and version it came from. The record therefore shows what the person who decided was shown, not only who decided.
+
+[docs/scope.md](docs/scope.md) is the canonical description: what pgmandate is and is not, where it fits, [how a pilot would look](docs/scope.md#piloting-it), and what it brings. [docs/roadmap.md](docs/roadmap.md) says what comes next.
+
+**Why not give the agent an API key and an approval step in its framework?** That works for one agent in one framework, but the agent still holds a key it could use without asking. Gateways fix the key, and some let an approval cover the next minutes or exempt a trusted agent. A mandate is a different kind of permission. It carries a budget, a risk limit, a policy reference and an end date. It is a row that a named person granted, and Postgres checks it again on every decision it allows.
 
 ## Three doors
 
@@ -28,15 +68,15 @@ systems ◀──signed webhook── delivery ──result──▶ back to the
 people ◀──web UI / API──▶ inbox, mandates, agents and actions, people, evidence
 ```
 
-- **Agents** connect over MCP with a token. Four tools: `list_actions`, `propose`, `get_proposal`, `list_proposals`. Any MCP client works: Claude Code, an SDK, a cron job.
+- **Agents** connect over MCP with a token. Five tools: `list_actions`, `propose`, `get_proposal`, `list_proposals`, `withdraw_proposal`. Any MCP client works: Claude Code, an SDK, a script.
 - **Systems** receive decided proposals at the webhook URL of each action, signed with the action's secret. Deliveries are retried, and a person can send a failed one again.
-- **People** sign in (OpenID Connect, or dev login on localhost) and run the tenant: the inbox, the mandates with their budget, the agents and their tokens, the actions and their connectors, the people, and the evidence with exports.
+- **People** sign in (OpenID Connect, or dev login on localhost). Reviewers decide in the inbox; owners also run the tenant: the inbox, the mandates with their budget, the agents and their tokens, the actions and their connectors, the people, and the evidence with exports.
 
-One binary and one Postgres, run locally, hosted or on-premise. The interface and the command line say it shorter, "agents propose, the database decides": the database is the last gate, and the people and their mandates are what it checks against. How the parts fit is in [docs/design.md](docs/design.md).
+One binary and one Postgres, on your own machine, in your cloud or on-premise. A Go service can also embed it and share its database (see [the scope](docs/scope.md#where-it-fits)). How the parts fit is in [docs/design.md](docs/design.md).
 
 ## What this requires, and what it is not for
 
-- **The agent must have no other way to act.** pgmandate means something only if the credentials to the target system live with the connector, not with the agent. Taking them away is the real work, and it is an organisational change, not an install.
+- **The agent must have no other way to act.** pgmandate means something only if the credentials to the target system live with the receiver, not with the agent. Taking them away is the real work, and it is an organisational change, not an install.
 - **Keep the agent away from the admin path.** Locally, dev login and the command line's `-as EMAIL` act as any person, and the default database password is in this repository. An agent with a shell on the same machine could approve its own proposals. Run the agent as another user or in a container, and run pgmandate for real (below) before an agent depends on it.
 - **It governs changes, not reads.** An agent reads what it needs through its own tools. pgmandate does not see or limit that.
 - **It suits consequential actions**: a refund, a message that leaves the company, a change to a record. It does not suit a tight loop of small tool calls.
@@ -87,7 +127,7 @@ Any other MCP client takes the same in its configuration:
     "headers": { "Authorization": "Bearer mnd_..." } } } }
 ```
 
-The server tells the agent how to work with it. In short: call `list_actions`, then `propose` with an `idempotency_key` made from its run and step and a `rationale`, its account for the person who decides of what it found and why this action follows, with `evidence` the person can check (where it looked, an id to find it again, what it showed); the answer says whether it was allowed, delivered, or waits for a person and why. The account is kept with the proposal as written, shown in the inbox as the agent's claim, and named in the log by digest. A mandate never reads it. Each answer is both text for a model and structured content for code, and an error carries a code (`invalid_argument`, `conflict`, `permission_denied`, `not_found`, `rate_limited`).
+The server tells the agent how to work with it. In short: call `list_actions`, then `propose` with an `idempotency_key` made from its run and step and a `rationale`, its account for the person who decides of what it found and why this action follows, with `evidence` the person can check (where it looked, an id to find it again, what it showed); the answer says whether it was allowed, delivered, or waits for a person and why. This justification is kept with the proposal as written, shown in the inbox as the agent's claim, and named in the log by digest. A mandate never reads it. Each answer is both text for a model and structured content for code, and an error carries a code (`invalid_argument`, `conflict`, `permission_denied`, `not_found`, `rate_limited`, `unauthenticated`, `internal`).
 
 For whoever runs the agent:
 
@@ -201,7 +241,7 @@ The body is described field by field in [docs/delivery-v1.schema.json](docs/deli
 - **Plain http only on private addresses.** Unless the operator allows local and private connectors, a connector must be `https`.
 - **Rotating the secret.** Each attempt is signed with the action's secret as it is at that moment, read together with its address. After a rotation a receiver that does not yet have the new secret answers 401, and the delivery is tried again until it does, for up to the 80 minutes above. When an action's URL changes it gets a new secret, and the deliveries still waiting move to the new URL with it; apart from an attempt already in flight at that moment, the receiver at the old address gets nothing more.
 - **No ordering.** Two deliveries from the same agent may arrive in either order.
-- **The payload fits the action's schema** as the schema was when the decision was made. If the schema changed after the agent proposed, an approval needs an edit that fits and a mandate does not allow it.
+- **The payload fits the action's schema** as the schema was when the decision was made. If the schema changed after the agent proposed and the payload no longer fits, an approval needs an edit that fits and a mandate does not allow it.
 - Fields marked `?` are left out when empty: `runId` when the agent gave none, `decidedBy` for an execution, `executionBasis` for an approval.
 
 `examples/webhook` is a reference handler to mount in your own server, and `pgmandate receiver` runs it locally.
@@ -227,9 +267,9 @@ Agents repeat themselves: a tool call times out and is sent again, or a model is
 
 - A proposal is allowed without a person only if **all** of these hold: the action is defined as one that can be delegated, a person granted a mandate that is live now and covers the agent and the action, the proposal's risk is within the mandate, the mandate's condition, if it has one, is true for the payload, nothing was flagged, and the month's budget has room for the cost. The agent and the inbox are told which one failed.
 - A mandate allows low or medium risk. High is never delegated. A person's edit is assessed again and can only raise the risk.
-- The action as it is when the decision is made counts: its schema, its cost and its risk. A proposal made before the action changed waits for a person, who approves it at the action's current risk or edits it to fit.
+- The action as it is when the decision is made counts. A proposal whose payload no longer fits the action's schema, whose action's cost changed, or whose action's risk was raised since it was proposed waits for a person, who approves it at the action's current risk or edits it to fit.
 - A delivery is recorded in the transaction that makes the decision, and only to the action's own connector. The log names the payload that was proposed, the one decided on and the body that was sent, as digests.
-- Only a person decides. Only an owner grants mandates, defines actions and adds or removes people. Only the system allows under a mandate, and only inside the transaction that names the proposal, with a basis the database checks against the mandate: coverage, risk limit, policy reference, budget and this month's spend.
+- Only a person decides. Only an owner grants mandates, defines actions and adds or removes people. Only the system allows under a mandate, and only inside the transaction that names the proposal, with a basis the database checks against the mandate: coverage, risk limit, condition, policy reference, budget and this month's spend.
 - The log is append-only and hash linked per tenant, and each event carries the actor of its session. It is **tamper-evident, not tamper-proof**: an edit, a removal or a forged actor by the application is refused or detectable, and an export verifies offline, but someone who owns the database could rebuild it. Keep the latest hash somewhere the database owner cannot reach.
 - The check for steering text is a **tripwire**, a few known English phrasings. It is not a control and will miss most real attempts. The controls are the action's schema and risk, the mandate, and the person.
 
@@ -240,16 +280,21 @@ What the database enforces, what only the service enforces, and what neither doe
 
 ## Glossary
 
+The terms follow [docs/scope.md](docs/scope.md#the-terms).
+
 | Term | Meaning | Elsewhere called |
 |---|---|---|
 | Action | Something an agent may ask to have done, such as `tickets.create`, with a payload schema (required for a webhook), a risk and a cost | Tool call, operation |
-| Proposal | One request by an agent to have an action carried out, with its rationale and evidence | Approval request, human in the loop |
+| Proposal | One request by an agent to have an action carried out, with its justification: rationale, evidence and provenance | Approval request, human in the loop |
 | Condition | A CEL expression on the payload that narrows a mandate, such as `payload.amount <= 500`; the database evaluates it again | Policy rule, guard |
-| Mandate | A person's standing permission for an agent: which actions, up to which risk, within which budget, under which policy, until when | Policy, delegation, standing authorisation |
-| Execution basis | What allowed a proposal without a person: the mandate, its policy reference, its risk limit and the budget at that moment | Authorisation record |
-| Connector | Where a decided proposal is sent to be carried out: a signed webhook | Integration, webhook target |
+| Mandate | A person's standing permission for an agent: which actions, up to which risk, within which budget, under which policy reference, until when | Delegation, standing authorisation |
+| Budget | What a mandate may allow per calendar month, today in units of the actions' fixed costs. The [roadmap](docs/roadmap.md) makes it a plain count, and later adds money as a second limit | Spend limit |
+| Policy reference | The name of the document a mandate rests on, recorded with every decision it allows. The document is not stored or checked | Policy |
+| Execution basis | What allowed a proposal without a person: the mandate, its policy reference, its risk limit, its condition and the budget at that moment | Authorisation record |
+| Connector, receiver | Where a decided proposal is sent to be carried out: a signed webhook address, and the service that answers there next to your system | Integration, webhook target |
 | Delivery | One decided proposal on its way to a connector, with its attempts and the result | Webhook delivery |
-| Log, or chain | The append-only, hash linked record of everything that happened in a tenant | Audit log, audit trail |
+| Log | The append-only, hash linked record of everything that happened in a tenant. The UI calls it the audit trail and shows it on the Evidence page | Audit log, audit trail, chain |
+| Run | The agent's own id for one piece of work, which groups its proposals | Task, session |
 | Tenant, owner, reviewer | The organisation; a person who grants, defines and decides; a person who decides | Organisation, admin, approver |
 
 The word is used elsewhere too: Google's Agent Payments Protocol calls its signed payment authorisations mandates, and an IETF draft describes agent mandates across domains. pgmandate is unrelated to both: its mandates cover any action, and they are rows in Postgres, not signed credentials.
@@ -266,7 +311,7 @@ Keeping credentials away from agents and asking a person before risky calls is, 
 - **Identity platforms**, such as Microsoft Entra Agent ID with Agent 365, and Okta, give agents an identity, an owner and access reviews.
 - **Agent frameworks** have approval steps inside one run.
 
-Most of these decide on a call's arguments too, several with richer languages than pgmandate's comparisons. What pgmandate does differently, as far as we have found: a standing grant is one row a named person granted, with a budget, a risk limit, a policy reference and an end date; a decision is a row that names the authority it rests on; and Postgres enforces the rules again, conditions included, so a bug in the service cannot allow what they refuse, and a condition that cannot be evaluated never allows. What it lacks: users, high availability and, today, a way in that needs no code. A receiver has to be written for each system; sitting in front of an existing MCP server is next on the [roadmap](docs/roadmap.md).
+Most of these decide on a call's arguments too, several with richer languages than pgmandate's comparisons. What pgmandate does differently, as far as we have found: a standing grant is one row a named person granted, with a budget, a risk limit, a policy reference and an end date; a decision is a row that names the authority it rests on; and Postgres enforces the rules again, conditions included, so a bug in the service cannot allow what they refuse, and a condition that cannot be evaluated never allows. What it lacks: production users, high availability and, today, a way in that needs no code. A receiver has to be written for each system; templates in more languages and a bridge that makes an existing MCP server a receiver without code are on the [roadmap](docs/roadmap.md). [docs/landscape.md](docs/landscape.md) sets this out by category.
 
 ## Layout
 

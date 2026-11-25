@@ -1,7 +1,7 @@
-// Package mandates holds the mandates: the policy, as rows, that lets an
+// Package mandates holds the mandates: standing permissions, as rows, that let an
 // agent act without a person. A mandate names the agent (or all), the
-// actions, the highest risk, a budget per calendar month, the adopted policy
-// document it rests on, and until when it holds, and it may narrow all that
+// actions, the highest risk, a budget per calendar month, a reference to the
+// policy document it rests on (recorded, not checked), and until when it holds, and it may narrow all that
 // with a condition on the content of a proposal. An owner grants it,
 // nothing changes it, and it is revoked once. High risk is never delegated.
 package mandates
@@ -76,9 +76,11 @@ type Input struct {
 	Actions []string
 	// MaxRisk is low or medium. High is never delegated.
 	MaxRisk string
-	// BudgetUnits per calendar month, in the host's cost units.
+	// BudgetUnits per calendar month, in the cost units of the actions it covers.
 	BudgetUnits int64
-	// PolicyRef names the adopted policy document the mandate rests on.
+	// PolicyRef names the policy document the mandate rests on. It is recorded
+	// with every decision the mandate allows; the document itself is not
+	// stored or checked.
 	PolicyRef string
 	// Days the mandate holds from now, at most 366.
 	Days int

@@ -176,11 +176,11 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
                 ]}
               />
             </Field>
-            <Field label="Budget, units per month" htmlFor="budget" hint="At this many units, further proposals wait for a person.">
+            <Field label="Budget, units per month" htmlFor="budget" hint="A proposal whose cost would take this month's spend past this waits for a person.">
               <Input id="budget" type="number" min={1} value={budget} onChange={(e) => setBudget(e.target.value)} />
             </Field>
           </div>
-          <Field label="Policy reference" htmlFor="policy" hint="The adopted document this mandate rests on, such as AI-POLICY-2026-01 §4.">
+          <Field label="Policy reference" htmlFor="policy" hint="The document this mandate rests on, such as AI-POLICY-2026-01 §4. Recorded with every decision; the document itself is not stored or checked.">
             <Input id="policy" value={policy} onChange={(e) => setPolicy(e.target.value)} />
           </Field>
           <div className="grid grid-cols-2 gap-4">
@@ -360,7 +360,7 @@ export function MandatesPage() {
       <div className="max-w-5xl px-6 py-6 lg:px-8">
         <p className="mb-6 max-w-2xl text-[15px] leading-relaxed text-foreground/85">
           A mandate lets an agent have actions carried out without a person: up to a risk, within a budget per calendar month, resting on a
-          policy you adopted, until a date. Everything outside a mandate waits in the inbox, and the database checks each use of a mandate
+          policy reference, until a date. Everything outside a mandate waits in the inbox, and the database checks each use of a mandate
           against what is written here.{session.isOwner ? "" : " You are a reviewer here; owners grant and revoke mandates."}
         </p>
         {mandates.isPending ? (

@@ -1,6 +1,6 @@
 // Package agents holds the agents of a tenant and their tokens. An agent is
 // a principal of its own: it proposes in its own name, and every tool call
-// it makes is recorded in the chain.
+// it makes is recorded in the log.
 package agents
 
 import (
@@ -324,7 +324,7 @@ func (s *Service) Authenticate(ctx context.Context, secret string) (Grant, error
 	return grant, nil
 }
 
-// Called records a tool call in the chain, as the agent (ctx must be scoped
+// Called records a tool call in the log, as the agent (ctx must be scoped
 // by the grant). Free text is never stored, only what the tool describes.
 func (s *Service) Called(ctx context.Context, grant Grant, tool string, arguments map[string]any, failed bool) error {
 	return db.InTx(ctx, s.pool, func(tx pgx.Tx) error {

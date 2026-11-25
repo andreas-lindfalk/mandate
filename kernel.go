@@ -5,7 +5,7 @@
 // a risk, a cost and a connector, usually a signed webhook. People grant
 // mandates: which agent's proposals for which actions may be carried out
 // without them, up to which risk, within which monthly budget, under which
-// adopted policy and until when. Everything else waits for a person. A
+// policy reference and until when. Everything else waits for a person. A
 // decided proposal is delivered to its connector, and every decision,
 // delivery and refusal is a row in a hash linked log.
 //

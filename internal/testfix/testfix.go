@@ -1,5 +1,5 @@
 // Package testfix is the shared fixture of the integration tests: a real
-// Postgres with mandate's and the helpdesk's schema, a kernel with the
+// Postgres with pgmandate's and the helpdesk's schema, a kernel with the
 // helpdesk actions and a few synthetic ones, and tenants with an owner, a
 // reviewer and an agent ready to act.
 package testfix
