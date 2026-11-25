@@ -24,7 +24,7 @@ It is not a gateway, an identity provider, a policy engine, an agent framework o
 - **Agents are principals of their own.** They act as actor kind `agent`, and the database writes the actor of every log event from the session.
 - **The log is append-only**, hash linked, and verifiable without the database. It is tamper-evident, not tamper-proof. An event names what it is about by digest (`events.Digest`) rather than by content, so payloads stay off the permanent record and a later change to them still shows.
 - **Done once.** Every request that changes something carries a name for itself: an idempotency key from the agent, the proposal's id for the decision, the delivery id to the receiver. A repeat returns the first answer and says it is a repeat. The people API has no such key yet (threat model).
-- **Tenancy is row level security** per tenant on every table with tenant data, with the application role that never bypasses it. Sessions are global, by email.
+- **Tenancy is row level security** per tenant on every table with tenant data, with the application role that never bypasses it. Sessions are global, and carry the provider's verified identity and email: a person is reached by the identity they are bound to, and by email only until their first sign-in to a tenant binds them.
 - **Say what is true.** No claim of compliance, detection or security that the code and the threat model do not back.
 
 ## Technology
@@ -40,7 +40,7 @@ sign/                   Signing and verification of deliveries. At the root: the
 modules/<module>/       The domain: tenants, agents, actions, mandates, proposals, deliveries, notifications, auth.
                         Each has internal/repo (sqlc) and, except auth, its own tests with a
                         test_base_test.go. auth is tested through api/.
-pkg/                    Shared packages without domain logic: actor (request scope), db (pools, scoped
+pkg/                    Shared packages without domain logic: actor (request scope), authlimit (failed sign-ins per address), db (pools, scoped
                         transactions, migrations), events (the hash chain), fault (coded errors),
                         injection, jobs (River), testkit (Postgres for tests), version (the release a binary reports)
 schema/                 The migrations, one set for all modules (NNNN_name.up.sql / .down.sql)
@@ -56,7 +56,7 @@ examples/webhook/       A reference receiver of deliveries (contract v2): signat
 examples/refunds/       A receiver that checks each claim in the payload against its own records
 cmd/pgmandate/          The service binary and the operator's command line, with the demo
 deploy/                 Compose and Dockerfile
-docs/                   scope.md (canonical), landscape.md, design.md, design-0.1.md, threat-model.md, roadmap.md, decisions.md,
+docs/                   scope.md (canonical), landscape.md, design.md, design-0.1.md, design-sign-in.md, threat-model.md, roadmap.md, decisions.md,
                         delivery-v2.schema.json (the delivery contract)
 ```
 

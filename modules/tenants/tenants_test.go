@@ -235,3 +235,46 @@ func (s *TenantsSuite) Test_AnotherTenantSeesNothing() {
 	_, err = s.W.Kernel.Tenants.Get(context.Background())
 	s.code(err, fault.InvalidArgument)
 }
+
+// The database binds a person to an identity only as the system, once, both
+// columns together, and never for a removed person or on the way in,
+// whatever SQL runs.
+func (s *TenantsSuite) Test_TheDatabaseHoldsTheBinding() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	const bind = `UPDATE mandate.persons SET issuer = 'https://id.example', subject = $2 WHERE id = $1`
+	s.refused(t.Owner, bind, t.ReviewerId, "s-1")
+	s.refused(t.Reviewer, bind, t.ReviewerId, "s-1")
+	s.refused(t.Agent, bind, t.ReviewerId, "s-1")
+	s.Require().Error(s.exec(t.System, `UPDATE mandate.persons SET issuer = 'https://id.example' WHERE id = $1`, t.ReviewerId), "never one column alone")
+	s.refused(t.System, `UPDATE mandate.persons SET issuer = 'https://id.example', subject = 's-1', name = 'Changed' WHERE id = $1`, t.ReviewerId)
+	s.Require().NoError(s.exec(t.System, bind, t.ReviewerId, "s-1"))
+	s.refused(t.System, bind, t.ReviewerId, "s-2")
+	s.refused(t.System, `UPDATE mandate.persons SET issuer = NULL, subject = NULL WHERE id = $1`, t.ReviewerId)
+
+	// A second person with the same identity in the tenant is refused.
+	second, err := s.W.Kernel.Tenants.AddPerson(t.Owner, "second@test.example", "Second", "reviewer")
+	s.Require().NoError(err)
+	s.Require().Error(s.exec(t.System, bind, second.Id, "s-1"))
+
+	// Added with an identity, it comes in unbound.
+	s.Require().NoError(s.exec(t.Owner, `INSERT INTO mandate.persons (id, tenant_id, email, name, role, issuer, subject)
+		VALUES (gen_random_uuid(), $1, 'planted@test.example', 'Planted', 'reviewer', 'https://id.example', 's-9')`, t.Id))
+	var issuer *string
+	s.Require().NoError(db.InTx(t.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
+		return tx.QueryRow(t.Owner, `SELECT issuer FROM mandate.persons WHERE email = 'planted@test.example'`).Scan(&issuer)
+	}))
+	s.Require().Nil(issuer)
+
+	// A removed person is never bound.
+	s.Require().NoError(s.W.Kernel.Tenants.RemovePerson(t.Owner, second.Id))
+	s.refused(t.System, bind, second.Id, "s-3")
+
+	// Another tenant's system sees no one to bind.
+	other := s.W.NewTenant(s.T(), "Other")
+	s.Require().NoError(s.exec(other.System, bind, t.OwnerId, "s-4"))
+	var ownerIssuer *string
+	s.Require().NoError(db.InTx(t.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
+		return tx.QueryRow(t.Owner, `SELECT issuer FROM mandate.persons WHERE id = $1`, t.OwnerId).Scan(&ownerIssuer)
+	}))
+	s.Require().Nil(ownerIssuer)
+}

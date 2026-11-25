@@ -131,6 +131,8 @@ type MandatePerson struct {
 	CreatedAt time.Time
 	RemovedAt *time.Time
 	RemovedBy *uuid.UUID
+	Issuer    *string
+	Subject   *string
 }
 
 type MandateProposal struct {
@@ -165,6 +167,8 @@ type MandateSession struct {
 	TokenHash  []byte
 	Email      string
 	Name       string
+	Issuer     *string
+	Subject    *string
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
 	LastSeenAt *time.Time

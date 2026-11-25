@@ -8,7 +8,29 @@ package repo
 import (
 	"context"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+const bindPerson = `-- name: BindPerson :execrows
+UPDATE mandate.persons SET issuer = $1, subject = $2
+WHERE id = $3 AND issuer IS NULL AND removed_at IS NULL
+`
+
+type BindPersonParams struct {
+	Issuer  *string
+	Subject *string
+	Id      uuid.UUID
+}
+
+// Nothing when the person is bound already, or removed meanwhile.
+func (q *Queries) BindPerson(ctx context.Context, arg BindPersonParams) (int64, error) {
+	result, err := q.db.Exec(ctx, bindPerson, arg.Issuer, arg.Subject, arg.Id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
 
 const deleteExpiredSessions = `-- name: DeleteExpiredSessions :execrows
 DELETE FROM mandate.sessions WHERE expires_at < now()
@@ -32,29 +54,39 @@ func (q *Queries) DeleteSession(ctx context.Context, tokenHash []byte) error {
 }
 
 const getSession = `-- name: GetSession :one
-SELECT email, name FROM mandate.sessions WHERE token_hash = $1 AND expires_at > now()
+SELECT email, name, issuer, subject FROM mandate.sessions WHERE token_hash = $1 AND expires_at > now()
 `
 
 type GetSessionRow struct {
-	Email string
-	Name  string
+	Email   string
+	Name    string
+	Issuer  *string
+	Subject *string
 }
 
 func (q *Queries) GetSession(ctx context.Context, tokenHash []byte) (GetSessionRow, error) {
 	row := q.db.QueryRow(ctx, getSession, tokenHash)
 	var i GetSessionRow
-	err := row.Scan(&i.Email, &i.Name)
+	err := row.Scan(
+		&i.Email,
+		&i.Name,
+		&i.Issuer,
+		&i.Subject,
+	)
 	return i, err
 }
 
 const insertSession = `-- name: InsertSession :exec
-INSERT INTO mandate.sessions (token_hash, email, name, expires_at) VALUES ($1, $2, $3, $4)
+INSERT INTO mandate.sessions (token_hash, email, name, issuer, subject, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
 `
 
 type InsertSessionParams struct {
 	TokenHash []byte
 	Email     string
 	Name      string
+	Issuer    *string
+	Subject   *string
 	ExpiresAt time.Time
 }
 
@@ -63,9 +95,28 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.TokenHash,
 		arg.Email,
 		arg.Name,
+		arg.Issuer,
+		arg.Subject,
 		arg.ExpiresAt,
 	)
 	return err
+}
+
+const personIdentity = `-- name: PersonIdentity :one
+SELECT issuer, subject, removed_at FROM mandate.persons WHERE id = $1
+`
+
+type PersonIdentityRow struct {
+	Issuer    *string
+	Subject   *string
+	RemovedAt *time.Time
+}
+
+func (q *Queries) PersonIdentity(ctx context.Context, id uuid.UUID) (PersonIdentityRow, error) {
+	row := q.db.QueryRow(ctx, personIdentity, id)
+	var i PersonIdentityRow
+	err := row.Scan(&i.Issuer, &i.Subject, &i.RemovedAt)
+	return i, err
 }
 
 const touchSession = `-- name: TouchSession :exec

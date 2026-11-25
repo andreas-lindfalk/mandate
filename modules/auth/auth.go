@@ -17,13 +17,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/andreas-lindfalk/pgmandate/modules/auth/internal/repo"
+	"github.com/andreas-lindfalk/pgmandate/pkg/actor"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
+	"github.com/andreas-lindfalk/pgmandate/pkg/events"
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
 )
 
 // CookieName is the session cookie the OIDC callback sets and the API
 // accepts next to a bearer token.
 const CookieName = "mandate_session"
+
+// FlowCookieName is the cookie that carries a sign-in from its start to the
+// provider's callback.
+const FlowCookieName = "mandate_oidc"
 
 type Config struct {
 	// DevLogin lets anyone sign in with only an email. The server allows
@@ -45,9 +51,13 @@ type OidcConfig struct {
 	RedirectUrl string
 }
 
+// Session is who is signed in: the verified email and, for a provider's
+// sign-in, its issuer and subject. Dev login has neither.
 type Session struct {
-	Email string
-	Name  string
+	Email   string
+	Name    string
+	Issuer  string
+	Subject string
 }
 
 // Membership is a tenant where the signed-in person is a person.
@@ -56,6 +66,9 @@ type Membership struct {
 	TenantName string
 	PersonId   uuid.UUID
 	Role       string
+	// Unbound says the person is not yet bound to an identity: the first
+	// call in the tenant binds them to the session's.
+	Unbound bool
 }
 
 type Service struct {
@@ -76,6 +89,11 @@ func NewService(pool *pgxpool.Pool, config Config) *Service {
 	return s
 }
 
+// secure says cookies are for https only, as the public URL is.
+func (s *Service) secure() bool {
+	return strings.HasPrefix(s.config.PublicUrl, "https://")
+}
+
 // Config is the configuration the service runs with.
 func (s *Service) Config() Config {
 	return s.config
@@ -87,7 +105,7 @@ func (s *Service) DevLogin(ctx context.Context, email, name string) (string, err
 	if !s.config.DevLogin {
 		return "", fault.New(fault.PermissionDenied, "dev login is disabled")
 	}
-	return s.createSession(ctx, email, name)
+	return s.createSession(ctx, Session{Email: email, Name: name})
 }
 
 // Authenticate returns the person behind a session token.
@@ -106,7 +124,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Session, erro
 		if err != nil {
 			return err
 		}
-		session = Session{Email: row.Email, Name: row.Name}
+		session = Session{Email: row.Email, Name: row.Name, Issuer: deref(row.Issuer), Subject: deref(row.Subject)}
 		return q.TouchSession(ctx, hash)
 	})
 	return session, err
@@ -122,36 +140,149 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	})
 }
 
-// Memberships lists the tenants where the email is a person.
-func (s *Service) Memberships(ctx context.Context, email string) ([]Membership, error) {
-	var result []Membership
+// candidate is one person a sign-in may be, as tenants_for_sign_in says.
+type candidate struct {
+	Membership
+	match string
+}
+
+// candidates lists the persons the session may be, at most one per tenant:
+// the one bound to its identity first, then one with its email still
+// unbound, then one with its email bound to another identity.
+func (s *Service) candidates(ctx context.Context, session Session) ([]candidate, error) {
+	var issuer, subject *string
+	if session.Issuer != "" {
+		issuer, subject = &session.Issuer, &session.Subject
+	}
+	var all []candidate
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT tenant_id, tenant_name, person_id, role FROM mandate.tenants_for_email($1)`, strings.ToLower(email))
+		rows, err := tx.Query(ctx, `SELECT tenant_id, tenant_name, person_id, role, match FROM mandate.tenants_for_sign_in($1, $2, $3)`,
+			strings.ToLower(session.Email), issuer, subject)
 		if err != nil {
 			return err
 		}
-		result, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (Membership, error) {
-			var m Membership
-			err := row.Scan(&m.TenantId, &m.TenantName, &m.PersonId, &m.Role)
-			return m, err
+		all, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
+			var c candidate
+			err := row.Scan(&c.TenantId, &c.TenantName, &c.PersonId, &c.Role, &c.match)
+			c.Unbound = c.match == matchUnbound
+			return c, err
 		})
 		return err
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	rank := map[string]int{matchBound: 0, matchUnbound: 1, matchOther: 2}
+	best := map[uuid.UUID]int{}
+	var out []candidate
+	for _, c := range all {
+		i, seen := best[c.TenantId]
+		switch {
+		case !seen:
+			best[c.TenantId] = len(out)
+			out = append(out, c)
+		case rank[c.match] < rank[out[i].match]:
+			out[i] = c
+		}
+	}
+	return out, nil
 }
 
-// Membership is the person the email is in one tenant, or PermissionDenied.
-func (s *Service) Membership(ctx context.Context, email string, tenantId uuid.UUID) (Membership, error) {
-	all, err := s.Memberships(ctx, email)
+// How a person matches a sign-in.
+const (
+	matchBound   = "bound"
+	matchUnbound = "unbound"
+	matchOther   = "other"
+)
+
+// Memberships lists the tenants where the sign-in is a person: bound to its
+// identity, or with its email and bound to nobody yet. Nothing is bound
+// here; the first call in a tenant does that.
+func (s *Service) Memberships(ctx context.Context, session Session) ([]Membership, error) {
+	all, err := s.candidates(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	result := []Membership{}
+	for _, c := range all {
+		if c.match != matchOther {
+			result = append(result, c.Membership)
+		}
+	}
+	return result, nil
+}
+
+// Membership is the person the sign-in is in one tenant, or
+// PermissionDenied. A person with the session's email who is bound to
+// nobody yet is bound to the session's identity here, once, with a
+// person.bound event in the same transaction.
+func (s *Service) Membership(ctx context.Context, session Session, tenantId uuid.UUID) (Membership, error) {
+	all, err := s.candidates(ctx, session)
 	if err != nil {
 		return Membership{}, err
 	}
-	for _, m := range all {
-		if m.TenantId == tenantId {
-			return m, nil
+	for _, c := range all {
+		if c.TenantId != tenantId {
+			continue
 		}
+		switch {
+		case c.match == matchOther:
+			return Membership{}, fault.New(fault.PermissionDenied, "your email address belongs to another sign-in in this tenant; an owner can remove that person and add you again")
+		case c.match == matchUnbound && session.Issuer != "":
+			if err := s.bind(ctx, session, c.Membership); err != nil {
+				return Membership{}, err
+			}
+			c.Unbound = false
+		}
+		return c.Membership, nil
 	}
 	return Membership{}, fault.New(fault.PermissionDenied, "you are not a person of that tenant")
+}
+
+// bind ties an unbound person to the session's identity, as the system in
+// the person's tenant. Two first calls at once bind once: the second finds
+// the person bound, to this identity or to another.
+func (s *Service) bind(ctx context.Context, session Session, m Membership) error {
+	scoped := actor.AsSystem(ctx, m.TenantId)
+	err := db.InTx(scoped, s.pool, func(tx pgx.Tx) error {
+		q := repo.New(tx)
+		bound, err := q.BindPerson(scoped, repo.BindPersonParams{Id: m.PersonId, Issuer: &session.Issuer, Subject: &session.Subject})
+		if err != nil {
+			return err
+		}
+		if bound == 0 {
+			current, err := q.PersonIdentity(scoped, m.PersonId)
+			if err != nil {
+				return err
+			}
+			switch {
+			case current.RemovedAt != nil || current.Issuer == nil:
+				// Removed meanwhile.
+				return fault.New(fault.PermissionDenied, "you are not a person of that tenant")
+			case *current.Issuer == session.Issuer && deref(current.Subject) == session.Subject:
+				return nil
+			}
+			return fault.New(fault.PermissionDenied, "your email address belongs to another sign-in in this tenant; an owner can remove that person and add you again")
+		}
+		// The log keeps the issuer, a provider's address, and the subject
+		// only as a digest: an identifier of a person.
+		subject, err := events.Digest(session.Subject)
+		if err != nil {
+			return err
+		}
+		_, err = events.Append(scoped, tx, events.Event{Type: "person.bound", SubjectId: m.PersonId, Payload: map[string]any{
+			"issuer": session.Issuer, "subjectSha256": subject,
+		}})
+		return err
+	})
+	return fault.FromDb(err)
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // DeleteExpired removes sessions that have run out. For a periodic job.
@@ -165,9 +296,16 @@ func (s *Service) DeleteExpired(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-func (s *Service) createSession(ctx context.Context, email, name string) (string, error) {
-	email = strings.ToLower(strings.TrimSpace(email))
-	name = strings.TrimSpace(name)
+func (s *Service) createSession(ctx context.Context, session Session) (string, error) {
+	email := strings.ToLower(strings.TrimSpace(session.Email))
+	name := strings.TrimSpace(session.Name)
+	if (session.Issuer == "") != (session.Subject == "") || len(session.Issuer) > 500 || len(session.Subject) > 255 {
+		return "", fault.New(fault.InvalidArgument, "a sign-in has an issuer and a subject, or neither")
+	}
+	var issuer, subject *string
+	if session.Issuer != "" {
+		issuer, subject = &session.Issuer, &session.Subject
+	}
 	if !strings.Contains(email, "@") || len(email) > 200 {
 		return "", fault.New(fault.InvalidArgument, "an email address is required")
 	}
@@ -182,7 +320,7 @@ func (s *Service) createSession(ctx context.Context, email, name string) (string
 	hash := sha256.Sum256([]byte(token))
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		return repo.New(tx).InsertSession(ctx, repo.InsertSessionParams{
-			TokenHash: hash[:], Email: email, Name: name, ExpiresAt: s.now().Add(s.config.SessionTtl),
+			TokenHash: hash[:], Email: email, Name: name, Issuer: issuer, Subject: subject, ExpiresAt: s.now().Add(s.config.SessionTtl),
 		})
 	})
 	if err != nil {

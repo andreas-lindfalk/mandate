@@ -89,7 +89,7 @@ Deliveries are signed with an Ed25519 key from the environment, never stored in 
 
 A session is a random token; only its hash is stored. It reaches the server as a bearer header, or as an HttpOnly cookie set by the OpenID Connect callback. Dev login, with an email only, exists for local use and is refused unless the server listens on loopback and the request asks for localhost.
 
-A person is a row per tenant, identified by email. The tenant a call acts in is chosen with the `Mandate-Tenant` header, and an interceptor checks that the signed-in email is a person there. Owners add and remove people. An operator creates tenants from the command line.
+A person is a row per tenant, added by email and bound at their first sign-in to that tenant to the provider's issuer and subject, once ([design-sign-in.md](design-sign-in.md)). The tenant a call acts in is chosen with the `Mandate-Tenant` header, and an interceptor checks that the sign-in is a person there: the one bound to its identity, or one with its email who is not yet bound, who is then bound. Failed sign-ins and token checks are limited per client address (`pkg/authlimit`). Owners add and remove people. An operator creates tenants from the command line.
 
 The API is Connect: Auth, Persons, Agents, Actions, Mandates, Proposals, Notifiers, Evidence. The web UI uses only this API, except for sign-in, which is an OpenID Connect redirect, so another UI or an admin tool can do everything else it does.
 

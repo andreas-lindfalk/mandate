@@ -326,31 +326,45 @@ func (s *AgentApiSuite) Test_ErrorsHaveTheContractsCodes() {
 func (s *AgentApiSuite) Test_TheRateIsSharedByBothDoors() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	c := s.client(t.Token)
-	var limited error
-	for range 40 {
-		if _, err := c.ListProposals(context.Background(), &agentv1.ListProposalsRequest{}); err != nil {
-			limited = err
-			break
-		}
-	}
-	s.Require().Equal(connect.CodeResourceExhausted, connect.CodeOf(limited))
-	seconds, ok := agentapi.RetryAfterOf(limited)
-	s.Require().True(ok)
-	s.Require().Equal(1, seconds)
-	logged := len(s.toolCalls(t))
-	s.Require().Less(logged, 40, "a refused call is not logged")
-
+	// The MCP session is open before the rate is used up: its handshake
+	// takes time, and the bucket refills one call every 200ms.
 	client := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "1"}, nil)
 	session, err := client.Connect(context.Background(), &sdk.StreamableClientTransport{
 		Endpoint: s.Mcp.URL, HTTPClient: &http.Client{Transport: bearer{token: t.Token}}, MaxRetries: -1,
 	}, nil)
 	s.Require().NoError(err)
 	defer session.Close() //nolint:errcheck
-	result, err := session.CallTool(context.Background(), &sdk.CallToolParams{Name: "list_proposals"})
-	s.Require().NoError(err)
-	s.Require().True(result.IsError, "the MCP door shares the HTTP door's rate")
-	structured, err := json.Marshal(result.StructuredContent)
-	s.Require().NoError(err)
+
+	drain := func() error {
+		for range 40 {
+			if _, err := c.ListProposals(context.Background(), &agentv1.ListProposalsRequest{}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	limited := drain()
+	s.Require().Equal(connect.CodeResourceExhausted, connect.CodeOf(limited))
+	seconds, ok := agentapi.RetryAfterOf(limited)
+	s.Require().True(ok)
+	s.Require().Equal(1, seconds)
+	s.Require().Less(len(s.toolCalls(t)), 40, "a refused call is not logged")
+
+	// Right after the HTTP door is refused, the MCP door is too. On a slow
+	// machine the bucket may refill a call in between, so it is tried a
+	// few times; a rate that is not shared would never refuse it.
+	var structured []byte
+	for range 5 {
+		result, err := session.CallTool(context.Background(), &sdk.CallToolParams{Name: "list_proposals"})
+		s.Require().NoError(err)
+		if result.IsError {
+			structured, err = json.Marshal(result.StructuredContent)
+			s.Require().NoError(err)
+			break
+		}
+		_ = drain()
+	}
+	s.Require().NotNil(structured, "the MCP door shares the HTTP door's rate")
 	s.Require().Contains(string(structured), `"code":"rate_limited"`)
 	s.Require().Contains(string(structured), `"retryAfterSeconds":1`)
 }

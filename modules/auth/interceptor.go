@@ -79,7 +79,14 @@ func (i *interceptor) authenticate(ctx context.Context, procedure string, header
 	}
 	session, err := i.service.Authenticate(ctx, token)
 	if err != nil {
-		return nil, fault.ToConnect(err)
+		refused := fault.ToConnect(err)
+		// A session cookie that no longer opens anything is cleared, so a
+		// page left open does not keep sending it, and keep failing.
+		var connectErr *connect.Error
+		if fault.CodeOf(err) == fault.Unauthenticated && !bearer(header) && errors.As(refused, &connectErr) {
+			connectErr.Meta().Add("Set-Cookie", ClearedSessionCookie(i.service.secure()).String())
+		}
+		return nil, refused
 	}
 	ctx = context.WithValue(context.WithValue(ctx, sessionKey{}, session), tokenKey{}, token)
 	if i.tenantFree[procedure] {
@@ -89,11 +96,17 @@ func (i *interceptor) authenticate(ctx context.Context, procedure string, header
 	if err != nil {
 		return nil, fault.ToConnect(fault.New(fault.InvalidArgument, "missing or invalid "+TenantHeader+" header"))
 	}
-	membership, err := i.service.Membership(ctx, session.Email, tenantId)
+	membership, err := i.service.Membership(ctx, session, tenantId)
 	if err != nil {
 		return nil, fault.ToConnect(err)
 	}
 	return actor.AsPerson(ctx, tenantId, membership.PersonId), nil
+}
+
+// bearer says the token came in the Authorization header, not the cookie.
+func bearer(header http.Header) bool {
+	token, ok := strings.CutPrefix(header.Get("Authorization"), "Bearer ")
+	return ok && strings.TrimSpace(token) != ""
 }
 
 // TokenOf reads the session token from the Authorization header, or from

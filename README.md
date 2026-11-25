@@ -223,10 +223,11 @@ From there the owner works in the UI. Locally the same command is `go run ./cmd/
 | `MANDATE_APP_DATABASE_URL` | connect as the app role directly. With it, and without the owner connection, `serve` does not migrate and never holds the owner's credentials. This is how to run it for real: `pgmandate migrate` as a separate step |
 | `MANDATE_HTTP_ADDR` | where to listen, default `127.0.0.1:8585` |
 | `MANDATE_PUBLIC_URL` | how the server is reached, for cookies and the sign-in redirect |
-| `MANDATE_OIDC_ISSUER`, `MANDATE_OIDC_CLIENT_ID`, `MANDATE_OIDC_CLIENT_SECRET` | the sign-in provider. It must serve one organisation: a person is whoever it vouches for with a verified email address |
+| `MANDATE_OIDC_ISSUER`, `MANDATE_OIDC_CLIENT_ID`, `MANDATE_OIDC_CLIENT_SECRET` | the sign-in provider. A person added by email is bound at their first sign-in to a tenant to the provider's identity for them, and from then on that identity, and no other with the same address, is them there |
 | `MANDATE_OIDC_REDIRECT_URL` | default `<public url>/auth/oidc/callback` |
 | `MANDATE_DEV_LOGIN` | `true` lets anyone sign in with an email. Refused unless the server listens on loopback, and then it answers only to requests for localhost |
 | `MANDATE_SESSION_TTL` | default `168h` |
+| `MANDATE_CLIENT_IP_HEADER` | the header a trusted reverse proxy writes the client's address in, such as `X-Forwarded-For` (its last entry is used). Failed sign-ins and token checks are limited to twenty a minute per client address; without this header, behind a proxy every client shares the proxy's address and so one limit. Set it only when the proxy overwrites the header |
 | `MANDATE_ALLOW_PRIVATE_CONNECTORS` | `true` lets webhook connectors live on local and private addresses, for development and for an on-premise install. Off, a delivery to such an address is never sent, and ends *not sent* |
 | `MANDATE_SIGNING_KEY` | the Ed25519 seed deliveries are signed with, 32 bytes in standard base64 (`openssl rand -base64 32`). Never stored in the database. Required unless the server listens only on loopback, where one is made once in `.local/signing-key` |
 | `MANDATE_SIGNING_KEY_FILE` | the same, read from a file |
