@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file mandate/v1/actions.proto.
  */
 export const file_mandate_v1_actions: GenFile = /*@__PURE__*/
-  fileDesc("ChhtYW5kYXRlL3YxL2FjdGlvbnMucHJvdG8SCm1hbmRhdGUudjEi+gIKBkFjdGlvbhIKCgJpZBgBIAEoCRILCgNrZXkYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSDAoEcmlzaxgEIAEoCRISCgpjb3N0X3VuaXRzGAUgASgDEhMKC21heV9leGVjdXRlGAYgASgIEhMKC3NjaGVtYV9qc29uGAcgASgJEhEKCWNvbm5lY3RvchgIIAEoCRIVCg1jb25uZWN0b3JfdXJsGAkgASgJEhIKCmhhc19zZWNyZXQYCiABKAgSEgoKZGVwYXJ0bWVudBgLIAEoCRIuCgpjcmVhdGVkX2F0GAwgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgp1cGRhdGVkX2F0GA0gASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgpyZW1vdmVkX2F0GA4gASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIUCgxidWlsdGluX29ubHkYDyABKAgiLQoSTGlzdEFjdGlvbnNSZXF1ZXN0EhcKD2luY2x1ZGVfcmVtb3ZlZBgBIAEoCCI6ChNMaXN0QWN0aW9uc1Jlc3BvbnNlEiMKB2FjdGlvbnMYASADKAsyEi5tYW5kYXRlLnYxLkFjdGlvbiLYAQoTRGVmaW5lQWN0aW9uUmVxdWVzdBILCgNrZXkYASABKAkSEwoLZGVzY3JpcHRpb24YAiABKAkSDAoEcmlzaxgDIAEoCRISCgpjb3N0X3VuaXRzGAQgASgDEhMKC21heV9leGVjdXRlGAUgASgIEhMKC3NjaGVtYV9qc29uGAYgASgJEhEKCWNvbm5lY3RvchgHIAEoCRIVCg1jb25uZWN0b3JfdXJsGAggASgJEhUKDXJvdGF0ZV9zZWNyZXQYCSABKAgSEgoKZGVwYXJ0bWVudBgKIAEoCSJKChREZWZpbmVBY3Rpb25SZXNwb25zZRIiCgZhY3Rpb24YASABKAsyEi5tYW5kYXRlLnYxLkFjdGlvbhIOCgZzZWNyZXQYAiABKAkiIgoTUmVtb3ZlQWN0aW9uUmVxdWVzdBILCgNrZXkYASABKAkiFgoUUmVtb3ZlQWN0aW9uUmVzcG9uc2UyhQIKDUFjdGlvblNlcnZpY2USTgoLTGlzdEFjdGlvbnMSHi5tYW5kYXRlLnYxLkxpc3RBY3Rpb25zUmVxdWVzdBofLm1hbmRhdGUudjEuTGlzdEFjdGlvbnNSZXNwb25zZRJRCgxEZWZpbmVBY3Rpb24SHy5tYW5kYXRlLnYxLkRlZmluZUFjdGlvblJlcXVlc3QaIC5tYW5kYXRlLnYxLkRlZmluZUFjdGlvblJlc3BvbnNlElEKDFJlbW92ZUFjdGlvbhIfLm1hbmRhdGUudjEuUmVtb3ZlQWN0aW9uUmVxdWVzdBogLm1hbmRhdGUudjEuUmVtb3ZlQWN0aW9uUmVzcG9uc2VCQ1pBZ2l0aHViLmNvbS9hbmRyZWFzLWxpbmRmYWxrL3BnbWFuZGF0ZS9nZW4vZ28vbWFuZGF0ZS92MTttYW5kYXRldjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
+  fileDesc("ChhtYW5kYXRlL3YxL2FjdGlvbnMucHJvdG8SCm1hbmRhdGUudjEilQMKBkFjdGlvbhIKCgJpZBgBIAEoCRILCgNrZXkYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSDAoEcmlzaxgEIAEoCRIUCgx3YWl0X3NlY29uZHMYBSABKAMSEwoLbWF5X2V4ZWN1dGUYBiABKAgSEwoLc2NoZW1hX2pzb24YByABKAkSEQoJY29ubmVjdG9yGAggASgJEhUKDWNvbm5lY3Rvcl91cmwYCSABKAkSEgoKaGFzX3NlY3JldBgKIAEoCBISCgpkZXBhcnRtZW50GAsgASgJEi4KCmNyZWF0ZWRfYXQYDCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnVwZGF0ZWRfYXQYDSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnJlbW92ZWRfYXQYDiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhQKDGJ1aWx0aW5fb25seRgPIAEoCBIXCg9kZWxpdmVyX3NlY29uZHMYECABKAMiLQoSTGlzdEFjdGlvbnNSZXF1ZXN0EhcKD2luY2x1ZGVfcmVtb3ZlZBgBIAEoCCI6ChNMaXN0QWN0aW9uc1Jlc3BvbnNlEiMKB2FjdGlvbnMYASADKAsyEi5tYW5kYXRlLnYxLkFjdGlvbiLzAQoTRGVmaW5lQWN0aW9uUmVxdWVzdBILCgNrZXkYASABKAkSEwoLZGVzY3JpcHRpb24YAiABKAkSDAoEcmlzaxgDIAEoCRIUCgx3YWl0X3NlY29uZHMYBCABKAMSEwoLbWF5X2V4ZWN1dGUYBSABKAgSEwoLc2NoZW1hX2pzb24YBiABKAkSEQoJY29ubmVjdG9yGAcgASgJEhUKDWNvbm5lY3Rvcl91cmwYCCABKAkSFQoNcm90YXRlX3NlY3JldBgJIAEoCBISCgpkZXBhcnRtZW50GAogASgJEhcKD2RlbGl2ZXJfc2Vjb25kcxgLIAEoAyJKChREZWZpbmVBY3Rpb25SZXNwb25zZRIiCgZhY3Rpb24YASABKAsyEi5tYW5kYXRlLnYxLkFjdGlvbhIOCgZzZWNyZXQYAiABKAkiIgoTUmVtb3ZlQWN0aW9uUmVxdWVzdBILCgNrZXkYASABKAkiFgoUUmVtb3ZlQWN0aW9uUmVzcG9uc2UyhQIKDUFjdGlvblNlcnZpY2USTgoLTGlzdEFjdGlvbnMSHi5tYW5kYXRlLnYxLkxpc3RBY3Rpb25zUmVxdWVzdBofLm1hbmRhdGUudjEuTGlzdEFjdGlvbnNSZXNwb25zZRJRCgxEZWZpbmVBY3Rpb24SHy5tYW5kYXRlLnYxLkRlZmluZUFjdGlvblJlcXVlc3QaIC5tYW5kYXRlLnYxLkRlZmluZUFjdGlvblJlc3BvbnNlElEKDFJlbW92ZUFjdGlvbhIfLm1hbmRhdGUudjEuUmVtb3ZlQWN0aW9uUmVxdWVzdBogLm1hbmRhdGUudjEuUmVtb3ZlQWN0aW9uUmVzcG9uc2VCQ1pBZ2l0aHViLmNvbS9hbmRyZWFzLWxpbmRmYWxrL3BnbWFuZGF0ZS9nZW4vZ28vbWFuZGF0ZS92MTttYW5kYXRldjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
 
 /**
  * @generated from message mandate.v1.Action
@@ -39,9 +39,12 @@ export type Action = Message<"mandate.v1.Action"> & {
   risk: string;
 
   /**
-   * @generated from field: int64 cost_units = 5;
+   * How long a proposal for it waits for a decision before it expires,
+   * in seconds.
+   *
+   * @generated from field: int64 wait_seconds = 5;
    */
-  costUnits: bigint;
+  waitSeconds: bigint;
 
   /**
    * @generated from field: bool may_execute = 6;
@@ -97,6 +100,14 @@ export type Action = Message<"mandate.v1.Action"> & {
    * @generated from field: bool builtin_only = 15;
    */
   builtinOnly: boolean;
+
+  /**
+   * How long after a decision its delivery may still be carried out, in
+   * seconds.
+   *
+   * @generated from field: int64 deliver_seconds = 16;
+   */
+  deliverSeconds: bigint;
 };
 
 /**
@@ -160,9 +171,12 @@ export type DefineActionRequest = Message<"mandate.v1.DefineActionRequest"> & {
   risk: string;
 
   /**
-   * @generated from field: int64 cost_units = 4;
+   * How long a proposal may wait for a decision, in seconds: 60 to 2592000
+   * (30 days). 0 means the default, 7 days.
+   *
+   * @generated from field: int64 wait_seconds = 4;
    */
-  costUnits: bigint;
+  waitSeconds: bigint;
 
   /**
    * @generated from field: bool may_execute = 5;
@@ -195,6 +209,14 @@ export type DefineActionRequest = Message<"mandate.v1.DefineActionRequest"> & {
    * @generated from field: string department = 10;
    */
   department: string;
+
+  /**
+   * How long after a decision its delivery may still be carried out, in
+   * seconds: 120 to 604800 (7 days). 0 means the default, 1 hour.
+   *
+   * @generated from field: int64 deliver_seconds = 11;
+   */
+  deliverSeconds: bigint;
 };
 
 /**

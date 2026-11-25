@@ -39,6 +39,7 @@ export const statusLabel: Record<string, string> = {
   rejected: "Rejected",
   executed: "Allowed by mandate",
   withdrawn: "Withdrawn",
+  expired: "Expired",
 };
 
 export const flagLabel: Record<string, string> = {
@@ -69,6 +70,7 @@ export const eventLabel: Record<string, string> = {
   "proposal.execution_skipped": "Left for a person",
   "proposal.rapid_approvals": "Many approvals in a short time",
   "proposal.withdrawn": "Withdrawn by the agent",
+  "proposal.expired": "Expired: nobody decided in time",
   "proposal.notified": "Chat channel told",
   "agent.limits_set": "Agent's limits set",
   "notifier.set": "Notifications set",
@@ -88,9 +90,26 @@ export function hostOf(url: string) {
   }
 }
 
-export function units(n: number | bigint) {
+/** A length of time in whole seconds, in the largest unit that divides it: "7 days", "90 minutes". */
+export function durationLabel(seconds: number | bigint) {
+  const s = Number(seconds);
+  for (const [size, name] of [
+    [86400, "day"],
+    [3600, "hour"],
+    [60, "minute"],
+  ] as const) {
+    if (s >= size && s % size === 0) {
+      const n = s / size;
+      return `${n} ${name}${n === 1 ? "" : "s"}`;
+    }
+  }
+  return `${s} second${s === 1 ? "" : "s"}`;
+}
+
+/** What a budget allows and has used, from an execution's basis or a mandate. */
+export function executions(n: number | bigint) {
   const value = Number(n);
-  return `${value} ${value === 1 ? "unit" : "units"}`;
+  return `${value} ${value === 1 ? "execution" : "executions"}`;
 }
 
 export const skipLabel: Record<string, string> = {
@@ -104,7 +123,7 @@ export const skipLabel: Record<string, string> = {
   execution_failed: "The execution failed",
   agent_revoked: "The agent is revoked",
   action_removed: "The action has been removed; this can only be rejected",
-  action_changed: "The action's cost or risk has changed since it was proposed",
+  action_changed: "The action's risk was raised since it was proposed",
   payload_invalid: "The action's schema has changed and the payload no longer fits it",
 };
 

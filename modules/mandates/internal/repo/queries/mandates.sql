@@ -1,6 +1,6 @@
 -- name: InsertMandate :exec
-INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, department, valid_from, valid_until, condition, condition_plan)
-VALUES (@id, @tenant_id, sqlc.narg('agent_id'), @actions::text[], @max_risk, @budget_units, @policy_ref, sqlc.narg('department'), @valid_from, @valid_until,
+INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, valid_from, valid_until, condition, condition_plan)
+VALUES (@id, @tenant_id, sqlc.narg('agent_id'), @actions::text[], @max_risk, @budget_count, @policy_ref, sqlc.narg('department'), @valid_from, @valid_until,
     sqlc.narg('condition'), sqlc.narg('condition_plan'));
 
 -- name: GetMandate :one
@@ -23,13 +23,13 @@ WHERE (agent_id IS NULL OR agent_id = @agent_id::uuid)
 ORDER BY max_risk DESC, created_at, id
 FOR UPDATE;
 
--- name: SpentUnits :one
--- What the executions under a mandate have cost this month, as the
--- database counts it (the same function the execution trigger uses).
-SELECT mandate.spent_units(@mandate_id::uuid)::bigint;
+-- name: SpentCount :one
+-- How many executions a mandate has allowed this month, as the database
+-- counts it (the same function the execution trigger uses).
+SELECT mandate.spent_count(@mandate_id::uuid)::bigint;
 
--- name: SpentUnitsFor :many
-SELECT id, mandate.spent_units(id)::bigint AS spent FROM mandate.mandates WHERE id = ANY(@ids::uuid[]);
+-- name: SpentCountFor :many
+SELECT id, mandate.spent_count(id)::bigint AS spent FROM mandate.mandates WHERE id = ANY(@ids::uuid[]);
 
 -- name: AgentState :one
 -- Whether the agent exists in the tenant in scope, and is live.

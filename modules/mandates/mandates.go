@@ -33,7 +33,7 @@ const (
 	RiskHigh   = "high"
 
 	maxDays        = 366
-	maxBudgetUnits = 1_000_000_000_000
+	maxBudgetCount = 1_000_000_000
 )
 
 // RiskRank orders the risk levels; -1 for an unknown one.
@@ -54,7 +54,7 @@ type Mandate struct {
 	AgentId     *uuid.UUID
 	Actions     []string
 	MaxRisk     string
-	BudgetUnits int64
+	BudgetCount int64
 	PolicyRef   string
 	Department  string
 	GrantedBy   *uuid.UUID
@@ -76,8 +76,8 @@ type Input struct {
 	Actions []string
 	// MaxRisk is low or medium. High is never delegated.
 	MaxRisk string
-	// BudgetUnits per calendar month, in the cost units of the actions it covers.
-	BudgetUnits int64
+	// BudgetCount is how many executions it may allow per UTC calendar month.
+	BudgetCount int64
 	// PolicyRef names the policy document the mandate rests on. It is recorded
 	// with every decision the mandate allows; the document itself is not
 	// stored or checked.
@@ -138,8 +138,8 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 		return Mandate{}, fault.New(fault.InvalidArgument, "actions are keys like tickets.create, prefixes like tickets.*, or *")
 	case input.MaxRisk != RiskLow && input.MaxRisk != RiskMedium:
 		return Mandate{}, fault.New(fault.InvalidArgument, "the risk limit is low or medium; high is never delegated")
-	case input.BudgetUnits <= 0 || input.BudgetUnits > maxBudgetUnits:
-		return Mandate{}, fault.New(fault.InvalidArgument, "the budget is 1 or more units per month")
+	case input.BudgetCount < 1 || input.BudgetCount > maxBudgetCount:
+		return Mandate{}, fault.New(fault.InvalidArgument, "the budget is 1 to 1,000,000,000 executions a month")
 	case input.PolicyRef == "" || utf8.RuneCountInString(input.PolicyRef) > 200:
 		return Mandate{}, fault.New(fault.InvalidArgument, "a mandate rests on a policy document: give its reference")
 	case input.Days < 1 || input.Days > maxDays:
@@ -192,7 +192,7 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 		}
 		if err := q.InsertMandate(ctx, repo.InsertMandateParams{
 			Id: id, TenantId: tenantId, AgentId: input.AgentId, Actions: input.Actions, MaxRisk: input.MaxRisk,
-			BudgetUnits: input.BudgetUnits, PolicyRef: input.PolicyRef, Department: department, ValidFrom: now, ValidUntil: now.AddDate(0, 0, input.Days),
+			BudgetCount: input.BudgetCount, PolicyRef: input.PolicyRef, Department: department, ValidFrom: now, ValidUntil: now.AddDate(0, 0, input.Days),
 			Condition: condition, ConditionPlan: planJson,
 		}); err != nil {
 			return err
@@ -205,7 +205,7 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 		_, err = events.Append(ctx, tx, events.Event{
 			Type: "mandate.granted", SubjectId: id,
 			Payload: map[string]any{
-				"agentId": input.AgentId, "actions": input.Actions, "maxRisk": input.MaxRisk, "budgetUnits": input.BudgetUnits,
+				"agentId": input.AgentId, "actions": input.Actions, "maxRisk": input.MaxRisk, "budgetCount": input.BudgetCount,
 				"policyRef": input.PolicyRef, "department": input.Department, "validUntil": result.ValidUntil.UTC().Format(time.RFC3339),
 				"condition": input.Condition,
 			},
@@ -355,7 +355,7 @@ func ValidKey(key string) bool {
 
 // Period is the budget period that holds the instant: the UTC calendar
 // month. The database counts the spend with its own clock
-// (mandate.spent_units); this is the same rule, for callers that reason
+// (mandate.spent_count); this is the same rule, for callers that reason
 // about it in Go.
 func Period(at time.Time) (start, end time.Time) {
 	year, month, _ := at.UTC().Date()
@@ -367,8 +367,8 @@ func Period(at time.Time) (start, end time.Time) {
 // mandate that allows it with its spend so far, or the reason none does.
 type Resolution struct {
 	Mandate *Mandate
-	// SpentUnits is what the chosen mandate's executions have cost this period.
-	SpentUnits int64
+	// Spent is how many executions the chosen mandate has allowed this period.
+	Spent int64
 	// Reason is empty when a mandate allows it, else one of the Skip reasons.
 	Reason string
 }
@@ -385,11 +385,11 @@ const (
 
 // Resolve finds, inside the caller's transaction, a live mandate for the
 // agent that covers the action at the risk, whose condition holds for the
-// payload, and that still has budget for the cost. The live mandates are locked, so two executions under one mandate
+// payload, and that still has room in its budget. The live mandates are locked, so two executions under one mandate
 // count the budget one after the other. The most permissive mandate with
 // room is chosen. The spend is what the database counts, so the basis
 // recorded here is exactly what the execution trigger will check.
-func (s *Service) Resolve(ctx context.Context, tx pgx.Tx, agentId uuid.UUID, action, risk string, payload json.RawMessage, costUnits int64) (Resolution, error) {
+func (s *Service) Resolve(ctx context.Context, tx pgx.Tx, agentId uuid.UUID, action, risk string, payload json.RawMessage) (Resolution, error) {
 	rows, err := repo.New(tx).ListLiveForAgent(ctx, repo.ListLiveForAgentParams{AgentId: agentId, At: s.now()})
 	if err != nil {
 		return Resolution{}, err
@@ -418,13 +418,13 @@ func (s *Service) Resolve(ctx context.Context, tx pgx.Tx, agentId uuid.UUID, act
 		return Resolution{Reason: SkipConditionUnmet}, nil
 	}
 	for _, m := range allowing {
-		spent, err := repo.New(tx).SpentUnits(ctx, m.Id)
+		spent, err := repo.New(tx).SpentCount(ctx, m.Id)
 		if err != nil {
 			return Resolution{}, err
 		}
-		if spent+costUnits <= m.BudgetUnits {
+		if spent < m.BudgetCount {
 			m := m
-			return Resolution{Mandate: &m, SpentUnits: spent}, nil
+			return Resolution{Mandate: &m, Spent: spent}, nil
 		}
 	}
 	return Resolution{Reason: SkipBudgetSpent}, nil
@@ -464,7 +464,7 @@ func (s *Service) SpentFor(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]
 		return result, nil
 	}
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
-		rows, err := repo.New(tx).SpentUnitsFor(ctx, ids)
+		rows, err := repo.New(tx).SpentCountFor(ctx, ids)
 		for _, row := range rows {
 			result[row.Id] = row.Spent
 		}
@@ -473,12 +473,12 @@ func (s *Service) SpentFor(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]
 	return result, err
 }
 
-// Spent is what the executions under a mandate have cost in the current period.
+// Spent is how many executions a mandate has allowed in the current period.
 func (s *Service) Spent(ctx context.Context, mandateId uuid.UUID) (int64, error) {
 	var spent int64
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		var err error
-		spent, err = repo.New(tx).SpentUnits(ctx, mandateId)
+		spent, err = repo.New(tx).SpentCount(ctx, mandateId)
 		return err
 	})
 	return spent, err
@@ -486,7 +486,7 @@ func (s *Service) Spent(ctx context.Context, mandateId uuid.UUID) (int64, error)
 
 func toMandate(row repo.MandateMandate) Mandate {
 	m := Mandate{
-		Id: row.Id, AgentId: row.AgentId, Actions: slices.Clone(row.Actions), MaxRisk: row.MaxRisk, BudgetUnits: row.BudgetUnits,
+		Id: row.Id, AgentId: row.AgentId, Actions: slices.Clone(row.Actions), MaxRisk: row.MaxRisk, BudgetCount: row.BudgetCount,
 		PolicyRef: row.PolicyRef, GrantedBy: row.GrantedBy, ValidFrom: row.ValidFrom, ValidUntil: row.ValidUntil,
 		RevokedAt: row.RevokedAt, RevokedBy: row.RevokedBy, CreatedAt: row.CreatedAt,
 	}

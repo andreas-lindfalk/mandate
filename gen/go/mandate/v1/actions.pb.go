@@ -28,8 +28,10 @@ type Action struct {
 	Key         string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
 	Description string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
 	Risk        string                 `protobuf:"bytes,4,opt,name=risk,proto3" json:"risk,omitempty"`
-	CostUnits   int64                  `protobuf:"varint,5,opt,name=cost_units,json=costUnits,proto3" json:"cost_units,omitempty"`
-	MayExecute  bool                   `protobuf:"varint,6,opt,name=may_execute,json=mayExecute,proto3" json:"may_execute,omitempty"`
+	// How long a proposal for it waits for a decision before it expires,
+	// in seconds.
+	WaitSeconds int64 `protobuf:"varint,5,opt,name=wait_seconds,json=waitSeconds,proto3" json:"wait_seconds,omitempty"`
+	MayExecute  bool  `protobuf:"varint,6,opt,name=may_execute,json=mayExecute,proto3" json:"may_execute,omitempty"`
 	// The payload schema as JSON text, empty for none. A webhook action
 	// always has one.
 	SchemaJson   string                 `protobuf:"bytes,7,opt,name=schema_json,json=schemaJson,proto3" json:"schema_json,omitempty"`
@@ -41,9 +43,12 @@ type Action struct {
 	UpdatedAt    *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	RemovedAt    *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=removed_at,json=removedAt,proto3" json:"removed_at,omitempty"`
 	// Builtin actions registered in code and not defined by the tenant.
-	BuiltinOnly   bool `protobuf:"varint,15,opt,name=builtin_only,json=builtinOnly,proto3" json:"builtin_only,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	BuiltinOnly bool `protobuf:"varint,15,opt,name=builtin_only,json=builtinOnly,proto3" json:"builtin_only,omitempty"`
+	// How long after a decision its delivery may still be carried out, in
+	// seconds.
+	DeliverSeconds int64 `protobuf:"varint,16,opt,name=deliver_seconds,json=deliverSeconds,proto3" json:"deliver_seconds,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Action) Reset() {
@@ -104,9 +109,9 @@ func (x *Action) GetRisk() string {
 	return ""
 }
 
-func (x *Action) GetCostUnits() int64 {
+func (x *Action) GetWaitSeconds() int64 {
 	if x != nil {
-		return x.CostUnits
+		return x.WaitSeconds
 	}
 	return 0
 }
@@ -179,6 +184,13 @@ func (x *Action) GetBuiltinOnly() bool {
 		return x.BuiltinOnly
 	}
 	return false
+}
+
+func (x *Action) GetDeliverSeconds() int64 {
+	if x != nil {
+		return x.DeliverSeconds
+	}
+	return 0
 }
 
 type ListActionsRequest struct {
@@ -274,16 +286,21 @@ type DefineActionRequest struct {
 	Key         string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	Description string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
 	Risk        string                 `protobuf:"bytes,3,opt,name=risk,proto3" json:"risk,omitempty"`
-	CostUnits   int64                  `protobuf:"varint,4,opt,name=cost_units,json=costUnits,proto3" json:"cost_units,omitempty"`
-	MayExecute  bool                   `protobuf:"varint,5,opt,name=may_execute,json=mayExecute,proto3" json:"may_execute,omitempty"`
+	// How long a proposal may wait for a decision, in seconds: 60 to 2592000
+	// (30 days). 0 means the default, 7 days.
+	WaitSeconds int64 `protobuf:"varint,4,opt,name=wait_seconds,json=waitSeconds,proto3" json:"wait_seconds,omitempty"`
+	MayExecute  bool  `protobuf:"varint,5,opt,name=may_execute,json=mayExecute,proto3" json:"may_execute,omitempty"`
 	// Required when the connector is webhook.
-	SchemaJson    string `protobuf:"bytes,6,opt,name=schema_json,json=schemaJson,proto3" json:"schema_json,omitempty"`
-	Connector     string `protobuf:"bytes,7,opt,name=connector,proto3" json:"connector,omitempty"`
-	ConnectorUrl  string `protobuf:"bytes,8,opt,name=connector_url,json=connectorUrl,proto3" json:"connector_url,omitempty"`
-	RotateSecret  bool   `protobuf:"varint,9,opt,name=rotate_secret,json=rotateSecret,proto3" json:"rotate_secret,omitempty"`
-	Department    string `protobuf:"bytes,10,opt,name=department,proto3" json:"department,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SchemaJson   string `protobuf:"bytes,6,opt,name=schema_json,json=schemaJson,proto3" json:"schema_json,omitempty"`
+	Connector    string `protobuf:"bytes,7,opt,name=connector,proto3" json:"connector,omitempty"`
+	ConnectorUrl string `protobuf:"bytes,8,opt,name=connector_url,json=connectorUrl,proto3" json:"connector_url,omitempty"`
+	RotateSecret bool   `protobuf:"varint,9,opt,name=rotate_secret,json=rotateSecret,proto3" json:"rotate_secret,omitempty"`
+	Department   string `protobuf:"bytes,10,opt,name=department,proto3" json:"department,omitempty"`
+	// How long after a decision its delivery may still be carried out, in
+	// seconds: 120 to 604800 (7 days). 0 means the default, 1 hour.
+	DeliverSeconds int64 `protobuf:"varint,11,opt,name=deliver_seconds,json=deliverSeconds,proto3" json:"deliver_seconds,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DefineActionRequest) Reset() {
@@ -337,9 +354,9 @@ func (x *DefineActionRequest) GetRisk() string {
 	return ""
 }
 
-func (x *DefineActionRequest) GetCostUnits() int64 {
+func (x *DefineActionRequest) GetWaitSeconds() int64 {
 	if x != nil {
-		return x.CostUnits
+		return x.WaitSeconds
 	}
 	return 0
 }
@@ -384,6 +401,13 @@ func (x *DefineActionRequest) GetDepartment() string {
 		return x.Department
 	}
 	return ""
+}
+
+func (x *DefineActionRequest) GetDeliverSeconds() int64 {
+	if x != nil {
+		return x.DeliverSeconds
+	}
+	return 0
 }
 
 type DefineActionResponse struct {
@@ -523,14 +547,13 @@ var File_mandate_v1_actions_proto protoreflect.FileDescriptor
 const file_mandate_v1_actions_proto_rawDesc = "" +
 	"\n" +
 	"\x18mandate/v1/actions.proto\x12\n" +
-	"mandate.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x97\x04\n" +
+	"mandate.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc4\x04\n" +
 	"\x06Action\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x12\n" +
-	"\x04risk\x18\x04 \x01(\tR\x04risk\x12\x1d\n" +
-	"\n" +
-	"cost_units\x18\x05 \x01(\x03R\tcostUnits\x12\x1f\n" +
+	"\x04risk\x18\x04 \x01(\tR\x04risk\x12!\n" +
+	"\fwait_seconds\x18\x05 \x01(\x03R\vwaitSeconds\x12\x1f\n" +
 	"\vmay_execute\x18\x06 \x01(\bR\n" +
 	"mayExecute\x12\x1f\n" +
 	"\vschema_json\x18\a \x01(\tR\n" +
@@ -549,17 +572,17 @@ const file_mandate_v1_actions_proto_rawDesc = "" +
 	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x129\n" +
 	"\n" +
 	"removed_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\tremovedAt\x12!\n" +
-	"\fbuiltin_only\x18\x0f \x01(\bR\vbuiltinOnly\"=\n" +
+	"\fbuiltin_only\x18\x0f \x01(\bR\vbuiltinOnly\x12'\n" +
+	"\x0fdeliver_seconds\x18\x10 \x01(\x03R\x0edeliverSeconds\"=\n" +
 	"\x12ListActionsRequest\x12'\n" +
 	"\x0finclude_removed\x18\x01 \x01(\bR\x0eincludeRemoved\"C\n" +
 	"\x13ListActionsResponse\x12,\n" +
-	"\aactions\x18\x01 \x03(\v2\x12.mandate.v1.ActionR\aactions\"\xc6\x02\n" +
+	"\aactions\x18\x01 \x03(\v2\x12.mandate.v1.ActionR\aactions\"\xf3\x02\n" +
 	"\x13DefineActionRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x12\n" +
-	"\x04risk\x18\x03 \x01(\tR\x04risk\x12\x1d\n" +
-	"\n" +
-	"cost_units\x18\x04 \x01(\x03R\tcostUnits\x12\x1f\n" +
+	"\x04risk\x18\x03 \x01(\tR\x04risk\x12!\n" +
+	"\fwait_seconds\x18\x04 \x01(\x03R\vwaitSeconds\x12\x1f\n" +
 	"\vmay_execute\x18\x05 \x01(\bR\n" +
 	"mayExecute\x12\x1f\n" +
 	"\vschema_json\x18\x06 \x01(\tR\n" +
@@ -570,7 +593,8 @@ const file_mandate_v1_actions_proto_rawDesc = "" +
 	"\n" +
 	"department\x18\n" +
 	" \x01(\tR\n" +
-	"department\"Z\n" +
+	"department\x12'\n" +
+	"\x0fdeliver_seconds\x18\v \x01(\x03R\x0edeliverSeconds\"Z\n" +
 	"\x14DefineActionResponse\x12*\n" +
 	"\x06action\x18\x01 \x01(\v2\x12.mandate.v1.ActionR\x06action\x12\x16\n" +
 	"\x06secret\x18\x02 \x01(\tR\x06secret\"'\n" +

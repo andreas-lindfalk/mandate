@@ -3,7 +3,6 @@ package proposals_test
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 
 	"github.com/google/uuid"
@@ -67,32 +66,12 @@ func (s *WithdrawSuite) Test_AnAgentWithdrawsItsOwnWaitingProposal() {
 	_, err = s.W.Kernel.Proposals.Withdraw(t.Agent, q.Id, "")
 	s.code(err, fault.Conflict)
 
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetUnits: 10, PolicyRef: "P", Days: 30})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 	r := s.propose(t.Agent, "test.low")
 	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, r.Id))
 	_, err = s.W.Kernel.Proposals.Withdraw(t.Agent, r.Id, "")
 	s.code(err, fault.Conflict)
-}
-
-// Rolling back the migration records a withdrawn proposal as rejected,
-// rather than failing on the guard that keeps decided proposals unchanged.
-func (s *WithdrawSuite) Test_TheRollbackKeepsWithdrawnProposalsAsRejected() {
-	t := s.W.NewTenant(s.T(), "Acme")
-	p := s.propose(t.Agent, "test.manual")
-	_, err := s.W.Kernel.Proposals.Withdraw(t.Agent, p.Id, "")
-	s.Require().NoError(err)
-	down, err := os.ReadFile("../../schema/0007_withdraw.down.sql")
-	s.Require().NoError(err)
-	ctx := context.Background()
-	tx, err := s.W.Pg.Owner.Begin(ctx)
-	s.Require().NoError(err)
-	defer tx.Rollback(ctx) //nolint:errcheck
-	_, err = tx.Exec(ctx, string(down))
-	s.Require().NoError(err)
-	var status string
-	s.Require().NoError(tx.QueryRow(ctx, `SELECT status FROM mandate.proposals WHERE id = $1`, p.Id).Scan(&status))
-	s.Require().Equal(proposals.StatusRejected, status)
 }
 
 // The database holds the same rules, whatever the service does.

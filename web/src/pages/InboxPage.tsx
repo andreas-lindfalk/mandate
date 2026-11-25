@@ -23,7 +23,7 @@ import {
   shortId,
   skipLabel,
   statusLabel,
-  units,
+  executions,
 } from "@/lib/format";
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
@@ -34,6 +34,7 @@ const tabs = [
   { key: "approved", label: "Approved" },
   { key: "rejected", label: "Rejected" },
   { key: "withdrawn", label: "Withdrawn" },
+  { key: "expired", label: "Expired" },
 ] as const;
 
 function RiskBadge({ risk }: { risk: string }) {
@@ -373,7 +374,7 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
   const raisedToHigh = p.risk !== "high" && approvalRisk === "high";
   const needsConfirm = approvalRisk === "high" || confirmAsked;
   const actionGone = pending && !p.approvalRisk;
-  const decision = one.data.history.find((e) => e.type === "proposal.approved" || e.type === "proposal.rejected" || e.type === "proposal.withdrawn");
+  const decision = one.data.history.find((e) => e.type === "proposal.approved" || e.type === "proposal.rejected" || e.type === "proposal.withdrawn" || e.type === "proposal.expired");
   return (
     <div className="flex flex-col gap-5">
       <Link to="/inbox" className="-my-2 flex min-h-11 items-center gap-1 text-[13px] text-muted hover:text-foreground lg:hidden">
@@ -383,7 +384,7 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[12px] text-accent">{p.action}</span>
           <RiskBadge risk={p.risk} />
-          <Badge tone={p.status === "pending" ? "warning" : p.status === "rejected" || p.status === "withdrawn" ? "neutral" : "success"}>{statusLabel[p.status] ?? p.status}</Badge>
+          <Badge tone={p.status === "pending" ? "warning" : p.status === "rejected" || p.status === "withdrawn" || p.status === "expired" ? "neutral" : "success"}>{statusLabel[p.status] ?? p.status}</Badge>
           {p.flags.map((flag) => (
             <Badge key={flag} tone="danger">
               {flagLabel[flag] ?? flag}
@@ -399,7 +400,8 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
           {p.title}
         </p>
         <p className="mt-1 text-[13px] text-muted">
-          Proposed by {p.agentName || shortId(p.agentId)} · {formatDateTime(p.createdAt)} · costs {units(p.costUnits)}
+          Proposed by {p.agentName || shortId(p.agentId)} · {formatDateTime(p.createdAt)}
+          {pending ? ` · waits until ${formatDateTime(p.expiresAt)}` : ""}
           {p.runId ? (
             <span title="The agent's own id for the run this proposal belongs to">{` · run ${p.runId}`}</span>
           ) : null}
@@ -425,8 +427,13 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
           <Link to="/mandates" className="underline underline-offset-2">
             mandate {shortId(p.executionBasis.mandateId)}
           </Link>{" "}
-          ({p.executionBasis.policyRef}), up to {riskLabel[p.executionBasis.maxRisk]?.toLowerCase()} risk. {Number(p.executionBasis.spentUnits)} of{" "}
-          {Number(p.executionBasis.budgetUnits)} units of this month's budget were used before this one.
+          ({p.executionBasis.policyRef}), up to {riskLabel[p.executionBasis.maxRisk]?.toLowerCase()} risk.
+          {p.executionBasis.budgets.map((b) => (
+            <React.Fragment key={b.kind}>
+              {" "}
+              {Number(b.spent)} of {executions(b.limit)} this month were used before this one.
+            </React.Fragment>
+          ))}
           {p.executionBasis.condition ? (
             <>
               {" "}
@@ -439,6 +446,8 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
         <Card className="bg-sunken p-4 text-[13.5px]">
           {p.status === "withdrawn"
             ? `Withdrawn by the agent, ${formatDateTime(p.decidedAt)}`
+            : p.status === "expired"
+            ? `Expired, ${formatDateTime(p.decidedAt)}: nobody decided it in time, and nothing was done`
             : `${statusLabel[p.status]} by ${decision.actorName || "a person"}, ${formatDateTime(p.decidedAt)}`}
           {p.decisionNote ? `: “${p.decisionNote}”` : "."}
         </Card>

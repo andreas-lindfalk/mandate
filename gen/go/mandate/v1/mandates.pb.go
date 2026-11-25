@@ -26,12 +26,13 @@ type Mandate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Empty means every agent of the tenant.
-	AgentId     string   `protobuf:"bytes,2,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	Actions     []string `protobuf:"bytes,3,rep,name=actions,proto3" json:"actions,omitempty"`
-	MaxRisk     string   `protobuf:"bytes,4,opt,name=max_risk,json=maxRisk,proto3" json:"max_risk,omitempty"`
-	BudgetUnits int64    `protobuf:"varint,5,opt,name=budget_units,json=budgetUnits,proto3" json:"budget_units,omitempty"`
-	// What this month's executions under the mandate have cost.
-	SpentUnits int64                  `protobuf:"varint,6,opt,name=spent_units,json=spentUnits,proto3" json:"spent_units,omitempty"`
+	AgentId string   `protobuf:"bytes,2,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	Actions []string `protobuf:"bytes,3,rep,name=actions,proto3" json:"actions,omitempty"`
+	MaxRisk string   `protobuf:"bytes,4,opt,name=max_risk,json=maxRisk,proto3" json:"max_risk,omitempty"`
+	// How many executions it may allow per UTC calendar month.
+	BudgetCount int64 `protobuf:"varint,5,opt,name=budget_count,json=budgetCount,proto3" json:"budget_count,omitempty"`
+	// How many it has allowed this month.
+	SpentCount int64                  `protobuf:"varint,6,opt,name=spent_count,json=spentCount,proto3" json:"spent_count,omitempty"`
 	PolicyRef  string                 `protobuf:"bytes,7,opt,name=policy_ref,json=policyRef,proto3" json:"policy_ref,omitempty"`
 	Department string                 `protobuf:"bytes,8,opt,name=department,proto3" json:"department,omitempty"`
 	GrantedBy  string                 `protobuf:"bytes,9,opt,name=granted_by,json=grantedBy,proto3" json:"granted_by,omitempty"`
@@ -104,16 +105,16 @@ func (x *Mandate) GetMaxRisk() string {
 	return ""
 }
 
-func (x *Mandate) GetBudgetUnits() int64 {
+func (x *Mandate) GetBudgetCount() int64 {
 	if x != nil {
-		return x.BudgetUnits
+		return x.BudgetCount
 	}
 	return 0
 }
 
-func (x *Mandate) GetSpentUnits() int64 {
+func (x *Mandate) GetSpentCount() int64 {
 	if x != nil {
-		return x.SpentUnits
+		return x.SpentCount
 	}
 	return 0
 }
@@ -263,14 +264,15 @@ func (x *ListMandatesResponse) GetMandates() []*Mandate {
 }
 
 type GrantMandateRequest struct {
-	state       protoimpl.MessageState `protogen:"open.v1"`
-	AgentId     string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	Actions     []string               `protobuf:"bytes,2,rep,name=actions,proto3" json:"actions,omitempty"`
-	MaxRisk     string                 `protobuf:"bytes,3,opt,name=max_risk,json=maxRisk,proto3" json:"max_risk,omitempty"`
-	BudgetUnits int64                  `protobuf:"varint,4,opt,name=budget_units,json=budgetUnits,proto3" json:"budget_units,omitempty"`
-	PolicyRef   string                 `protobuf:"bytes,5,opt,name=policy_ref,json=policyRef,proto3" json:"policy_ref,omitempty"`
-	Days        int32                  `protobuf:"varint,6,opt,name=days,proto3" json:"days,omitempty"`
-	Department  string                 `protobuf:"bytes,7,opt,name=department,proto3" json:"department,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	AgentId string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	Actions []string               `protobuf:"bytes,2,rep,name=actions,proto3" json:"actions,omitempty"`
+	MaxRisk string                 `protobuf:"bytes,3,opt,name=max_risk,json=maxRisk,proto3" json:"max_risk,omitempty"`
+	// How many executions it may allow per UTC calendar month.
+	BudgetCount int64  `protobuf:"varint,4,opt,name=budget_count,json=budgetCount,proto3" json:"budget_count,omitempty"`
+	PolicyRef   string `protobuf:"bytes,5,opt,name=policy_ref,json=policyRef,proto3" json:"policy_ref,omitempty"`
+	Days        int32  `protobuf:"varint,6,opt,name=days,proto3" json:"days,omitempty"`
+	Department  string `protobuf:"bytes,7,opt,name=department,proto3" json:"department,omitempty"`
 	// Optional: narrows the mandate by the content of a proposal, such as
 	// payload.amount <= 500 && payload.currency in ["EUR", "SEK"].
 	Condition     string `protobuf:"bytes,8,opt,name=condition,proto3" json:"condition,omitempty"`
@@ -329,9 +331,9 @@ func (x *GrantMandateRequest) GetMaxRisk() string {
 	return ""
 }
 
-func (x *GrantMandateRequest) GetBudgetUnits() int64 {
+func (x *GrantMandateRequest) GetBudgetCount() int64 {
 	if x != nil {
-		return x.BudgetUnits
+		return x.BudgetCount
 	}
 	return 0
 }
@@ -499,9 +501,9 @@ const file_mandate_v1_mandates_proto_rawDesc = "" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12\x18\n" +
 	"\aactions\x18\x03 \x03(\tR\aactions\x12\x19\n" +
 	"\bmax_risk\x18\x04 \x01(\tR\amaxRisk\x12!\n" +
-	"\fbudget_units\x18\x05 \x01(\x03R\vbudgetUnits\x12\x1f\n" +
-	"\vspent_units\x18\x06 \x01(\x03R\n" +
-	"spentUnits\x12\x1d\n" +
+	"\fbudget_count\x18\x05 \x01(\x03R\vbudgetCount\x12\x1f\n" +
+	"\vspent_count\x18\x06 \x01(\x03R\n" +
+	"spentCount\x12\x1d\n" +
 	"\n" +
 	"policy_ref\x18\a \x01(\tR\tpolicyRef\x12\x1e\n" +
 	"\n" +
@@ -527,7 +529,7 @@ const file_mandate_v1_mandates_proto_rawDesc = "" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x18\n" +
 	"\aactions\x18\x02 \x03(\tR\aactions\x12\x19\n" +
 	"\bmax_risk\x18\x03 \x01(\tR\amaxRisk\x12!\n" +
-	"\fbudget_units\x18\x04 \x01(\x03R\vbudgetUnits\x12\x1d\n" +
+	"\fbudget_count\x18\x04 \x01(\x03R\vbudgetCount\x12\x1d\n" +
 	"\n" +
 	"policy_ref\x18\x05 \x01(\tR\tpolicyRef\x12\x12\n" +
 	"\x04days\x18\x06 \x01(\x05R\x04days\x12\x1e\n" +

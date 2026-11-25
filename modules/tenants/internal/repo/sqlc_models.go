@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type MandateAction struct {
@@ -16,7 +17,8 @@ type MandateAction struct {
 	Key             string
 	Description     string
 	Risk            string
-	CostUnits       int64
+	WaitLimit       pgtype.Interval
+	DeliverWithin   pgtype.Interval
 	MayExecute      bool
 	Schema          []byte
 	ConnectorKind   string
@@ -91,7 +93,7 @@ type MandateMandate struct {
 	AgentId       *uuid.UUID
 	Actions       []string
 	MaxRisk       string
-	BudgetUnits   int64
+	BudgetCount   int64
 	PolicyRef     string
 	Department    *string
 	GrantedBy     *uuid.UUID
@@ -99,9 +101,9 @@ type MandateMandate struct {
 	ValidUntil    time.Time
 	RevokedAt     *time.Time
 	RevokedBy     *uuid.UUID
-	CreatedAt     time.Time
 	Condition     *string
 	ConditionPlan []byte
+	CreatedAt     time.Time
 }
 
 type MandateNotifier struct {
@@ -135,11 +137,15 @@ type MandateProposal struct {
 	Risk            string
 	Title           string
 	Payload         []byte
-	CostUnits       int64
+	ExpiresAt       time.Time
+	DeliverWithin   pgtype.Interval
 	Flags           []string
 	IdempotencyKey  string
 	RequestHash     []byte
 	ProposedPayload []byte
+	Rationale       *string
+	Evidence        []byte
+	Provenance      []byte
 	Status          string
 	Edited          bool
 	DecidedBy       *uuid.UUID
@@ -147,9 +153,6 @@ type MandateProposal struct {
 	DecisionNote    *string
 	ExecutionBasis  []byte
 	CreatedAt       time.Time
-	Rationale       *string
-	Evidence        []byte
-	Provenance      []byte
 }
 
 type MandateSession struct {

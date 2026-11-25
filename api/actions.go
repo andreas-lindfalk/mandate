@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	mandatev1 "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1"
 	"github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1/mandatev1connect"
@@ -16,7 +17,8 @@ var _ mandatev1connect.ActionServiceHandler = (*actionHandler)(nil)
 
 func toAction(e actions.Action) *mandatev1.Action {
 	return &mandatev1.Action{
-		Id: e.Id.String(), Key: e.Key, Description: e.Description, Risk: e.Risk, CostUnits: e.CostUnits, MayExecute: e.MayExecute,
+		Id: e.Id.String(), Key: e.Key, Description: e.Description, Risk: e.Risk, MayExecute: e.MayExecute,
+		WaitSeconds: int64(e.WaitLimit / time.Second), DeliverSeconds: int64(e.DeliverWithin / time.Second),
 		SchemaJson: jsonText(e.Schema), Connector: e.ConnectorKind, ConnectorUrl: e.ConnectorUrl, HasSecret: e.HasSecret(),
 		Department: e.Department, CreatedAt: ts(e.CreatedAt), UpdatedAt: ts(e.UpdatedAt), RemovedAt: tsPtr(e.RemovedAt),
 	}
@@ -40,8 +42,9 @@ func (h *actionHandler) ListActions(ctx context.Context, req *mandatev1.ListActi
 			continue
 		}
 		resp.Actions = append(resp.Actions, &mandatev1.Action{
-			Key: code.Key, Description: code.Description, Risk: code.Risk, CostUnits: code.CostUnits, MayExecute: code.MayExecute,
-			SchemaJson: jsonText(code.Schema), Connector: actions.ConnectorBuiltin, BuiltinOnly: true,
+			Key: code.Key, Description: code.Description, Risk: code.Risk, MayExecute: code.MayExecute,
+			WaitSeconds: int64(actions.DefaultWaitLimit / time.Second),
+			SchemaJson:  jsonText(code.Schema), Connector: actions.ConnectorBuiltin, BuiltinOnly: true,
 		})
 	}
 	return resp, nil
@@ -49,7 +52,8 @@ func (h *actionHandler) ListActions(ctx context.Context, req *mandatev1.ListActi
 
 func (h *actionHandler) DefineAction(ctx context.Context, req *mandatev1.DefineActionRequest) (*mandatev1.DefineActionResponse, error) {
 	input := actions.Input{
-		Key: req.GetKey(), Description: req.GetDescription(), Risk: req.GetRisk(), CostUnits: req.GetCostUnits(), MayExecute: req.GetMayExecute(),
+		Key: req.GetKey(), Description: req.GetDescription(), Risk: req.GetRisk(), MayExecute: req.GetMayExecute(),
+		WaitLimit: time.Duration(req.GetWaitSeconds()) * time.Second, DeliverWithin: time.Duration(req.GetDeliverSeconds()) * time.Second,
 		Connector: req.GetConnector(), Url: req.GetConnectorUrl(), RotateSecret: req.GetRotateSecret(), Department: req.GetDepartment(),
 	}
 	if req.GetSchemaJson() != "" {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/suite"
@@ -30,7 +31,7 @@ func TestActionsSuite(t *testing.T) {
 var ticketSchema = json.RawMessage(`{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`)
 
 func webhook(key string) actions.Input {
-	return actions.Input{Key: key, Description: "Open a ticket", Risk: mandates.RiskLow, CostUnits: 1, MayExecute: true,
+	return actions.Input{Key: key, Description: "Open a ticket", Risk: mandates.RiskLow, MayExecute: true,
 		Schema: ticketSchema, Connector: actions.ConnectorWebhook, Url: "https://helpdesk.example/hooks/mandate"}
 }
 
@@ -48,12 +49,14 @@ func (s *ActionsSuite) Test_OwnerDefinesWebhookActions() {
 
 	// Defining again changes it and keeps the secret, unless rotated.
 	changed := webhook("tickets.create")
-	changed.CostUnits = 3
+	changed.WaitLimit = 48 * time.Hour
+	changed.DeliverWithin = 10 * time.Minute
 	again, none, err := s.W.Kernel.Actions.Define(t.Owner, changed)
 	s.Require().NoError(err)
 	s.Require().Empty(none)
 	s.Require().Equal(defined.Id, again.Id)
-	s.Require().Equal(int64(3), again.CostUnits)
+	s.Require().Equal(48*time.Hour, again.WaitLimit)
+	s.Require().Equal(10*time.Minute, again.DeliverWithin)
 	s.Require().Equal(secret, s.connectorSecret(t, "tickets.create"), "defining it again keeps the secret")
 	// A new URL gets a new secret, so the old receiver cannot sign for
 	// the new one.
@@ -117,7 +120,7 @@ func (s *ActionsSuite) Test_OwnerDefinesWebhookActions() {
 	s.code(s.W.Kernel.Actions.Remove(t.Owner, "nope.nothing"), fault.NotFound)
 
 	// A builtin definition has no URL and no secret.
-	builtin := actions.Input{Key: "test.low", Description: "", Risk: mandates.RiskMedium, CostUnits: 2, Connector: actions.ConnectorBuiltin}
+	builtin := actions.Input{Key: "test.low", Description: "", Risk: mandates.RiskMedium, Connector: actions.ConnectorBuiltin}
 	b, none, err := s.W.Kernel.Actions.Define(t.Owner, builtin)
 	s.Require().NoError(err)
 	s.Require().Empty(none)
@@ -181,7 +184,11 @@ func (s *ActionsSuite) Test_DefineValidation() {
 	for name, change := range map[string]func(*actions.Input){
 		"bad key":        func(i *actions.Input) { i.Key = "Tickets.Create" },
 		"bad risk":       func(i *actions.Input) { i.Risk = "severe" },
-		"negative cost":  func(i *actions.Input) { i.CostUnits = -1 },
+		"wait too short": func(i *actions.Input) { i.WaitLimit = 30 * time.Second },
+		"wait too long":  func(i *actions.Input) { i.WaitLimit = 31 * 24 * time.Hour },
+		"wait fraction":  func(i *actions.Input) { i.WaitLimit = 90*time.Second + time.Millisecond },
+		"deliver short":  func(i *actions.Input) { i.DeliverWithin = time.Minute },
+		"deliver long":   func(i *actions.Input) { i.DeliverWithin = 8 * 24 * time.Hour },
 		"bad connector":  func(i *actions.Input) { i.Connector = "smtp" },
 		"no url":         func(i *actions.Input) { i.Url = "" },
 		"bad url":        func(i *actions.Input) { i.Url = "ftp://x" },
@@ -210,13 +217,15 @@ func (s *ActionsSuite) Test_OnlyOwnersAndTheDatabaseAgrees() {
 	s.code(s.W.Kernel.Actions.Remove(t.Reviewer, "tickets.create"), fault.PermissionDenied)
 	s.refused(t.Owner, `UPDATE mandate.actions SET key = 'tickets.other' WHERE id = $1`, defined.Id)
 	s.refused(t.Owner, `DELETE FROM mandate.actions WHERE id = $1`, defined.Id)
-	s.refused(t.Reviewer, `UPDATE mandate.actions SET cost_units = 0 WHERE id = $1`, defined.Id)
-	s.refused(t.Reviewer, `INSERT INTO mandate.actions (id, tenant_id, key, description, risk, cost_units, connector_kind) VALUES (gen_random_uuid(), $1, 'x.y', '', 'low', 0, 'builtin')`, t.Id)
-	s.invalid(t.Owner, `INSERT INTO mandate.actions (id, tenant_id, key, description, risk, cost_units, connector_kind) VALUES (gen_random_uuid(), $1, 'x.y', '', 'low', 0, 'webhook')`, t.Id)
+	s.refused(t.Reviewer, `UPDATE mandate.actions SET wait_limit = interval '1 day' WHERE id = $1`, defined.Id)
+	s.invalid(t.Owner, `UPDATE mandate.actions SET wait_limit = interval '31 days' WHERE id = $1`, defined.Id)
+	s.invalid(t.Owner, `UPDATE mandate.actions SET deliver_within = interval '1 minute' WHERE id = $1`, defined.Id)
+	s.refused(t.Reviewer, `INSERT INTO mandate.actions (id, tenant_id, key, description, risk, connector_kind) VALUES (gen_random_uuid(), $1, 'x.y', '', 'low', 'builtin')`, t.Id)
+	s.invalid(t.Owner, `INSERT INTO mandate.actions (id, tenant_id, key, description, risk, connector_kind) VALUES (gen_random_uuid(), $1, 'x.y', '', 'low', 'webhook')`, t.Id)
 	// A webhook action without a payload schema is refused by the table
 	// itself, and the same row with one is accepted.
-	const insertWebhook = `INSERT INTO mandate.actions (id, tenant_id, key, description, risk, cost_units, connector_kind, connector_url, connector_secret, schema)
-		VALUES (gen_random_uuid(), $1, 'x.y', '', 'low', 0, 'webhook', 'https://x.example/hooks', decode(repeat('ab', 16), 'hex'), $2::jsonb)`
+	const insertWebhook = `INSERT INTO mandate.actions (id, tenant_id, key, description, risk, connector_kind, connector_url, connector_secret, schema)
+		VALUES (gen_random_uuid(), $1, 'x.y', '', 'low', 'webhook', 'https://x.example/hooks', decode(repeat('ab', 16), 'hex'), $2::jsonb)`
 	s.invalid(t.Owner, insertWebhook, t.Id, nil)
 	s.invalid(t.Owner, insertWebhook, t.Id, `null`)
 	s.invalid(t.Owner, insertWebhook, t.Id, `[]`)

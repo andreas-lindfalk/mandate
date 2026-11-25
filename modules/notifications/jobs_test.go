@@ -60,7 +60,7 @@ func (s *JobsSuite) Test_WhatWaitsIsNotifiedOnce() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	_, err := s.W.Kernel.Notifications.Set(t.Owner, notifications.KindSlack, slackUrl)
 	s.Require().NoError(err)
-	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetUnits: 1, PolicyRef: "P", Days: 30})
+	_, err = s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetCount: 1, PolicyRef: "P", Days: 30})
 	s.Require().NoError(err)
 
 	manual := s.propose(t, "test.manual")
@@ -87,6 +87,6 @@ func (s *JobsSuite) Test_WhatWaitsIsNotifiedOnce() {
 	p, _, err := s.W.Kernel.Proposals.Propose(quiet.Agent, proposals.Input{IdempotencyKey: uuid.NewString(), Action: "test.manual", Title: "x", Payload: json.RawMessage(`{}`), Rationale: "Why."})
 	s.Require().NoError(err)
 	var jobs int
-	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(), `SELECT count(*) FROM river_job WHERE kind = 'mandate.notify' AND args->>'proposalId' = $1`, p.Id.String()).Scan(&jobs))
+	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(), `SELECT count(*) FROM mandate_river.river_job WHERE kind = 'mandate.notify' AND args->>'proposalId' = $1`, p.Id.String()).Scan(&jobs))
 	s.Require().Zero(jobs)
 }

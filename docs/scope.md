@@ -102,14 +102,14 @@ The code, the UI and the documents use these words. The README's glossary follow
 
 | Term | Meaning |
 |---|---|
-| **Action** | Something an agent may ask to have done, such as `refunds.issue`. It has a risk, a cost, a payload schema (required for a webhook) and a connector, or, in an embedded host, code. Actions are data an owner defines. |
+| **Action** | Something an agent may ask to have done, such as `refunds.issue`. It has a risk, how long a proposal for it may wait, a payload schema (required for a webhook) and a connector, or, in an embedded host, code. Actions are data an owner defines. |
 | **Proposal** | One request by an agent to have an action carried out. It carries the payload, an idempotency key and the agent's *justification*. |
 | **Justification** | Three parts, each the agent's claim and not a checked fact: its *rationale* (why), its *evidence* (what it looked at), and its *provenance* (the client, model and version it says it is). |
 | **Risk** | Low, medium or high, set on each action by an owner. A mandate covers actions up to low or medium risk. High risk always goes to a person. |
 | **Flagged** | A proposal whose text matches a known prompt injection phrasing. A flag keeps a mandate from allowing it. It is a tripwire, not a control. |
 | **Mandate** | A person's standing permission for an agent. It sets which actions, up to which risk, under which condition on the payload, within which budget, resting on which policy reference, and until when. It is a row a named person granted. |
 | **Condition** | An expression on the payload that narrows a mandate, such as `payload.amount <= 200`. It is written in a subset of CEL (see [Rules on the payload](#rules-on-the-payload) and [design](design.md#conditions)). The service and the database evaluate the same compiled plan. |
-| **Budget** | What a mandate may allow per calendar month. In 0.0.1 it is counted in units of each action's fixed cost; with a cost of 1, a unit is one execution. 0.1.0 replaces units with a plain count of executions, and later adds an amount of money as a second limit beside the count ([roadmap](roadmap.md)). |
+| **Budget** | How many executions a mandate may allow per UTC calendar month. An amount of money as a second limit beside the count is planned ([roadmap](roadmap.md)). |
 | **Policy reference** | The name of the document a mandate rests on, such as `AI-POLICY-2026-01 §4`. It is recorded with every decision the mandate allows. pgmandate neither stores nor checks the document. |
 | **Decision** | A person's approval, edit or rejection, or a mandate's allowance. An allowance records its *basis*: the mandate, the policy reference, the risk limit, the condition and the budget at that moment. |
 | **Connector, receiver** | Where a decision goes to be carried out. The connector is the signed webhook address defined on the action. The receiver is the service that answers there. A Go service that embeds pgmandate can instead carry an action out in its own code, in the same database transaction that decides it (a *builtin* action). |
@@ -138,7 +138,7 @@ These hold in every version. A change that breaks one is a bug or a decision rec
 3. **Unknown never allows.** These all leave the decision to a person:
    - a condition that cannot be evaluated
    - a missing field, or one of another type
-   - an action changed since it was proposed in a way that matters: today a changed cost, or a webhook action's raised risk
+   - an action changed since it was proposed in a way that matters: a payload that no longer fits its schema, or a webhook action's raised risk
 4. **The payload decided is the payload delivered.** The log names, by digest, the payload proposed, the payload decided and the body delivered. The service writes those digests; the threat model says which parts of the log the database itself checks. The destination is the action's connector at the time of delivery, and a move of it is logged.
 5. **Agents and deliveries are done once.**
    - Every proposal carries the agent's idempotency key.
@@ -281,7 +281,7 @@ The roadmap turns this into tests, so that a change that breaks a shape fails in
   - Plan a manual path for changes that cannot wait.
   - Decided deliveries wait in Postgres and are sent when it is back.
   - Reads never pass through it.
-- **A waiting proposal does not expire yet.** It waits until a person decides it or the agent withdraws it. Until proposal expiry is built (phase 1 of the roadmap), an agent sets its own deadline and calls `withdraw_proposal` when it passes.
+- **A waiting proposal expires.** It waits until a person decides it, the agent withdraws it, or its action's waiting time is up (7 days unless the owner sets another). Then it expires: nothing is done, and the agent is told. A sweep looks for due proposals every minute; a decision after the deadline is refused even before the sweep comes.
 - **Revoking a mandate** stops it from allowing anything more. What it already allowed stays decided and is delivered.
 - **It is tested as one instance.** The log and the per-agent proposal limits are built for several instances, with the database's clock and locks. That is not yet tested. The per-second call limit is kept in each instance's memory, and there is no guidance yet for high availability.
 

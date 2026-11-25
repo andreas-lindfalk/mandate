@@ -13,28 +13,30 @@ import (
 )
 
 const getActionByKey = `-- name: GetActionByKey :one
-SELECT id, tenant_id, key, description, risk, cost_units, may_execute, schema, connector_kind, connector_url,
+SELECT id, tenant_id, key, description, risk,
+    extract(epoch FROM wait_limit)::bigint AS wait_seconds, extract(epoch FROM deliver_within)::bigint AS deliver_seconds, may_execute, schema, connector_kind, connector_url,
     department, created_by, created_at, updated_by, updated_at, removed_at
 FROM mandate.actions WHERE key = $1
 `
 
 type GetActionByKeyRow struct {
-	Id            uuid.UUID
-	TenantId      uuid.UUID
-	Key           string
-	Description   string
-	Risk          string
-	CostUnits     int64
-	MayExecute    bool
-	Schema        []byte
-	ConnectorKind string
-	ConnectorUrl  *string
-	Department    *string
-	CreatedBy     *uuid.UUID
-	CreatedAt     time.Time
-	UpdatedBy     *uuid.UUID
-	UpdatedAt     time.Time
-	RemovedAt     *time.Time
+	Id             uuid.UUID
+	TenantId       uuid.UUID
+	Key            string
+	Description    string
+	Risk           string
+	WaitSeconds    int64
+	DeliverSeconds int64
+	MayExecute     bool
+	Schema         []byte
+	ConnectorKind  string
+	ConnectorUrl   *string
+	Department     *string
+	CreatedBy      *uuid.UUID
+	CreatedAt      time.Time
+	UpdatedBy      *uuid.UUID
+	UpdatedAt      time.Time
+	RemovedAt      *time.Time
 }
 
 func (q *Queries) GetActionByKey(ctx context.Context, key string) (GetActionByKeyRow, error) {
@@ -46,7 +48,8 @@ func (q *Queries) GetActionByKey(ctx context.Context, key string) (GetActionByKe
 		&i.Key,
 		&i.Description,
 		&i.Risk,
-		&i.CostUnits,
+		&i.WaitSeconds,
+		&i.DeliverSeconds,
 		&i.MayExecute,
 		&i.Schema,
 		&i.ConnectorKind,
@@ -63,9 +66,9 @@ func (q *Queries) GetActionByKey(ctx context.Context, key string) (GetActionByKe
 
 const insertAction = `-- name: InsertAction :exec
 
-INSERT INTO mandate.actions (id, tenant_id, key, description, risk, cost_units, may_execute, schema, connector_kind, connector_url, connector_secret, department)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-        $10, $11, $12)
+INSERT INTO mandate.actions (id, tenant_id, key, description, risk, wait_limit, deliver_within, may_execute, schema, connector_kind, connector_url, connector_secret, department)
+VALUES ($1, $2, $3, $4, $5, make_interval(secs => $6::bigint), make_interval(secs => $7::bigint), $8, $9, $10,
+        $11, $12, $13)
 `
 
 type InsertActionParams struct {
@@ -74,7 +77,8 @@ type InsertActionParams struct {
 	Key             string
 	Description     string
 	Risk            string
-	CostUnits       int64
+	WaitSeconds     int64
+	DeliverSeconds  int64
 	MayExecute      bool
 	Schema          []byte
 	ConnectorKind   string
@@ -92,7 +96,8 @@ func (q *Queries) InsertAction(ctx context.Context, arg InsertActionParams) erro
 		arg.Key,
 		arg.Description,
 		arg.Risk,
-		arg.CostUnits,
+		arg.WaitSeconds,
+		arg.DeliverSeconds,
 		arg.MayExecute,
 		arg.Schema,
 		arg.ConnectorKind,
@@ -104,7 +109,8 @@ func (q *Queries) InsertAction(ctx context.Context, arg InsertActionParams) erro
 }
 
 const listActions = `-- name: ListActions :many
-SELECT id, tenant_id, key, description, risk, cost_units, may_execute, schema, connector_kind, connector_url,
+SELECT id, tenant_id, key, description, risk,
+    extract(epoch FROM wait_limit)::bigint AS wait_seconds, extract(epoch FROM deliver_within)::bigint AS deliver_seconds, may_execute, schema, connector_kind, connector_url,
     department, created_by, created_at, updated_by, updated_at, removed_at
 FROM mandate.actions
 WHERE $1::boolean OR removed_at IS NULL
@@ -112,22 +118,23 @@ ORDER BY key
 `
 
 type ListActionsRow struct {
-	Id            uuid.UUID
-	TenantId      uuid.UUID
-	Key           string
-	Description   string
-	Risk          string
-	CostUnits     int64
-	MayExecute    bool
-	Schema        []byte
-	ConnectorKind string
-	ConnectorUrl  *string
-	Department    *string
-	CreatedBy     *uuid.UUID
-	CreatedAt     time.Time
-	UpdatedBy     *uuid.UUID
-	UpdatedAt     time.Time
-	RemovedAt     *time.Time
+	Id             uuid.UUID
+	TenantId       uuid.UUID
+	Key            string
+	Description    string
+	Risk           string
+	WaitSeconds    int64
+	DeliverSeconds int64
+	MayExecute     bool
+	Schema         []byte
+	ConnectorKind  string
+	ConnectorUrl   *string
+	Department     *string
+	CreatedBy      *uuid.UUID
+	CreatedAt      time.Time
+	UpdatedBy      *uuid.UUID
+	UpdatedAt      time.Time
+	RemovedAt      *time.Time
 }
 
 func (q *Queries) ListActions(ctx context.Context, includeRemoved bool) ([]ListActionsRow, error) {
@@ -145,7 +152,8 @@ func (q *Queries) ListActions(ctx context.Context, includeRemoved bool) ([]ListA
 			&i.Key,
 			&i.Description,
 			&i.Risk,
-			&i.CostUnits,
+			&i.WaitSeconds,
+			&i.DeliverSeconds,
 			&i.MayExecute,
 			&i.Schema,
 			&i.ConnectorKind,
@@ -181,29 +189,31 @@ func (q *Queries) RemoveAction(ctx context.Context, key string) (int64, error) {
 
 const updateAction = `-- name: UpdateAction :exec
 UPDATE mandate.actions
-SET description = $1, risk = $2, cost_units = $3, may_execute = $4, schema = $5,
-    connector_kind = $6, connector_url = $7, department = $8,
+SET description = $1, risk = $2, wait_limit = make_interval(secs => $3::bigint), deliver_within = make_interval(secs => $4::bigint), may_execute = $5, schema = $6,
+    connector_kind = $7, connector_url = $8, department = $9,
     removed_at = NULL
-WHERE id = $9
+WHERE id = $10
 `
 
 type UpdateActionParams struct {
-	Description   string
-	Risk          string
-	CostUnits     int64
-	MayExecute    bool
-	Schema        []byte
-	ConnectorKind string
-	ConnectorUrl  *string
-	Department    *string
-	Id            uuid.UUID
+	Description    string
+	Risk           string
+	WaitSeconds    int64
+	DeliverSeconds int64
+	MayExecute     bool
+	Schema         []byte
+	ConnectorKind  string
+	ConnectorUrl   *string
+	Department     *string
+	Id             uuid.UUID
 }
 
 func (q *Queries) UpdateAction(ctx context.Context, arg UpdateActionParams) error {
 	_, err := q.db.Exec(ctx, updateAction,
 		arg.Description,
 		arg.Risk,
-		arg.CostUnits,
+		arg.WaitSeconds,
+		arg.DeliverSeconds,
 		arg.MayExecute,
 		arg.Schema,
 		arg.ConnectorKind,
@@ -216,16 +226,17 @@ func (q *Queries) UpdateAction(ctx context.Context, arg UpdateActionParams) erro
 
 const updateActionWithSecret = `-- name: UpdateActionWithSecret :exec
 UPDATE mandate.actions
-SET description = $1, risk = $2, cost_units = $3, may_execute = $4, schema = $5,
-    connector_kind = $6, connector_url = $7, connector_secret = $8,
-    department = $9, removed_at = NULL
-WHERE id = $10
+SET description = $1, risk = $2, wait_limit = make_interval(secs => $3::bigint), deliver_within = make_interval(secs => $4::bigint), may_execute = $5, schema = $6,
+    connector_kind = $7, connector_url = $8, connector_secret = $9,
+    department = $10, removed_at = NULL
+WHERE id = $11
 `
 
 type UpdateActionWithSecretParams struct {
 	Description     string
 	Risk            string
-	CostUnits       int64
+	WaitSeconds     int64
+	DeliverSeconds  int64
 	MayExecute      bool
 	Schema          []byte
 	ConnectorKind   string
@@ -239,7 +250,8 @@ func (q *Queries) UpdateActionWithSecret(ctx context.Context, arg UpdateActionWi
 	_, err := q.db.Exec(ctx, updateActionWithSecret,
 		arg.Description,
 		arg.Risk,
-		arg.CostUnits,
+		arg.WaitSeconds,
+		arg.DeliverSeconds,
 		arg.MayExecute,
 		arg.Schema,
 		arg.ConnectorKind,

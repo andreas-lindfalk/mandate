@@ -127,11 +127,11 @@ func (d *demo) run(ctx context.Context, url string) error {
 	d.say("   owner    %s  Alice <alice@acme.example>", alice.Id)
 	d.say("   agent    %s  support-bot, token …%s", agent.Id, secret[len(secret)-4:])
 	for _, input := range []actions.Input{
-		{Key: "tickets.create", Description: "Open a ticket in the helpdesk.", Risk: mandates.RiskLow, CostUnits: 1, MayExecute: true,
+		{Key: "tickets.create", Description: "Open a ticket in the helpdesk.", Risk: mandates.RiskLow, MayExecute: true,
 			Schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["subject","body"],"properties":{"subject":{"type":"string","maxLength":200},"body":{"type":"string","maxLength":5000},"priority":{"type":"string","enum":["low","normal","high"]}}}`)},
-		{Key: "tickets.close", Description: "Close a ticket with a resolution.", Risk: mandates.RiskMedium, CostUnits: 1, MayExecute: true,
+		{Key: "tickets.close", Description: "Close a ticket with a resolution.", Risk: mandates.RiskMedium, MayExecute: true,
 			Schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["ticket_id","resolution"],"properties":{"ticket_id":{"type":"string"},"resolution":{"type":"string","maxLength":2000}}}`)},
-		{Key: "refunds.issue", Description: "Refund the customer of a ticket. High risk: a person always decides.", Risk: mandates.RiskHigh, CostUnits: 5,
+		{Key: "refunds.issue", Description: "Refund the customer of a ticket. High risk: a person always decides.", Risk: mandates.RiskHigh,
 			Schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["ticket_id","amount","reason"],"properties":{"ticket_id":{"type":"string"},"amount":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string"}}}`)},
 	} {
 		input.Connector = actions.ConnectorWebhook
@@ -142,17 +142,17 @@ func (d *demo) run(ctx context.Context, url string) error {
 		}
 		d.receiver.AddSecret(hookSecret)
 		d.hookSecrets = append(d.hookSecrets, hookSecret)
-		d.say("   action   %-15s %-7s %d unit(s)  webhook %s, secret …%s", defined.Key, defined.Risk, defined.CostUnits, d.helpdeskUrl, hookSecret[len(hookSecret)-4:])
+		d.say("   action   %-15s %-7s waits %s  webhook %s, secret …%s", defined.Key, defined.Risk, defined.WaitLimit, d.helpdeskUrl, hookSecret[len(hookSecret)-4:])
 	}
 	m, err := d.kernel.Mandates.Grant(d.owner, mandates.Input{
-		AgentId: &agent.Id, Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetUnits: 3,
+		AgentId: &agent.Id, Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 3,
 		PolicyRef: "ACME-AI-POLICY-2026-01 §4", Days: 90,
 	})
 	if err != nil {
 		return err
 	}
-	d.say("   mandate  %s  tickets.* up to %s risk, %d units per month, policy %q, until %s",
-		m.Id, m.MaxRisk, m.BudgetUnits, m.PolicyRef, m.ValidUntil.UTC().Format("2006-01-02"))
+	d.say("   mandate  %s  tickets.* up to %s risk, %d executions per month, policy %q, until %s",
+		m.Id, m.MaxRisk, m.BudgetCount, m.PolicyRef, m.ValidUntil.UTC().Format("2006-01-02"))
 	d.say("")
 
 	client := sdk.NewClient(&sdk.Implementation{Name: "support-bot", Version: "1"}, nil)
@@ -171,7 +171,7 @@ func (d *demo) run(ctx context.Context, url string) error {
 		return err
 	}
 	for _, e := range asList(actionsOut["actions"]) {
-		d.say("   %-15s %-7s %d unit(s)   %s", e["key"], e["risk"], int64(asFloat(e["costUnits"])), e["autonomy"])
+		d.say("   %-15s %-7s waits %s   %s", e["key"], e["risk"], time.Duration(asFloat(e["waitSeconds"]))*time.Second, e["autonomy"])
 	}
 	d.say("")
 
@@ -233,7 +233,7 @@ func (d *demo) run(ctx context.Context, url string) error {
 	d.outcome(refund)
 	d.say("")
 
-	d.say("7. The budget: 3 units per month, 1 used. Two more tickets fit, the third does not")
+	d.say("7. The budget: 3 executions per month, 1 used. Two more tickets fit, the third does not")
 	d.say("   (the helpdesk is told to fail the next delivery once, to show the retry)")
 	d.receiver.FailNext(1)
 	for _, subject := range []string{"Keyboard missing at desk 12", "Monitor flickers in room B", "Coffee machine on 2 is empty"} {
@@ -274,7 +274,7 @@ func (d *demo) run(ctx context.Context, url string) error {
 	d.refused(d.agent, "the agent approves its own proposal",
 		`UPDATE mandate.proposals SET status = 'approved' WHERE id = $1`, uuid.MustParse(asString(refund["proposalId"])))
 	d.refused(d.owner, "Alice grants a high risk mandate",
-		`INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_units, policy_ref, valid_until)
+		`INSERT INTO mandate.mandates (id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, valid_until)
 		 VALUES ($1, mandate.current_tenant(), $2, '{*}', 'high', 1000, 'none', now() + interval '1 day')`, uuid.New(), agent.Id)
 	d.refused(d.owner, "Alice edits the chain",
 		`UPDATE mandate.events SET payload = '{}' WHERE seq = 1`)
@@ -407,7 +407,9 @@ func (d *demo) outcome(p map[string]any) {
 	d.say("   %s  %-16s %-7s%s", p["proposalId"], p["action"], p["risk"], flags)
 	d.say("   → %s", p["outcome"])
 	if basis, ok := p["executionBasis"].(map[string]any); ok {
-		d.say("     mandate %s, policy %s, %v of %v units used before this one", basis["mandateId"], basis["policyRef"], basis["spentUnits"], basis["budgetUnits"])
+		for _, budget := range asList(basis["budgets"]) {
+			d.say("     mandate %s, policy %s, %v of %v executions used before this one", basis["mandateId"], basis["policyRef"], budget["spent"], budget["limit"])
+		}
 	}
 	if result, ok := p["result"].(map[string]any); ok {
 		raw, _ := json.Marshal(result)

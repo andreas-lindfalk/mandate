@@ -17,7 +17,7 @@ var _ mandatev1connect.MandateServiceHandler = (*mandateHandler)(nil)
 
 func toMandate(m mandates.Mandate, spent int64) *mandatev1.Mandate {
 	return &mandatev1.Mandate{
-		Id: m.Id.String(), AgentId: idText(m.AgentId), Actions: m.Actions, MaxRisk: m.MaxRisk, BudgetUnits: m.BudgetUnits, SpentUnits: spent,
+		Id: m.Id.String(), AgentId: idText(m.AgentId), Actions: m.Actions, MaxRisk: m.MaxRisk, BudgetCount: m.BudgetCount, SpentCount: spent,
 		PolicyRef: m.PolicyRef, Department: m.Department, GrantedBy: idText(m.GrantedBy), ValidFrom: ts(m.ValidFrom), ValidUntil: ts(m.ValidUntil),
 		RevokedAt: tsPtr(m.RevokedAt), RevokedBy: idText(m.RevokedBy), Condition: m.Condition,
 	}
@@ -45,7 +45,7 @@ func (h *mandateHandler) ListMandates(ctx context.Context, req *mandatev1.ListMa
 
 func (h *mandateHandler) GrantMandate(ctx context.Context, req *mandatev1.GrantMandateRequest) (*mandatev1.GrantMandateResponse, error) {
 	input := mandates.Input{
-		Actions: req.GetActions(), MaxRisk: req.GetMaxRisk(), BudgetUnits: req.GetBudgetUnits(), PolicyRef: req.GetPolicyRef(),
+		Actions: req.GetActions(), MaxRisk: req.GetMaxRisk(), BudgetCount: req.GetBudgetCount(), PolicyRef: req.GetPolicyRef(),
 		Days: int(req.GetDays()), Department: req.GetDepartment(), Condition: req.GetCondition(),
 	}
 	if req.GetAgentId() != "" {

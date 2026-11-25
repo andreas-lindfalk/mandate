@@ -62,17 +62,20 @@ The commands below act on the database directly, as the person named with -as. R
   pgmandate person remove -tenant ID -as EMAIL -person ID
   pgmandate agent create -tenant ID -as EMAIL -name NAME [-department D] [-days 90]    prints the token once
   pgmandate agent revoke -tenant ID -as EMAIL -agent ID
-  pgmandate action define -tenant ID -as EMAIL -key a.b [-risk low|medium|high] [-cost N] [-may-execute]
+  pgmandate action define -tenant ID -as EMAIL -key a.b [-risk low|medium|high] [-may-execute]
                           [-connector webhook|builtin] [-url http(s)://...] [-schema '{...}' | -schema-file f.json]
+                          [-wait 168h] [-deliver-within 1h]
                           [-description TEXT] [-department D] [-rotate]          prints a new signing secret once
-                          A webhook needs -url and a schema. -cost defaults to 1 unit; 0 never draws on a
-                          budget. -may-execute lets a mandate allow it without a person; without it, a person
-                          always decides. Changing -url gives a new secret.
+                          A webhook needs -url and a schema. -wait is how long a proposal waits for a decision
+                          before it expires (1m to 720h); -deliver-within how long after a decision its delivery
+                          may be carried out (2m to 168h). -may-execute lets a mandate allow it without a person;
+                          without it, a person always decides. Changing -url gives a new secret.
   pgmandate action remove -tenant ID -as EMAIL -key a.b
   pgmandate actions -tenant ID [-all]
   pgmandate grant -tenant ID -as EMAIL [-agent ID] -actions a.b,c.* [-max-risk low|medium] -budget N -policy REF
                   [-days 90] [-department D] [-condition 'payload.amount <= 500']
-                  Without -agent the mandate covers every agent of the tenant. -condition narrows it by the
+                  -budget is how many executions it may allow per month. Without -agent the mandate
+                  covers every agent of the tenant. -condition narrows it by the
                   payload: fields compared with literals (== != < <= > >= in), combined with && || !.
   pgmandate agent limits -tenant ID -as EMAIL -agent ID -per-minute 30 -per-hour 300
                   How many proposals the agent may make; the database refuses the rest.
@@ -550,7 +553,8 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 	key := flags.String("key", "", "action key")
 	description := flags.String("description", "", "action description")
 	risk := flags.String("risk", mandates.RiskLow, "action risk")
-	cost := flags.Int64("cost", 1, "cost units charged to a mandate's budget; 0 never draws on it")
+	wait := flags.Duration("wait", actions.DefaultWaitLimit, "how long a proposal waits for a decision before it expires")
+	deliverWithin := flags.Duration("deliver-within", actions.DefaultDeliverWithin, "how long after a decision its delivery may be carried out")
 	mayExecute := flags.Bool("may-execute", false, "a mandate may let it run without a person")
 	connector := flags.String("connector", actions.ConnectorWebhook, "webhook or builtin")
 	url := flags.String("url", "", "webhook url")
@@ -564,7 +568,7 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 	rotate := flags.Bool("rotate", false, "rotate the webhook secret")
 	actionList := flags.String("actions", "", "comma separated action patterns")
 	maxRisk := flags.String("max-risk", mandates.RiskLow, "low or medium")
-	budget := flags.Int64("budget", 0, "budget units per month")
+	budget := flags.Int64("budget", 0, "executions a mandate may allow per month")
 	policy := flags.String("policy", "", "policy reference")
 	mandateId := flags.String("mandate", "", "mandate id")
 	proposalId := flags.String("proposal", "", "proposal id")
@@ -672,7 +676,7 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 		}
 		fmt.Fprintln(out, "revoked")
 	case "action define":
-		input := actions.Input{Key: *key, Description: *description, Risk: *risk, CostUnits: *cost, MayExecute: *mayExecute,
+		input := actions.Input{Key: *key, Description: *description, Risk: *risk, WaitLimit: *wait, DeliverWithin: *deliverWithin, MayExecute: *mayExecute,
 			Connector: *connector, Url: *url, RotateSecret: *rotate, Department: *department}
 		if *schemaFile != "" {
 			raw, err := os.ReadFile(*schemaFile) //nolint:gosec // a file the operator names on the command line
@@ -742,7 +746,7 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 		}
 	case "grant":
 		input := mandates.Input{
-			Actions: splitList(*actionList), MaxRisk: *maxRisk, BudgetUnits: *budget, PolicyRef: *policy, Days: *days, Department: *department, Condition: *condition,
+			Actions: splitList(*actionList), MaxRisk: *maxRisk, BudgetCount: *budget, PolicyRef: *policy, Days: *days, Department: *department, Condition: *condition,
 		}
 		if *agentId != "" {
 			id, err := uuid.Parse(*agentId)
@@ -926,8 +930,8 @@ func printMandate(out io.Writer, m mandates.Mandate, spent int64) {
 	if m.RevokedAt != nil {
 		state = "revoked " + m.RevokedAt.UTC().Format("2006-01-02")
 	}
-	fmt.Fprintf(out, "mandate %s: %s may %s up to %s risk, %d of %d units this month, policy %q, %s\n",
-		m.Id, agent, strings.Join(m.Actions, ", "), m.MaxRisk, spent, m.BudgetUnits, m.PolicyRef, state)
+	fmt.Fprintf(out, "mandate %s: %s may %s up to %s risk, %d of %d executions this month, policy %q, %s\n",
+		m.Id, agent, strings.Join(m.Actions, ", "), m.MaxRisk, spent, m.BudgetCount, m.PolicyRef, state)
 	if m.Condition != "" {
 		fmt.Fprintf(out, "  when %s\n", m.Condition)
 	}
@@ -946,7 +950,7 @@ func printAction(out io.Writer, e actions.Action) {
 	if e.MayExecute {
 		execute = "may execute under a mandate"
 	}
-	fmt.Fprintf(out, "action %-24s %-7s %d unit(s)  %s  %s%s\n", e.Key, e.Risk, e.CostUnits, execute, connector, state)
+	fmt.Fprintf(out, "action %-24s %-7s waits %s  %s  %s%s\n", e.Key, e.Risk, e.WaitLimit, execute, connector, state)
 }
 
 func printDelivery(out io.Writer, d deliveries.Delivery) {

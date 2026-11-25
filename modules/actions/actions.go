@@ -1,5 +1,5 @@
 // Package actions holds what agents may propose, as owners define it: a
-// key, a payload schema, a default risk, a cost, whether a mandate may ever
+// key, a payload schema, a default risk, how long its proposals may wait, whether a mandate may ever
 // let it run without a person, and the connector that carries it out.
 package actions
 
@@ -39,12 +39,28 @@ const (
 	secretBytes  = 24
 )
 
+// How long a proposal may wait for a decision, and how long after a decision
+// its delivery may be carried out: an action's defaults and their bounds,
+// which the database holds too.
+const (
+	DefaultWaitLimit     = 7 * 24 * time.Hour
+	MinWaitLimit         = time.Minute
+	MaxWaitLimit         = 30 * 24 * time.Hour
+	DefaultDeliverWithin = time.Hour
+	MinDeliverWithin     = 2 * time.Minute
+	MaxDeliverWithin     = 7 * 24 * time.Hour
+)
+
 type Action struct {
-	Id            uuid.UUID
-	Key           string
-	Description   string
-	Risk          string
-	CostUnits     int64
+	Id          uuid.UUID
+	Key         string
+	Description string
+	Risk        string
+	// WaitLimit is how long a proposal for it may wait for a decision, and
+	// DeliverWithin how long after a decision its delivery may be carried
+	// out. Both are fixed on each proposal when it is made.
+	WaitLimit     time.Duration
+	DeliverWithin time.Duration
 	MayExecute    bool
 	Schema        json.RawMessage
 	ConnectorKind string
@@ -67,9 +83,12 @@ type Input struct {
 	Key         string
 	Description string
 	Risk        string
-	CostUnits   int64
-	MayExecute  bool
-	Schema      json.RawMessage
+	// WaitLimit and DeliverWithin default to DefaultWaitLimit and
+	// DefaultDeliverWithin when zero.
+	WaitLimit     time.Duration
+	DeliverWithin time.Duration
+	MayExecute    bool
+	Schema        json.RawMessage
 	// Connector is webhook or builtin.
 	Connector string
 	// Url is the webhook's address; empty for builtin.
@@ -102,6 +121,12 @@ func (s *Service) SetOnMoved(onMoved OnMoved) {
 // is returned once; so does a rotation. Defining a removed action again
 // restores it.
 func (s *Service) Define(ctx context.Context, input Input) (Action, string, error) {
+	if input.WaitLimit == 0 {
+		input.WaitLimit = DefaultWaitLimit
+	}
+	if input.DeliverWithin == 0 {
+		input.DeliverWithin = DefaultDeliverWithin
+	}
 	tenantId, ok := actor.TenantFrom(ctx)
 	if !ok {
 		return Action{}, "", fault.New(fault.InvalidArgument, "no tenant in scope")
@@ -116,8 +141,10 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, string, erro
 		return Action{}, "", fault.New(fault.InvalidArgument, "the description can be at most 1000 characters")
 	case mandates.RiskRank(input.Risk) < 0:
 		return Action{}, "", fault.New(fault.InvalidArgument, "the risk is low, medium or high")
-	case input.CostUnits < 0 || input.CostUnits > 1_000_000_000:
-		return Action{}, "", fault.New(fault.InvalidArgument, "the cost is 0 or more units")
+	case input.WaitLimit != 0 && (input.WaitLimit < MinWaitLimit || input.WaitLimit > MaxWaitLimit || input.WaitLimit%time.Second != 0):
+		return Action{}, "", fault.New(fault.InvalidArgument, "a proposal may wait between 1 minute and 30 days, in whole seconds")
+	case input.DeliverWithin != 0 && (input.DeliverWithin < MinDeliverWithin || input.DeliverWithin > MaxDeliverWithin || input.DeliverWithin%time.Second != 0):
+		return Action{}, "", fault.New(fault.InvalidArgument, "a decision may be delivered within 2 minutes to 7 days, in whole seconds")
 	case input.Connector != ConnectorWebhook && input.Connector != ConnectorBuiltin:
 		return Action{}, "", fault.New(fault.InvalidArgument, "the connector is webhook or builtin")
 	case input.Connector == ConnectorWebhook && !validUrl(input.Url):
@@ -177,7 +204,8 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, string, erro
 		eventType := "action.defined"
 		if created {
 			if err := q.InsertAction(ctx, repo.InsertActionParams{
-				Id: id, TenantId: tenantId, Key: input.Key, Description: input.Description, Risk: input.Risk, CostUnits: input.CostUnits,
+				Id: id, TenantId: tenantId, Key: input.Key, Description: input.Description, Risk: input.Risk,
+				WaitSeconds: int64(input.WaitLimit / time.Second), DeliverSeconds: int64(input.DeliverWithin / time.Second),
 				MayExecute: input.MayExecute, Schema: schema, ConnectorKind: input.Connector, ConnectorUrl: url, ConnectorSecret: secretBytes, Department: department,
 			}); err != nil {
 				return err
@@ -193,12 +221,14 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, string, erro
 			// builtin action; it is never read back.
 			if secretBytes != nil || input.Connector == ConnectorBuiltin {
 				err = q.UpdateActionWithSecret(ctx, repo.UpdateActionWithSecretParams{
-					Id: id, Description: input.Description, Risk: input.Risk, CostUnits: input.CostUnits, MayExecute: input.MayExecute,
+					Id: id, Description: input.Description, Risk: input.Risk, MayExecute: input.MayExecute,
+					WaitSeconds: int64(input.WaitLimit / time.Second), DeliverSeconds: int64(input.DeliverWithin / time.Second),
 					Schema: schema, ConnectorKind: input.Connector, ConnectorUrl: url, ConnectorSecret: secretBytes, Department: department,
 				})
 			} else {
 				err = q.UpdateAction(ctx, repo.UpdateActionParams{
-					Id: id, Description: input.Description, Risk: input.Risk, CostUnits: input.CostUnits, MayExecute: input.MayExecute,
+					Id: id, Description: input.Description, Risk: input.Risk, MayExecute: input.MayExecute,
+					WaitSeconds: int64(input.WaitLimit / time.Second), DeliverSeconds: int64(input.DeliverWithin / time.Second),
 					Schema: schema, ConnectorKind: input.Connector, ConnectorUrl: url, Department: department,
 				})
 			}
@@ -221,7 +251,8 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, string, erro
 		// Where an action delivers and what it accepts are what an auditor
 		// most needs to see change; the chain holds their digests.
 		payload := map[string]any{
-			"key": input.Key, "risk": input.Risk, "costUnits": input.CostUnits, "mayExecute": input.MayExecute,
+			"key": input.Key, "risk": input.Risk, "waitSeconds": int64(input.WaitLimit / time.Second),
+			"deliverSeconds": int64(input.DeliverWithin / time.Second), "mayExecute": input.MayExecute,
 			"connector": input.Connector, "secretRotated": secret != "", "department": department,
 		}
 		if input.Url != "" {
@@ -335,7 +366,8 @@ func newSecret() (string, error) {
 
 func toAction(row repo.GetActionByKeyRow) Action {
 	e := Action{
-		Id: row.Id, Key: row.Key, Description: row.Description, Risk: row.Risk, CostUnits: row.CostUnits, MayExecute: row.MayExecute,
+		Id: row.Id, Key: row.Key, Description: row.Description, Risk: row.Risk, MayExecute: row.MayExecute,
+		WaitLimit: time.Duration(row.WaitSeconds) * time.Second, DeliverWithin: time.Duration(row.DeliverSeconds) * time.Second,
 		ConnectorKind: row.ConnectorKind, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, RemovedAt: row.RemovedAt,
 	}
 	if len(row.Schema) > 0 {

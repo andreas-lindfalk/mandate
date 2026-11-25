@@ -14,7 +14,7 @@ import { api } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { errorText } from "@/lib/errors";
 import { cn } from "@/lib/utils";
-import { formatDateTime, formatRelative, riskLabel, riskTone, units } from "@/lib/format";
+import { durationLabel, formatDateTime, formatRelative, riskLabel, riskTone } from "@/lib/format";
 import { useSession } from "@/lib/session";
 
 function CopyButton({ text, label }: { text: string; label: string }) {
@@ -305,7 +305,8 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
   const [key, setKey] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [risk, setRisk] = React.useState("low");
-  const [cost, setCost] = React.useState("1");
+  const [waitHours, setWaitHours] = React.useState("168");
+  const [deliverMinutes, setDeliverMinutes] = React.useState("60");
   const [mayExecute, setMayExecute] = React.useState(false);
   const [connector, setConnector] = React.useState("webhook");
   const [url, setUrl] = React.useState("");
@@ -321,7 +322,8 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
     setKey(existing?.key ?? "");
     setDescription(existing?.description ?? "");
     setRisk(existing?.risk ?? "low");
-    setCost(String(existing?.costUnits ?? 1));
+    setWaitHours(String(existing?.waitSeconds ? Number(existing.waitSeconds) / 3600 : 168));
+    setDeliverMinutes(String(existing?.deliverSeconds ? Number(existing.deliverSeconds) / 60 : 60));
     setMayExecute(existing?.mayExecute ?? false);
     setConnector(existing?.connector ?? "webhook");
     setUrl(existing?.connectorUrl ?? "");
@@ -350,7 +352,8 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
         key: key.trim(),
         description,
         risk,
-        costUnits: BigInt(Number(cost) || 0),
+        waitSeconds: BigInt(Math.round((Number(waitHours) || 0) * 3600)),
+        deliverSeconds: BigInt(Math.round((Number(deliverMinutes) || 0) * 60)),
         mayExecute: mayExecute && !highWebhook,
         connector,
         connectorUrl: connector === "webhook" ? url.trim() : "",
@@ -414,8 +417,11 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
                     ]}
                   />
                 </Field>
-                <Field label="Cost, units" htmlFor="action-cost" hint="Counted against a mandate's budget.">
-                  <Input id="action-cost" type="number" min={0} value={cost} onChange={(e) => setCost(e.target.value)} />
+                <Field label="Waits up to, hours" htmlFor="action-wait" hint="Then the proposal expires. 1 minute to 720 hours.">
+                  <Input id="action-wait" type="number" min={1 / 60} max={720} step="any" value={waitHours} onChange={(e) => setWaitHours(e.target.value)} />
+                </Field>
+                <Field label="Carried out within, minutes" htmlFor="action-deliver" hint="After a decision. 2 to 10080.">
+                  <Input id="action-deliver" type="number" min={2} max={10080} step="any" value={deliverMinutes} onChange={(e) => setDeliverMinutes(e.target.value)} />
                 </Field>
               </div>
               <label className={cn("flex items-start gap-2 text-[13.5px]", highWebhook && "text-muted")}>
@@ -511,7 +517,7 @@ function ActionRow({ action, isOwner, allowBuiltin, onChanged }: { action: Actio
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-[13px] text-accent">{action.key}</span>
         <Badge tone={riskTone[action.risk] ?? "neutral"}>{riskLabel[action.risk] ?? action.risk}</Badge>
-        <Badge tone="neutral">costs {units(action.costUnits)}</Badge>
+        <Badge tone="neutral">waits up to {durationLabel(action.waitSeconds)}</Badge>
         <Badge tone={action.mayExecute ? "success" : "neutral"}>{action.mayExecute ? "can be delegated" : "a person always decides"}</Badge>
         {action.builtinOnly ? <Badge tone="neutral">built in</Badge> : null}
         {action.removedAt ? <Badge tone="neutral">removed</Badge> : null}

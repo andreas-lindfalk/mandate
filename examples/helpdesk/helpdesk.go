@@ -1,7 +1,7 @@
 // Package helpdesk is the example host: a ticket system whose actions an
 // agent may propose. It shows what a host provides: a migration whose
 // tables name their proposal and are guarded by mandate.may_write_for, and
-// actions with a schema, a risk, a cost and the code that applies them.
+// actions with a schema, a risk and the code that applies them.
 package helpdesk
 
 import (
@@ -63,7 +63,7 @@ type refundPayload struct {
 func Actions() []pgmandate.Action {
 	return []pgmandate.Action{
 		{
-			Key: "tickets.create", Description: "Open a ticket.", Risk: pgmandate.RiskLow, CostUnits: 1, MayExecute: true,
+			Key: "tickets.create", Description: "Open a ticket.", Risk: pgmandate.RiskLow, MayExecute: true,
 			Schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["subject","body"],"properties":{
 				"subject":{"type":"string","minLength":1,"maxLength":200},
 				"body":{"type":"string","maxLength":5000},
@@ -71,7 +71,7 @@ func Actions() []pgmandate.Action {
 			Apply: createTicket,
 		},
 		{
-			Key: "tickets.close", Description: "Close a ticket with a resolution.", Risk: pgmandate.RiskMedium, CostUnits: 1, MayExecute: true,
+			Key: "tickets.close", Description: "Close a ticket with a resolution.", Risk: pgmandate.RiskMedium, MayExecute: true,
 			Schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["ticket_id","resolution"],"properties":{
 				"ticket_id":{"type":"string","format":"uuid"},
 				"resolution":{"type":"string","minLength":1,"maxLength":2000}}}`),
@@ -79,7 +79,7 @@ func Actions() []pgmandate.Action {
 		},
 		{
 			Key: "refunds.issue", Description: fmt.Sprintf("Refund the customer of a ticket. Medium risk below %d, high from %d: a person always decides large refunds.", LargeRefund, LargeRefund),
-			Risk: pgmandate.RiskHigh, CostUnits: 5, MayExecute: true,
+			Risk: pgmandate.RiskHigh, MayExecute: true,
 			Schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["ticket_id","amount","reason"],"properties":{
 				"ticket_id":{"type":"string","format":"uuid"},
 				"amount":{"type":"number","exclusiveMinimum":0},

@@ -22,7 +22,11 @@ func toBasis(b *proposals.ExecutionBasis) *mandatev1.ExecutionBasis {
 	if b == nil {
 		return nil
 	}
-	return &mandatev1.ExecutionBasis{MandateId: b.MandateId.String(), PolicyRef: b.PolicyRef, MaxRisk: b.MaxRisk, BudgetUnits: b.BudgetUnits, SpentUnits: b.SpentUnits, CostUnits: b.CostUnits, Condition: b.Condition}
+	out := &mandatev1.ExecutionBasis{MandateId: b.MandateId.String(), PolicyRef: b.PolicyRef, MaxRisk: b.MaxRisk, Condition: b.Condition}
+	for _, budget := range b.Budgets {
+		out.Budgets = append(out.Budgets, &mandatev1.Budget{Kind: budget.Kind, Limit: budget.Limit, Spent: budget.Spent})
+	}
+	return out
 }
 
 func toDelivery(d deliveries.Delivery) *mandatev1.Delivery {
@@ -35,7 +39,7 @@ func toDelivery(d deliveries.Delivery) *mandatev1.Delivery {
 func toProposal(p proposals.Proposal, agentName, skipReason string, delivery *deliveries.Delivery) *mandatev1.Proposal {
 	out := &mandatev1.Proposal{
 		Id: p.Id.String(), AgentId: p.AgentId.String(), AgentName: agentName, RunId: p.RunId, Action: p.Action, Risk: p.Risk, Title: p.Title,
-		PayloadJson: string(p.Payload), CostUnits: p.CostUnits, Flags: p.Flags, Status: p.Status, Edited: p.Edited, DecidedBy: idText(p.DecidedBy),
+		PayloadJson: string(p.Payload), ExpiresAt: ts(p.ExpiresAt), Flags: p.Flags, Status: p.ShownStatus(), Edited: p.Edited, DecidedBy: idText(p.DecidedBy),
 		DecidedAt: tsText(p.DecidedAt), DecisionNote: p.DecisionNote, CreatedAt: tsText(&p.CreatedAt), ExecutionBasis: toBasis(p.ExecutionBasis),
 		SkipReason: skipReason, ProposedPayloadJson: string(p.ProposedPayload), Rationale: p.Rationale,
 		Provenance: &mandatev1.Provenance{

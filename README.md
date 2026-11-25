@@ -47,7 +47,7 @@ That rule on the payload is written in CEL, the expression language Kubernetes u
 - The service evaluates it to choose a mandate, and Postgres evaluates it again on the payload actually executed.
 - Anything it cannot evaluate goes to a person. See [rules on the payload](docs/scope.md#rules-on-the-payload).
 
-Each action has a risk its owner sets: low, medium or high. A mandate covers actions only up to the risk it names, and high risk always goes to a person. This example assumes refunds are defined as medium risk; in the demo below they are high, so they always wait. The budget of 40 counts each refund at its action's cost of 1.
+Each action has a risk its owner sets: low, medium or high. A mandate covers actions only up to the risk it names, and high risk always goes to a person. This example assumes refunds are defined as medium risk; in the demo below they are high, so they always wait. The budget of 40 counts executions: once 40 refunds have run this month, the rest wait for a person.
 
 The decided proposal is delivered, signed, to a small receiver next to your system, which checks the facts it is given and does the write. What the receiver answers goes back to the agent.
 
@@ -92,7 +92,7 @@ make run     # the UI, the API and MCP on http://127.0.0.1:8585  also needs Node
 
 `make demo` sets up a tenant, an owner, an agent, three webhook actions and a mandate, with a small receiver standing in for a helpdesk. The agent then proposes over MCP, exactly as any MCP client would. The demo prints eleven steps:
 
-1. The setup: tenant, owner, agent, three actions, one mandate for `tickets.*` up to low risk with a budget of three units.
+1. The setup: tenant, owner, agent, three actions, one mandate for `tickets.*` up to low risk with a budget of three executions a month.
 2. The agent asks what it may do.
 3. A ticket within the mandate is allowed at once, delivered with a signature the helpdesk verifies, and the helpdesk's answer comes back to the agent.
 4. Closing a ticket is medium risk, above the mandate: it waits for a person, and the reason is recorded.
@@ -159,7 +159,7 @@ go build -o pgmandate ./cmd/pgmandate      # the command line, as ./pgmandate in
 T=<the tenant id it printed>
 
 # What the agent may ask for, and where it goes. The secret is printed once.
-./pgmandate action define -tenant $T -as alice@acme.example -key tickets.create -risk low -cost 1 -may-execute \
+./pgmandate action define -tenant $T -as alice@acme.example -key tickets.create -risk low -may-execute \
   -url http://127.0.0.1:8586/ -schema '{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}'
 
 ./pgmandate receiver -secrets mws_...      # in another terminal, in this directory: your system, for now
@@ -170,7 +170,7 @@ T=<the tenant id it printed>
 make run                                   # then connect the agent as above
 ```
 
-The agent's `tickets.create` proposals are now allowed and delivered, twenty units a month; everything else waits in the inbox at http://127.0.0.1:8585. Without `-may-execute` a person always decides, and without `-agent` a mandate covers every agent of the tenant. `action define` sets the whole definition each time: a flag left out goes back to its default. Replace the receiver with your own (below).
+The agent's `tickets.create` proposals are now allowed and delivered, twenty a month; everything else waits in the inbox at http://127.0.0.1:8585. Without `-may-execute` a person always decides, and without `-agent` a mandate covers every agent of the tenant. `action define` sets the whole definition each time: a flag left out goes back to its default. Replace the receiver with your own (below).
 
 ## Running it
 
@@ -265,9 +265,9 @@ Agents repeat themselves: a tool call times out and is sent again, or a model is
 
 ## The rules, in one place
 
-- A proposal is allowed without a person only if **all** of these hold: the action is defined as one that can be delegated, a person granted a mandate that is live now and covers the agent and the action, the proposal's risk is within the mandate, the mandate's condition, if it has one, is true for the payload, nothing was flagged, and the month's budget has room for the cost. The agent and the inbox are told which one failed.
+- A proposal is allowed without a person only if **all** of these hold: the action is defined as one that can be delegated, a person granted a mandate that is live now and covers the agent and the action, the proposal's risk is within the mandate, the mandate's condition, if it has one, is true for the payload, nothing was flagged, and the mandate has room left in its count for the month. The agent and the inbox are told which one failed.
 - A mandate allows low or medium risk. High is never delegated. A person's edit is assessed again and can only raise the risk.
-- The action as it is when the decision is made counts. A proposal whose payload no longer fits the action's schema, whose action's cost changed, or whose action's risk was raised since it was proposed waits for a person, who approves it at the action's current risk or edits it to fit.
+- The action as it is when the decision is made counts. A proposal whose payload no longer fits the action's schema, or whose action's risk was raised since it was proposed, waits for a person, who approves it at the action's current risk or edits it to fit.
 - A delivery is recorded in the transaction that makes the decision, and only to the action's own connector. The log names the payload that was proposed, the one decided on and the body that was sent, as digests.
 - Only a person decides. Only an owner grants mandates, defines actions and adds or removes people. Only the system allows under a mandate, and only inside the transaction that names the proposal, with a basis the database checks against the mandate: coverage, risk limit, condition, policy reference, budget and this month's spend.
 - The log is append-only and hash linked per tenant, and each event carries the actor of its session. It is **tamper-evident, not tamper-proof**: an edit, a removal or a forged actor by the application is refused or detectable, and an export verifies offline, but someone who owns the database could rebuild it. Keep the latest hash somewhere the database owner cannot reach.
@@ -284,11 +284,12 @@ The terms follow [docs/scope.md](docs/scope.md#the-terms).
 
 | Term | Meaning | Elsewhere called |
 |---|---|---|
-| Action | Something an agent may ask to have done, such as `tickets.create`, with a payload schema (required for a webhook), a risk and a cost | Tool call, operation |
+| Action | Something an agent may ask to have done, such as `tickets.create`, with a payload schema (required for a webhook), a risk, and how long a proposal for it may wait | Tool call, operation |
 | Proposal | One request by an agent to have an action carried out, with its justification: rationale, evidence and provenance | Approval request, human in the loop |
 | Condition | A CEL expression on the payload that narrows a mandate, such as `payload.amount <= 500`; the database evaluates it again | Policy rule, guard |
 | Mandate | A person's standing permission for an agent: which actions, up to which risk, within which budget, under which policy reference, until when | Delegation, standing authorisation |
-| Budget | What a mandate may allow per calendar month, today in units of the actions' fixed costs. The [roadmap](docs/roadmap.md) makes it a plain count, and later adds money as a second limit | Spend limit |
+| Budget | How many executions a mandate may allow per calendar month. Money as a second limit is on the [roadmap](docs/roadmap.md) | Spend limit |
+| Expiry | A proposal nobody decides before its action's waiting time is up expires: nothing is done, and the agent is told | Timeout |
 | Policy reference | The name of the document a mandate rests on, recorded with every decision it allows. The document is not stored or checked | Policy |
 | Execution basis | What allowed a proposal without a person: the mandate, its policy reference, its risk limit, its condition and the budget at that moment | Authorisation record |
 | Connector, receiver | Where a decided proposal is sent to be carried out: a signed webhook address, and the service that answers there next to your system | Integration, webhook target |
