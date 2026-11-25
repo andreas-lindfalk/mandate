@@ -25,9 +25,11 @@ import (
 	"github.com/andreas-lindfalk/pgmandate"
 	"github.com/andreas-lindfalk/pgmandate/examples/webhook"
 	"github.com/andreas-lindfalk/pgmandate/internal/testfix"
+	"github.com/andreas-lindfalk/pgmandate/modules/auth"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/testkit"
 	"github.com/andreas-lindfalk/pgmandate/pkg/version"
+	"github.com/andreas-lindfalk/pgmandate/sign"
 )
 
 // demoTenant finds the tenant id the demo printed.
@@ -435,4 +437,77 @@ func TestTheFrontDoorLimitsFailures(t *testing.T) {
 		require.Equal(t, http.StatusUnauthorized, ask("bad"))
 	}
 	require.Equal(t, http.StatusTooManyRequests, ask("good"))
+}
+
+// A signing key file is made once only when asked, and reused after.
+func TestTheSigningKeyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keys", "signing-key")
+	_, err := keyFile(path, false)
+	require.Error(t, err, "a missing file is an error unless making one was asked for")
+	made, err := keyFile(path, true)
+	require.NoError(t, err)
+	_, err = sign.ParseSeed(made)
+	require.NoError(t, err)
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	again, err := keyFile(path, true)
+	require.NoError(t, err)
+	require.Equal(t, made, again, "kept, not made again")
+	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".signing-key-*"))
+	require.NoError(t, err)
+	require.Empty(t, leftovers, "no temporary file is left")
+	empty := filepath.Join(t.TempDir(), "empty-key")
+	require.NoError(t, os.WriteFile(empty, nil, 0o600))
+	_, err = keyFile(empty, true)
+	require.ErrorContains(t, err, "is empty", "an empty file is never read as no key")
+
+	t.Setenv("MANDATE_SIGNING_KEY_FILE", filepath.Join(t.TempDir(), "absent"))
+	t.Setenv("MANDATE_SIGNING_KEY_CREATE", "")
+	cfg, err := loadConfig()
+	require.NoError(t, err)
+	cfg.httpAddr = "0.0.0.0:8585"
+	_, _, err = signingKeys(cfg)
+	require.Error(t, err, "a mistyped path never quietly makes a key")
+	t.Setenv("MANDATE_SIGNING_KEY_CREATE", "yes please")
+	_, _, err = signingKeys(cfg)
+	require.ErrorContains(t, err, "true or false")
+	t.Setenv("MANDATE_SIGNING_KEY_CREATE", "true")
+	signer, _, err := signingKeys(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, signer)
+}
+
+// The server writes the setup link while nobody has set pgmandate up, and
+// then never again; an operator gets a person back in with sign-in-link.
+func TestTheSetupLinkAndSignInLink(t *testing.T) {
+	ctx := context.Background()
+	pg, err := testkit.StartPostgres(ctx)
+	require.NoError(t, err)
+	defer pg.Close()
+	authService := auth.NewService(pg.App, auth.Config{PublicUrl: "http://localhost:8585"})
+	var out bytes.Buffer
+	require.NoError(t, announceSetup(ctx, authService, "http://localhost:8585/", &out))
+	link := submatch(t, `(http://localhost:8585/setup#[A-Za-z0-9_-]{43})`, out.String())
+	session, err := authService.SetUp(ctx, link[strings.Index(link, "#")+1:], "Acme", "Alice", "alice@acme.example")
+	require.NoError(t, err)
+	require.NotEmpty(t, session)
+	out.Reset()
+	require.NoError(t, announceSetup(ctx, authService, "http://localhost:8585", &out))
+	require.Empty(t, out.String(), "set up: no link any more")
+
+	t.Setenv("MANDATE_DATABASE_URL", pg.OwnerUrl)
+	t.Setenv("MANDATE_APP_PASSWORD", "app")
+	t.Setenv("MANDATE_PUBLIC_URL", "http://localhost:8585")
+	var tenantId string
+	require.NoError(t, pg.Owner.QueryRow(ctx, `SELECT id::text FROM mandate.tenants`).Scan(&tenantId))
+	out.Reset()
+	require.NoError(t, run(ctx, "sign-in-link", []string{"-tenant", tenantId, "-email", "alice@acme.example"}, &out))
+	personLink := submatch(t, `(http://localhost:8585/sign-in#[A-Za-z0-9_-]{43})`, out.String())
+	again, err := authService.RedeemLink(ctx, personLink[strings.Index(personLink, "#")+1:])
+	require.NoError(t, err)
+	me, err := authService.Authenticate(ctx, again)
+	require.NoError(t, err)
+	require.Equal(t, "alice@acme.example", me.Email)
+	require.Error(t, run(ctx, "sign-in-link", []string{"-tenant", tenantId, "-email", "nobody@acme.example"}, &out), "only a person of the tenant")
 }

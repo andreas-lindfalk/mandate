@@ -7,6 +7,7 @@ import { useSession } from "@/lib/session";
 import { AgentsPage } from "@/pages/AgentsPage";
 import { EvidencePage } from "@/pages/EvidencePage";
 import { InboxPage } from "@/pages/InboxPage";
+import { SetupPage, SignInLinkPage } from "@/pages/LinkPages";
 import { LoginPage, TenantPickerPage } from "@/pages/LoginPage";
 import { MandatesPage } from "@/pages/MandatesPage";
 import { PeoplePage } from "@/pages/PeoplePage";
@@ -73,6 +74,8 @@ export default function App() {
     <ErrorBoundary>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/setup" element={<SetupPage />} />
+        <Route path="/sign-in" element={<SignInLinkPage />} />
         <Route
           element={
             <RequireSession>

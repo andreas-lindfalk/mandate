@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file mandate/v1/auth.proto.
  */
 export const file_mandate_v1_auth: GenFile = /*@__PURE__*/
-  fileDesc("ChVtYW5kYXRlL3YxL2F1dGgucHJvdG8SCm1hbmRhdGUudjEiFgoUU2lnbkluTWV0aG9kc1JlcXVlc3QiOAoVU2lnbkluTWV0aG9kc1Jlc3BvbnNlEhEKCWRldl9sb2dpbhgBIAEoCBIMCgRvaWRjGAIgASgIIi4KD0RldkxvZ2luUmVxdWVzdBINCgVlbWFpbBgBIAEoCRIMCgRuYW1lGAIgASgJIiEKEERldkxvZ2luUmVzcG9uc2USDQoFdG9rZW4YASABKAkiDwoNTG9nb3V0UmVxdWVzdCIQCg5Mb2dvdXRSZXNwb25zZSILCglNZVJlcXVlc3QieQoKTWVSZXNwb25zZRINCgVlbWFpbBgBIAEoCRIMCgRuYW1lGAIgASgJEi0KB3RlbmFudHMYAyADKAsyHC5tYW5kYXRlLnYxLlRlbmFudE1lbWJlcnNoaXASEQoJZGV2X2xvZ2luGAQgASgIEgwKBG9pZGMYBSABKAgiWwoQVGVuYW50TWVtYmVyc2hpcBIRCgl0ZW5hbnRfaWQYASABKAkSEwoLdGVuYW50X25hbWUYAiABKAkSEQoJcGVyc29uX2lkGAMgASgJEgwKBHJvbGUYBCABKAkyoAIKC0F1dGhTZXJ2aWNlElQKDVNpZ25Jbk1ldGhvZHMSIC5tYW5kYXRlLnYxLlNpZ25Jbk1ldGhvZHNSZXF1ZXN0GiEubWFuZGF0ZS52MS5TaWduSW5NZXRob2RzUmVzcG9uc2USRQoIRGV2TG9naW4SGy5tYW5kYXRlLnYxLkRldkxvZ2luUmVxdWVzdBocLm1hbmRhdGUudjEuRGV2TG9naW5SZXNwb25zZRI/CgZMb2dvdXQSGS5tYW5kYXRlLnYxLkxvZ291dFJlcXVlc3QaGi5tYW5kYXRlLnYxLkxvZ291dFJlc3BvbnNlEjMKAk1lEhUubWFuZGF0ZS52MS5NZVJlcXVlc3QaFi5tYW5kYXRlLnYxLk1lUmVzcG9uc2VCQ1pBZ2l0aHViLmNvbS9hbmRyZWFzLWxpbmRmYWxrL3BnbWFuZGF0ZS9nZW4vZ28vbWFuZGF0ZS92MTttYW5kYXRldjFiBnByb3RvMw");
+  fileDesc("ChVtYW5kYXRlL3YxL2F1dGgucHJvdG8SCm1hbmRhdGUudjEiFgoUU2lnbkluTWV0aG9kc1JlcXVlc3QiTwoVU2lnbkluTWV0aG9kc1Jlc3BvbnNlEhEKCWRldl9sb2dpbhgBIAEoCBIMCgRvaWRjGAIgASgIEhUKDXNldHVwX3BlbmRpbmcYAyABKAgiUAoMU2V0VXBSZXF1ZXN0Eg0KBXRva2VuGAEgASgJEhQKDG9yZ2FuaXNhdGlvbhgCIAEoCRIMCgRuYW1lGAMgASgJEg0KBWVtYWlsGAQgASgJIh4KDVNldFVwUmVzcG9uc2USDQoFdG9rZW4YASABKAkiIgoRUmVkZWVtTGlua1JlcXVlc3QSDQoFdG9rZW4YASABKAkiIwoSUmVkZWVtTGlua1Jlc3BvbnNlEg0KBXRva2VuGAEgASgJIi4KD0RldkxvZ2luUmVxdWVzdBINCgVlbWFpbBgBIAEoCRIMCgRuYW1lGAIgASgJIiEKEERldkxvZ2luUmVzcG9uc2USDQoFdG9rZW4YASABKAkiDwoNTG9nb3V0UmVxdWVzdCIQCg5Mb2dvdXRSZXNwb25zZSILCglNZVJlcXVlc3QieQoKTWVSZXNwb25zZRINCgVlbWFpbBgBIAEoCRIMCgRuYW1lGAIgASgJEi0KB3RlbmFudHMYAyADKAsyHC5tYW5kYXRlLnYxLlRlbmFudE1lbWJlcnNoaXASEQoJZGV2X2xvZ2luGAQgASgIEgwKBG9pZGMYBSABKAgiWwoQVGVuYW50TWVtYmVyc2hpcBIRCgl0ZW5hbnRfaWQYASABKAkSEwoLdGVuYW50X25hbWUYAiABKAkSEQoJcGVyc29uX2lkGAMgASgJEgwKBHJvbGUYBCABKAkyqwMKC0F1dGhTZXJ2aWNlElQKDVNpZ25Jbk1ldGhvZHMSIC5tYW5kYXRlLnYxLlNpZ25Jbk1ldGhvZHNSZXF1ZXN0GiEubWFuZGF0ZS52MS5TaWduSW5NZXRob2RzUmVzcG9uc2USRQoIRGV2TG9naW4SGy5tYW5kYXRlLnYxLkRldkxvZ2luUmVxdWVzdBocLm1hbmRhdGUudjEuRGV2TG9naW5SZXNwb25zZRI8CgVTZXRVcBIYLm1hbmRhdGUudjEuU2V0VXBSZXF1ZXN0GhkubWFuZGF0ZS52MS5TZXRVcFJlc3BvbnNlEksKClJlZGVlbUxpbmsSHS5tYW5kYXRlLnYxLlJlZGVlbUxpbmtSZXF1ZXN0Gh4ubWFuZGF0ZS52MS5SZWRlZW1MaW5rUmVzcG9uc2USPwoGTG9nb3V0EhkubWFuZGF0ZS52MS5Mb2dvdXRSZXF1ZXN0GhoubWFuZGF0ZS52MS5Mb2dvdXRSZXNwb25zZRIzCgJNZRIVLm1hbmRhdGUudjEuTWVSZXF1ZXN0GhYubWFuZGF0ZS52MS5NZVJlc3BvbnNlQkNaQWdpdGh1Yi5jb20vYW5kcmVhcy1saW5kZmFsay9wZ21hbmRhdGUvZ2VuL2dvL21hbmRhdGUvdjE7bWFuZGF0ZXYxYgZwcm90bzM");
 
 /**
  * @generated from message mandate.v1.SignInMethodsRequest
@@ -38,6 +38,13 @@ export type SignInMethodsResponse = Message<"mandate.v1.SignInMethodsResponse"> 
    * @generated from field: bool oidc = 2;
    */
   oidc: boolean;
+
+  /**
+   * Nobody has set pgmandate up yet: the setup link is in the server's log.
+   *
+   * @generated from field: bool setup_pending = 3;
+   */
+  setupPending: boolean;
 };
 
 /**
@@ -46,6 +53,95 @@ export type SignInMethodsResponse = Message<"mandate.v1.SignInMethodsResponse"> 
  */
 export const SignInMethodsResponseSchema: GenMessage<SignInMethodsResponse> = /*@__PURE__*/
   messageDesc(file_mandate_v1_auth, 1);
+
+/**
+ * @generated from message mandate.v1.SetUpRequest
+ */
+export type SetUpRequest = Message<"mandate.v1.SetUpRequest"> & {
+  /**
+   * The token from the link, after the "#".
+   *
+   * @generated from field: string token = 1;
+   */
+  token: string;
+
+  /**
+   * The organisation's name, and the first owner's.
+   *
+   * @generated from field: string organisation = 2;
+   */
+  organisation: string;
+
+  /**
+   * @generated from field: string name = 3;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string email = 4;
+   */
+  email: string;
+};
+
+/**
+ * Describes the message mandate.v1.SetUpRequest.
+ * Use `create(SetUpRequestSchema)` to create a new message.
+ */
+export const SetUpRequestSchema: GenMessage<SetUpRequest> = /*@__PURE__*/
+  messageDesc(file_mandate_v1_auth, 2);
+
+/**
+ * @generated from message mandate.v1.SetUpResponse
+ */
+export type SetUpResponse = Message<"mandate.v1.SetUpResponse"> & {
+  /**
+   * The session's token; the answer also sets the session cookie.
+   *
+   * @generated from field: string token = 1;
+   */
+  token: string;
+};
+
+/**
+ * Describes the message mandate.v1.SetUpResponse.
+ * Use `create(SetUpResponseSchema)` to create a new message.
+ */
+export const SetUpResponseSchema: GenMessage<SetUpResponse> = /*@__PURE__*/
+  messageDesc(file_mandate_v1_auth, 3);
+
+/**
+ * @generated from message mandate.v1.RedeemLinkRequest
+ */
+export type RedeemLinkRequest = Message<"mandate.v1.RedeemLinkRequest"> & {
+  /**
+   * @generated from field: string token = 1;
+   */
+  token: string;
+};
+
+/**
+ * Describes the message mandate.v1.RedeemLinkRequest.
+ * Use `create(RedeemLinkRequestSchema)` to create a new message.
+ */
+export const RedeemLinkRequestSchema: GenMessage<RedeemLinkRequest> = /*@__PURE__*/
+  messageDesc(file_mandate_v1_auth, 4);
+
+/**
+ * @generated from message mandate.v1.RedeemLinkResponse
+ */
+export type RedeemLinkResponse = Message<"mandate.v1.RedeemLinkResponse"> & {
+  /**
+   * @generated from field: string token = 1;
+   */
+  token: string;
+};
+
+/**
+ * Describes the message mandate.v1.RedeemLinkResponse.
+ * Use `create(RedeemLinkResponseSchema)` to create a new message.
+ */
+export const RedeemLinkResponseSchema: GenMessage<RedeemLinkResponse> = /*@__PURE__*/
+  messageDesc(file_mandate_v1_auth, 5);
 
 /**
  * @generated from message mandate.v1.DevLoginRequest
@@ -67,7 +163,7 @@ export type DevLoginRequest = Message<"mandate.v1.DevLoginRequest"> & {
  * Use `create(DevLoginRequestSchema)` to create a new message.
  */
 export const DevLoginRequestSchema: GenMessage<DevLoginRequest> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_auth, 2);
+  messageDesc(file_mandate_v1_auth, 6);
 
 /**
  * @generated from message mandate.v1.DevLoginResponse
@@ -84,7 +180,7 @@ export type DevLoginResponse = Message<"mandate.v1.DevLoginResponse"> & {
  * Use `create(DevLoginResponseSchema)` to create a new message.
  */
 export const DevLoginResponseSchema: GenMessage<DevLoginResponse> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_auth, 3);
+  messageDesc(file_mandate_v1_auth, 7);
 
 /**
  * @generated from message mandate.v1.LogoutRequest
@@ -97,7 +193,7 @@ export type LogoutRequest = Message<"mandate.v1.LogoutRequest"> & {
  * Use `create(LogoutRequestSchema)` to create a new message.
  */
 export const LogoutRequestSchema: GenMessage<LogoutRequest> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_auth, 4);
+  messageDesc(file_mandate_v1_auth, 8);
 
 /**
  * @generated from message mandate.v1.LogoutResponse
@@ -110,7 +206,7 @@ export type LogoutResponse = Message<"mandate.v1.LogoutResponse"> & {
  * Use `create(LogoutResponseSchema)` to create a new message.
  */
 export const LogoutResponseSchema: GenMessage<LogoutResponse> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_auth, 5);
+  messageDesc(file_mandate_v1_auth, 9);
 
 /**
  * @generated from message mandate.v1.MeRequest
@@ -123,7 +219,7 @@ export type MeRequest = Message<"mandate.v1.MeRequest"> & {
  * Use `create(MeRequestSchema)` to create a new message.
  */
 export const MeRequestSchema: GenMessage<MeRequest> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_auth, 6);
+  messageDesc(file_mandate_v1_auth, 10);
 
 /**
  * @generated from message mandate.v1.MeResponse
@@ -162,7 +258,7 @@ export type MeResponse = Message<"mandate.v1.MeResponse"> & {
  * Use `create(MeResponseSchema)` to create a new message.
  */
 export const MeResponseSchema: GenMessage<MeResponse> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_auth, 7);
+  messageDesc(file_mandate_v1_auth, 11);
 
 /**
  * @generated from message mandate.v1.TenantMembership
@@ -194,7 +290,7 @@ export type TenantMembership = Message<"mandate.v1.TenantMembership"> & {
  * Use `create(TenantMembershipSchema)` to create a new message.
  */
 export const TenantMembershipSchema: GenMessage<TenantMembership> = /*@__PURE__*/
-  messageDesc(file_mandate_v1_auth, 8);
+  messageDesc(file_mandate_v1_auth, 12);
 
 /**
  * AuthService handles sessions. A session token is sent as
@@ -222,6 +318,29 @@ export const AuthService: GenService<{
     methodKind: "unary";
     input: typeof DevLoginRequestSchema;
     output: typeof DevLoginResponseSchema;
+  },
+  /**
+   * SetUp uses the setup link the server writes to its log while there is
+   * no tenant: it makes the first tenant and its owner, and signs the owner
+   * in. Every link that does not work is refused alike.
+   *
+   * @generated from rpc mandate.v1.AuthService.SetUp
+   */
+  setUp: {
+    methodKind: "unary";
+    input: typeof SetUpRequestSchema;
+    output: typeof SetUpResponseSchema;
+  },
+  /**
+   * RedeemLink uses a person's single-use sign-in link, made with
+   * `pgmandate sign-in-link`, and signs them in.
+   *
+   * @generated from rpc mandate.v1.AuthService.RedeemLink
+   */
+  redeemLink: {
+    methodKind: "unary";
+    input: typeof RedeemLinkRequestSchema;
+    output: typeof RedeemLinkResponseSchema;
   },
   /**
    * @generated from rpc mandate.v1.AuthService.Logout

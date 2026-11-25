@@ -2,6 +2,17 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
+## 2026-11-25: one image and a ten-minute quickstart
+
+Built as [design-quickstart.md](design-quickstart.md) says, with its questions settled there.
+
+- **The image** is published to `ghcr.io/andreas-lindfalk/pgmandate` by the `release` workflow when a `v*` tag is pushed, for amd64 and arm64, with the tag as its version. It has a `/data` the server may write, owned by the user it runs as.
+- **Sign-in links** (`sign_in_links`, hashed, single-use, at most an hour by the table's own check, lifetimes on the database's clock): a setup link the server prints while there is no tenant, which makes the first tenant and its owner and signs them in, in one transaction with the link; and a person's link from `pgmandate sign-in-link`. Both sessions are pinned to their person (`sessions.person_id`). Every link that does not work is refused alike. The web app takes the token from the fragment and signs in by an HttpOnly cookie.
+- **`MANDATE_SIGNING_KEY_CREATE`** makes the key file once, only when asked: written whole to a temporary file and linked into place, so a crash leaves no half key and two servers keep one. An empty key file is an error that names it.
+- **Found in review and closed:** one setup at a time across servers (an advisory lock taken by making a setup link and by using one), so two links never make two tenants; a server that starts while a tenant is being made starts anyway; the database refuses a setup link once a tenant exists, at use as at insert; expired links are deleted with expired sessions, and every link goes with its tenant when the owner purges it.
+- **The links table is global, like sessions,** without row level security: a link is found by its hash before anyone is in scope. The app role can read it as it reads sessions; the threat model says so.
+- **`deploy/quickstart/`**: compose with Postgres and the image, nothing to set by hand, and `smoke.sh`, which the `quickstart` workflow runs on each pull request that touches the server, the web app or `deploy/`, and on `main`. It was run locally: setup, an agent's proposal approved, and a sign-in link redeemed.
+
 ## 2026-11-25: sign-in that holds up
 
 Built as [design-sign-in.md](design-sign-in.md) says; its three questions were answered as proposed.

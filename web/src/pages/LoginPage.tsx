@@ -87,8 +87,19 @@ export function LoginPage() {
               </Button>
             </form>
           ) : null}
-          {!session.devLogin && !session.oidc && !session.loading ? (
-            <p className="mt-7 text-sm text-muted">No sign-in method is configured. Set MANDATE_OIDC_ISSUER, or MANDATE_DEV_LOGIN=true on localhost.</p>
+          {session.setupPending ? (
+            <div className="mt-7 rounded-[var(--radius-card)] border border-accent/40 p-4 text-sm">
+              <p className="font-medium">pgmandate is not set up yet.</p>
+              <p className="mt-1 text-muted">
+                The server wrote a setup link to its log when it started. Open it to create your organisation and sign in as its owner. With
+                the quickstart: <code className="font-mono text-[12px]">docker compose -f deploy/quickstart/compose.yaml logs pgmandate</code>. A restart writes a new one.
+              </p>
+            </div>
+          ) : !session.devLogin && !session.oidc && !session.loading ? (
+            <p className="mt-7 text-sm text-muted">
+              No sign-in provider is configured here. An operator can give you a single-use sign-in link:{" "}
+              <code className="font-mono text-[12px]">pgmandate sign-in-link -tenant … -email …</code>. Or set MANDATE_OIDC_ISSUER.
+            </p>
           ) : null}
           {error ? (
             <p role="alert" className="mt-4 text-sm text-danger">

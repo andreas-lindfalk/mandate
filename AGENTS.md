@@ -24,7 +24,7 @@ It is not a gateway, an identity provider, a policy engine, an agent framework o
 - **Agents are principals of their own.** They act as actor kind `agent`, and the database writes the actor of every log event from the session.
 - **The log is append-only**, hash linked, and verifiable without the database. It is tamper-evident, not tamper-proof. An event names what it is about by digest (`events.Digest`) rather than by content, so payloads stay off the permanent record and a later change to them still shows.
 - **Done once.** Every request that changes something carries a name for itself: an idempotency key from the agent, the proposal's id for the decision, the delivery id to the receiver. A repeat returns the first answer and says it is a repeat. The people API has no such key yet (threat model).
-- **Tenancy is row level security** per tenant on every table with tenant data, with the application role that never bypasses it. Sessions are global, and carry the provider's verified identity and email: a person is reached by the identity they are bound to, and by email only until their first sign-in to a tenant binds them.
+- **Tenancy is row level security** per tenant on every table with tenant data, with the application role that never bypasses it. Sessions are global, and carry the provider's verified identity and email: a person is reached by the identity they are bound to, and by email only until their first sign-in to a tenant binds them. A session from a sign-in link is pinned to its one person instead.
 - **Say what is true.** No claim of compliance, detection or security that the code and the threat model do not back.
 
 ## Technology
@@ -55,7 +55,7 @@ examples/helpdesk/      An embedded host: a ticket table guarded by mandate.may_
 examples/webhook/       A reference receiver of deliveries (contract v2): signature, audience, once, deadline, explicit answer
 examples/refunds/       A receiver that checks each claim in the payload against its own records
 cmd/pgmandate/          The service binary and the operator's command line, with the demo
-deploy/                 Compose and Dockerfile
+deploy/                 Compose and Dockerfile; quickstart/ is the Docker-only quickstart and its smoke test
 docs/                   scope.md (canonical), landscape.md, design.md, design-0.1.md, design-sign-in.md, design-quickstart.md, threat-model.md, roadmap.md, decisions.md,
                         delivery-v2.schema.json (the delivery contract)
 ```
@@ -72,10 +72,10 @@ docs/                   scope.md (canonical), landscape.md, design.md, design-0.
 - **Transactions:** `db.InTx`. Keep them short. Never make outgoing calls inside one. Events are appended in the same transaction as the change; follow-up work is a River job inserted in the same transaction.
 - **SQL:** when a table is added, the same migration decides `tenant_id` and its RLS policy, append-only triggers where rows must not change, `ON DELETE CASCADE` from tenants, and a test that another tenant cannot see the row. Queries inside triggers and functions filter by tenant themselves rather than relying on row level security. From 0.1.0 on, a migration that has reached `main` is never changed. Before 0.1.0 nothing is kept compatible: migrations may be rewritten or folded together, and a local database is reset (`docs/decisions.md`).
 - **Names:** Go uses strict CamelCase (`TenantId`, `HttpClient`). Environment variables are `MANDATE_*`.
-- **Logs:** `log/slog` with fields. Never log payloads, tokens or secrets.
+- **Logs:** `log/slog` with fields. Never log payloads, tokens or secrets. The one exception is the setup link, which the server prints while there is no tenant: single-use, 30 minutes, and for whoever runs the server.
 - **Generation:** `make gen` (buf and sqlc). Generated code (`gen/`, `web/src/gen/`, `sqlc_*.go`) is checked in.
 - **Frontend:** English text, the design tokens in `web/src/index.css`, no raw colour values. `make web` builds it into the binary; `make web-dev` gives hot reload on :5173 against the server on :8585. Checked with `tsc`, oxlint and `pnpm build`.
-- **Secrets:** agent tokens and sessions are stored as hashes, notifier addresses as the values the server uses, read only by the system. The signing key is never in the database: it comes from the environment, or from `.local/signing-key` on loopback. None of them is ever logged or returned after the moment it is shown. An action's audience is not a secret.
+- **Secrets:** agent tokens and sessions are stored as hashes, notifier addresses as the values the server uses, read only by the system. The signing key is never in the database: it comes from the environment or a file, made once only when asked (`MANDATE_SIGNING_KEY_CREATE`), or from `.local/signing-key` on loopback. None of them is ever logged or returned after the moment it is shown. An action's audience is not a secret.
 
 ## Tests
 

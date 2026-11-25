@@ -16,11 +16,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -71,6 +73,8 @@ The commands below act on the database directly, as the person named with -as. R
   pgmandate people -tenant ID
   pgmandate person add -tenant ID -as EMAIL -email EMAIL -name NAME [-role owner|reviewer]
   pgmandate person remove -tenant ID -as EMAIL -person ID
+  pgmandate sign-in-link -tenant ID -email EMAIL       a single-use link that signs that person in, for 15 minutes:
+                                                       the way back in when there is no sign-in provider
   pgmandate agent create -tenant ID -as EMAIL -name NAME [-mode dry_run|live] [-department D] [-days 90]
                           prints the token once. A new agent is in dry run unless -mode live: what it
                           proposes is recorded, never carried out, while it acts with its own credential.
@@ -275,7 +279,7 @@ func run(ctx context.Context, command string, args []string, out io.Writer) erro
 			return fmt.Errorf("%s needs a subcommand", command)
 		}
 		return admin(ctx, cfg, command+" "+args[0], args[1:], out)
-	case "grant", "revoke", "mandates", "proposals", "approve", "reject", "dismiss", "redeliver", "settle", "people", "events", "verify", "export", "export-chain", "actions":
+	case "grant", "revoke", "mandates", "proposals", "approve", "reject", "dismiss", "redeliver", "sign-in-link", "settle", "people", "events", "verify", "export", "export-chain", "actions":
 		return admin(ctx, cfg, command, args, out)
 	case "verify-export":
 		return verifyExport(args, out)
@@ -367,11 +371,13 @@ func newKernel(pool *pgxpool.Pool, queue *jobs.Queue, allowPrivate bool, publicU
 func signingKeys(cfg config) (*sign.Signer, []ed25519.PublicKey, error) {
 	text := os.Getenv("MANDATE_SIGNING_KEY")
 	if file := os.Getenv("MANDATE_SIGNING_KEY_FILE"); text == "" && file != "" {
-		raw, err := os.ReadFile(file) //nolint:gosec // the operator names the file
+		create, err := strconv.ParseBool(env("MANDATE_SIGNING_KEY_CREATE", "false"))
 		if err != nil {
+			return nil, nil, errors.New("MANDATE_SIGNING_KEY_CREATE is true or false")
+		}
+		if text, err = keyFile(file, create); err != nil {
 			return nil, nil, fmt.Errorf("MANDATE_SIGNING_KEY_FILE: %w", err)
 		}
-		text = string(raw)
 	}
 	if text == "" {
 		if !loopback(cfg.httpAddr) {
@@ -403,22 +409,54 @@ func signingKeys(cfg config) (*sign.Signer, []ed25519.PublicKey, error) {
 
 // localSigningKey reads, or makes once, the key a local server signs with.
 func localSigningKey() (string, error) {
-	const path = ".local/signing-key"
-	if raw, err := os.ReadFile(path); err == nil {
-		return string(raw), nil
+	return keyFile(".local/signing-key", true)
+}
+
+// keyFile reads the signing key in path. When it does not exist and create
+// is set, a new key is made there, once, readable only by its owner; when
+// create is not set, a missing file is an error, so a mistyped path never
+// quietly makes a key that receivers do not trust.
+func keyFile(path string, create bool) (string, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // the operator names the file
+	if err == nil {
+		if strings.TrimSpace(string(raw)) == "" {
+			return "", fmt.Errorf("%s is empty; remove it, or put a key in it", path)
+		}
+		return strings.TrimSpace(string(raw)), nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) || !create {
+		return "", err
 	}
 	seed := make([]byte, ed25519.SeedSize)
 	if _, err := rand.Read(seed); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(".local", 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:gosec // the operator names the file
 		return "", err
 	}
 	text := base64.StdEncoding.EncodeToString(seed)
-	if err := os.WriteFile(path, []byte(text+"\n"), 0o600); err != nil {
+	// Written whole to a file of its own, then linked into place, which
+	// fails if the key is there already: a crash never leaves half a key,
+	// and of two servers starting at once only one key is kept.
+	tmp, err := os.CreateTemp(dir, ".signing-key-*")
+	if err != nil {
 		return "", err
 	}
-	slog.Warn("made a signing key for local use in " + path + "; set MANDATE_SIGNING_KEY to sign with your own")
+	defer os.Remove(tmp.Name()) //nolint:errcheck
+	if _, err := tmp.WriteString(text + "\n"); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Link(tmp.Name(), path); errors.Is(err, fs.ErrExist) {
+		return keyFile(path, false)
+	} else if err != nil {
+		return "", err
+	}
+	slog.Warn("made a new signing key; receivers trust its public half from /.well-known/pgmandate-keys", "file", path)
 	return text, nil
 }
 
@@ -462,6 +500,9 @@ func serve(ctx context.Context, cfg config) error {
 		return err
 	}
 	authService := auth.NewService(pool, auth.Config{DevLogin: cfg.devLogin, SessionTtl: cfg.sessionTtl, PublicUrl: cfg.publicUrl, Oidc: cfg.oidc})
+	if err := announceSetup(ctx, authService, cfg.publicUrl, os.Stderr); err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// The queue gets a context the signal does not cancel: running jobs
@@ -529,10 +570,20 @@ func serve(ctx context.Context, cfg config) error {
 // maxMcpBytes bounds a request from an agent.
 const maxMcpBytes = 1 << 20
 
-// harden adds the headers every response carries and, when dev login is
-// on, refuses requests that did not ask for this machine by name: a page
-// elsewhere cannot then reach the dev login by rebinding its own name to
-// 127.0.0.1.
+// announceSetup writes the setup link, while nobody has set pgmandate up:
+// the way in for the first owner when there is no sign-in provider. Each
+// start makes a new one and voids the last.
+func announceSetup(ctx context.Context, authService *auth.Service, publicUrl string, out io.Writer) error {
+	token, made, err := authService.NewSetupLink(ctx)
+	if err != nil || !made {
+		return err
+	}
+	link := strings.TrimSuffix(publicUrl, "/") + auth.PathSetup + "#" + token
+	slog.Info("pgmandate is not set up yet; open the setup link to make the first tenant and its owner", "validMinutes", int(auth.SetupLinkLifetime/time.Minute))
+	fmt.Fprintf(out, "\n  Set up pgmandate, within %d minutes:\n  %s\n\n", int(auth.SetupLinkLifetime/time.Minute), link)
+	return nil
+}
+
 // frontDoor is what every request passes before the mux: the hardening,
 // and the limit on failed sign-ins and token checks per client address, in
 // this instance's memory.
@@ -541,6 +592,10 @@ func frontDoor(mux http.Handler, cfg config) http.Handler {
 	return harden(limiter.Handler(mux), cfg)
 }
 
+// harden adds the headers every response carries and, when dev login is
+// on, refuses requests that did not ask for this machine by name: a page
+// elsewhere cannot then reach the dev login by rebinding its own name to
+// 127.0.0.1.
 func harden(next http.Handler, cfg config) http.Handler {
 	secure := strings.HasPrefix(cfg.publicUrl, "https://")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -838,6 +893,17 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 	}
 
 	switch command {
+	case "sign-in-link":
+		person, err := kernel.Tenants.FindPerson(actor.AsSystem(ctx, tenantId), *email)
+		if err != nil {
+			return err
+		}
+		token, err := auth.NewService(pool, auth.Config{PublicUrl: cfg.publicUrl}).NewPersonLink(actor.AsSystem(ctx, tenantId), person.Id)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Sign in as %s, once, within %d minutes:\n%s%s#%s\n", person.Email, int(auth.PersonLinkLifetime/time.Minute),
+			strings.TrimSuffix(cfg.publicUrl, "/"), auth.PathSignIn, token)
 	case "person add":
 		p, err := kernel.Tenants.AddPerson(scoped, *email, *name, *role)
 		if err != nil {

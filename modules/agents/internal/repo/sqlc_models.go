@@ -169,9 +169,20 @@ type MandateSession struct {
 	Name       string
 	Issuer     *string
 	Subject    *string
+	PersonId   *uuid.UUID
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
 	LastSeenAt *time.Time
+}
+
+type MandateSignInLink struct {
+	TokenHash []byte
+	Purpose   string
+	TenantId  *uuid.UUID
+	PersonId  *uuid.UUID
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	UsedAt    *time.Time
 }
 
 type MandateTenant struct {

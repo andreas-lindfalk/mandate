@@ -1,6 +1,6 @@
 # Design note: one image and a ten-minute quickstart
 
-Status: proposed, 2026-11-25. Roadmap item 1. When the code differs from this note, one of them is wrong.
+Status: built, 2026-11-25. Roadmap item 1. When the code differs from this note, one of them is wrong.
 
 ## The goal
 
@@ -40,7 +40,7 @@ Today it does:
 - **The need:** an owner signed in by a setup link has no other way back in when the session ends (a week), unless a provider is configured.
 - **The command:** `pgmandate sign-in-link -tenant ID -email E` prints a single-use link for an existing person, valid for 15 minutes:
   `http://localhost:8585/sign-in#<token>`
-  In compose that is `docker compose exec pgmandate pgmandate sign-in-link ...`.
+  In the quickstart that is `docker compose -f deploy/quickstart/compose.yaml exec pgmandate /pgmandate sign-in-link ...`.
 - **The session it gives** is pinned to that one person: it reaches their tenant and no other, and binds nothing. That matches the sign-in note, which says a link session names its person directly.
 - **Who can make a link:** whoever can run the command line, which already acts as any person. Nobody gains anything new.
 

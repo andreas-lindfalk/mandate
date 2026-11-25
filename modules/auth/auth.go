@@ -52,12 +52,16 @@ type OidcConfig struct {
 }
 
 // Session is who is signed in: the verified email and, for a provider's
-// sign-in, its issuer and subject. Dev login has neither.
+// sign-in, its issuer and subject. Dev login has neither. A session from a
+// sign-in link is pinned to one person instead.
 type Session struct {
 	Email   string
 	Name    string
 	Issuer  string
 	Subject string
+	// PersonId pins the session to one person: it reaches their tenant and
+	// no other, and binds nothing.
+	PersonId *uuid.UUID
 }
 
 // Membership is a tenant where the signed-in person is a person.
@@ -124,7 +128,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Session, erro
 		if err != nil {
 			return err
 		}
-		session = Session{Email: row.Email, Name: row.Name, Issuer: deref(row.Issuer), Subject: deref(row.Subject)}
+		session = Session{Email: row.Email, Name: row.Name, Issuer: deref(row.Issuer), Subject: deref(row.Subject), PersonId: row.PersonId}
 		return q.TouchSession(ctx, hash)
 	})
 	return session, err
@@ -150,6 +154,9 @@ type candidate struct {
 // the one bound to its identity first, then one with its email still
 // unbound, then one with its email bound to another identity.
 func (s *Service) candidates(ctx context.Context, session Session) ([]candidate, error) {
+	if session.PersonId != nil {
+		return s.pinned(ctx, *session.PersonId)
+	}
 	var issuer, subject *string
 	if session.Issuer != "" {
 		issuer, subject = &session.Issuer, &session.Subject
@@ -186,6 +193,24 @@ func (s *Service) candidates(ctx context.Context, session Session) ([]candidate,
 		}
 	}
 	return out, nil
+}
+
+// pinned is the one person a link's session is, while they are a person.
+func (s *Service) pinned(ctx context.Context, personId uuid.UUID) ([]candidate, error) {
+	var out []candidate
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT tenant_id, tenant_name, person_id, role FROM mandate.person_for_session($1)`, personId)
+		if err != nil {
+			return err
+		}
+		out, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
+			c := candidate{match: matchBound}
+			err := row.Scan(&c.TenantId, &c.TenantName, &c.PersonId, &c.Role)
+			return c, err
+		})
+		return err
+	})
+	return out, err
 }
 
 // How a person matches a sign-in.
@@ -290,13 +315,34 @@ func (s *Service) DeleteExpired(ctx context.Context) (int64, error) {
 	var count int64
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		var err error
-		count, err = repo.New(tx).DeleteExpiredSessions(ctx)
+		q := repo.New(tx)
+		if count, err = q.DeleteExpiredSessions(ctx); err != nil {
+			return err
+		}
+		// Sign-in links that have expired, used or not, go with them.
+		links, err := q.DeleteExpiredLinks(ctx)
+		count += links
 		return err
 	})
 	return count, err
 }
 
 func (s *Service) createSession(ctx context.Context, session Session) (string, error) {
+	var token string
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		var err error
+		token, err = s.insertSession(ctx, repo.New(tx), session)
+		return err
+	})
+	if err != nil {
+		return "", fault.FromDb(err)
+	}
+	return token, nil
+}
+
+// insertSession makes a session in the caller's transaction and returns its
+// token, which is never stored: only its hash is.
+func (s *Service) insertSession(ctx context.Context, q *repo.Queries, session Session) (string, error) {
 	email := strings.ToLower(strings.TrimSpace(session.Email))
 	name := strings.TrimSpace(session.Name)
 	if (session.Issuer == "") != (session.Subject == "") || len(session.Issuer) > 500 || len(session.Subject) > 255 {
@@ -312,21 +358,27 @@ func (s *Service) createSession(ctx context.Context, session Session) (string, e
 	if utf8.RuneCountInString(name) > 200 {
 		name = string([]rune(name)[:200])
 	}
+	token, hash, err := newToken()
+	if err != nil {
+		return "", err
+	}
+	if err := q.InsertSession(ctx, repo.InsertSessionParams{
+		TokenHash: hash, Email: email, Name: name, Issuer: issuer, Subject: subject, PersonId: session.PersonId, ExpiresAt: s.now().Add(s.config.SessionTtl),
+	}); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// newToken is 32 random bytes as text, and the SHA-256 that is stored.
+func newToken() (string, []byte, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	hash := sha256.Sum256([]byte(token))
-	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
-		return repo.New(tx).InsertSession(ctx, repo.InsertSessionParams{
-			TokenHash: hash[:], Email: email, Name: name, Issuer: issuer, Subject: subject, ExpiresAt: s.now().Add(s.config.SessionTtl),
-		})
-	})
-	if err != nil {
-		return "", fault.FromDb(err)
-	}
-	return token, nil
+	return token, hash[:], nil
 }
 
 func hashToken(token string) ([]byte, error) {

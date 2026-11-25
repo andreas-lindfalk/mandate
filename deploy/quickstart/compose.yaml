@@ -1,0 +1,61 @@
+# Try pgmandate with only Docker:
+#
+#   docker compose -f deploy/quickstart/compose.yaml up
+#
+# then open the setup link the server writes to its log. The UI is on
+# http://localhost:8585 and listens on this machine only.
+#
+# For trying it out, not for production: the database passwords are fixed
+# here, which is safe only because Postgres is reachable from this compose
+# network alone. "Running it" in the README is how to run it for real.
+#
+# Before the first release is published, build the image from this clone:
+#   docker compose -f deploy/quickstart/compose.yaml up --build
+
+name: pgmandate-quickstart
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: mandate
+      POSTGRES_USER: mandate_owner
+      POSTGRES_PASSWORD: quickstart-owner
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mandate_owner -d mandate"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    # Not published: only the server reaches it.
+
+  pgmandate:
+    image: ghcr.io/andreas-lindfalk/pgmandate:${PGMANDATE_VERSION:-latest}
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    command: ["serve"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The server migrates on start with the owner, then serves as the app
+      # role only.
+      MANDATE_DATABASE_URL: postgres://mandate_owner:quickstart-owner@postgres:5432/mandate?sslmode=disable
+      MANDATE_APP_PASSWORD: quickstart-app
+      MANDATE_HTTP_ADDR: 0.0.0.0:8585
+      MANDATE_PUBLIC_URL: http://localhost:8585
+      # The signing key is made once, in the volume, and kept.
+      MANDATE_SIGNING_KEY_FILE: /data/signing-key
+      MANDATE_SIGNING_KEY_CREATE: "true"
+      # A receiver on this machine is host.docker.internal: a private address.
+      MANDATE_ALLOW_PRIVATE_CONNECTORS: "true"
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - data:/data
+    ports: ["127.0.0.1:8585:8585"]
+
+volumes:
+  postgres:
+  data:

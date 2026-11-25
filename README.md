@@ -81,7 +81,22 @@ One binary and one Postgres, on your own machine, in your cloud or on-premise. A
 - **It suits consequential actions**: a refund, a message that leaves the company, a change to a record. It does not suit a tight loop of small tool calls.
 - **It is not a compliance tool.** If you run a high-risk system under the EU AI Act, or an ISO/IEC 42001 management system, the log is the kind of record that supports human-oversight and logging controls: who approved, under which authority, and what was refused. Whether those duties apply to you, and whether this is enough, is for you and your auditor.
 
-## Five minutes
+## Ten minutes, with only Docker
+
+```sh
+git clone https://github.com/andreas-lindfalk/pgmandate && cd pgmandate
+docker compose -f deploy/quickstart/compose.yaml up        # add --build until the first release is published
+```
+
+The server prints a setup link: `http://localhost:8585/setup#…`. Open it, name your organisation and yourself, and you are signed in as its owner. Then, in the UI:
+
+1. *Agents & actions*: register an agent (tick *Live from the start*) and copy its token; define an action, such as `tickets.create`.
+2. *Mandates*: grant the agent a mandate for it, or leave it out to decide each proposal yourself.
+3. Connect the agent (below), or propose with `curl` as under *Connecting an agent*, and decide in the *Inbox*.
+
+The link works once, for 30 minutes, and only while nothing is set up; a restart prints a new one. When your session runs out, get back in with a single-use link: `docker compose -f deploy/quickstart/compose.yaml exec pgmandate /pgmandate sign-in-link -tenant <id> -email <you>`. The quickstart is for trying pgmandate on your own machine: it listens on this machine only, and its database passwords are fixed in the file. *Running it* below is how to run it for real. `deploy/quickstart/smoke.sh` walks the same path through the APIs, and CI runs it.
+
+## Five minutes, from the source
 
 ```sh
 make up      # Postgres on 127.0.0.1:5433                       needs Docker
@@ -231,6 +246,7 @@ From there the owner works in the UI. Locally the same command is `go run ./cmd/
 | `MANDATE_ALLOW_PRIVATE_CONNECTORS` | `true` lets webhook connectors live on local and private addresses, for development and for an on-premise install. Off, a delivery to such an address is never sent, and ends *not sent* |
 | `MANDATE_SIGNING_KEY` | the Ed25519 seed deliveries are signed with, 32 bytes in standard base64 (`openssl rand -base64 32`). Never stored in the database. Required unless the server listens only on loopback, where one is made once in `.local/signing-key` |
 | `MANDATE_SIGNING_KEY_FILE` | the same, read from a file |
+| `MANDATE_SIGNING_KEY_CREATE` | `true` makes the file named by `MANDATE_SIGNING_KEY_FILE` once, when it does not exist, with a new key readable only by its owner, as the quickstart does. Without it a missing file stops the server, so a mistyped path never makes a key receivers do not trust |
 | `MANDATE_SIGNING_KEYS_PREVIOUS` | comma separated public keys, in standard base64, that are still published but no longer sign: how a key is rotated |
 | `MANDATE_RECEIVER_ADDR` | where `pgmandate receiver` and the demo's receiver listen, default `127.0.0.1:8586` |
 
@@ -239,6 +255,16 @@ From there the owner works in the UI. Locally the same command is `go run ./cmd/
 RDS, Aurora, Cloud SQL, AlloyDB, Azure, Supabase and Neon give you an admin role that is no superuser. Point `MANDATE_DATABASE_URL` at that admin, in a database it owns or may create in, and run `pgmandate migrate`. It creates `mandate_app` without the attributes only a superuser may set, or uses one a DBA made beforehand (`MANDATE_CREATE_APP_ROLE=false`). The admin owns the tables; the server connects as `mandate_app` only (`MANDATE_APP_DATABASE_URL`).
 
 `migrate`, and `serve` when it starts, refuse to go on when `mandate_app` could get past the rules: when it may set `session_replication_role`, or is, or through membership can act as, a role that is a superuser, bypasses row level security, creates roles, replicates, is the service's admin (`rds_superuser`, `cloudsqlsuperuser`, `azure_pg_admin` and the like), is one of Postgres's own roles with the server's files or every table (`pg_execute_server_program`, `pg_read_all_data` and the like), or owns pgmandate's schemas or tables. The error says which. Each of these gets past row level security or the append-only guard, and a role a DBA set up for convenience often has one. `migrate` also warns when the role may create objects in the schema `public`.
+
+## Releasing
+
+Push a tag, or publish a release on GitHub with a new tag:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The `release` workflow builds the image for amd64 and arm64 and publishes it as `ghcr.io/andreas-lindfalk/pgmandate:v0.1.0` and `:latest`, reporting `v0.1.0` as its version. After the very first publish, make the package public once: your profile's *Packages* tab, *pgmandate*, *Package settings*, *Danger Zone*, *Change visibility* to public.
 
 ## Writing a receiver
 
