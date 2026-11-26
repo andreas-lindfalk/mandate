@@ -12,6 +12,9 @@ export function errorText(error: unknown): string {
     case Code.NotFound:
       return "It no longer exists.";
     case Code.AlreadyExists:
+      // Also a refusal that says what to do instead: settle not yet, send
+      // again too late, or edit the payload to fit the action's schema.
+      return e.rawMessage || "Someone already changed this. Reload the page and try again.";
     case Code.Aborted:
       return "Someone already changed this. Reload the page and try again.";
     case Code.Unauthenticated:
@@ -19,9 +22,9 @@ export function errorText(error: unknown): string {
     case Code.Unavailable:
     case Code.DeadlineExceeded:
     case Code.Canceled:
-      return "Could not reach mandate. Check the connection.";
+      return "Could not reach pgmandate. Check the connection.";
     default:
-      if (error instanceof TypeError) return "Could not reach mandate. Check the connection.";
-      return "Something went wrong in mandate.";
+      if (error instanceof TypeError) return "Could not reach pgmandate. Check the connection.";
+      return "Something went wrong in pgmandate.";
   }
 }

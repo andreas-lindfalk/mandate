@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/AppShell";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, EmptyState, ErrorState, Field, Skeleton, Textarea } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState, ErrorState, Field, Skeleton, StaleNote, Textarea } from "@/components/ui/primitives";
 import type { Event } from "@/gen/mandate/v1/evidence_pb";
 import type { Delivery, Proposal } from "@/gen/mandate/v1/proposals_pb";
 import { api } from "@/lib/api";
@@ -21,11 +21,12 @@ import {
   riskLabel,
   riskTone,
   shortId,
-  skipLabel,
+  skipText,
   statusLabel,
   executions,
   toDate,
 } from "@/lib/format";
+import { sameJson } from "@/lib/json";
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -131,7 +132,7 @@ function Row({ proposal, description, selected, onSelect }: { proposal: Proposal
         <span className="block text-[12.5px] text-muted">
           <Bot className="mr-1 inline size-3.5" aria-hidden />
           {proposal.agentName || shortId(proposal.agentId)}
-          {proposal.status === "pending" && proposal.skipReason ? ` · ${skipLabel[proposal.skipReason] ?? proposal.skipReason}` : ""}
+          {proposal.status === "pending" && proposal.skipReason ? ` · ${skipText(proposal.skipReason)}` : ""}
         </span>
       </button>
     </li>
@@ -296,14 +297,32 @@ function DeliveryCard({ proposalId, delivery, onChanged }: { proposalId: string;
   }
 }
 
-/** What pgmandate itself checked, apart from what the agent claims. */
-function Checks({ proposal, hasSchema }: { proposal: Proposal; hasSchema: boolean }) {
+/**
+ * The schema line of the checks. A pending proposal that waits because its
+ * payload no longer fits says so, whatever is known about the action. A
+ * decided proposal was checked against the schema as it was then, which need
+ * not be the schema today.
+ */
+function schemaCheck(proposal: Proposal, hasSchema: boolean | undefined): { ok: boolean; text: string }[] {
+  const pending = proposal.status === "pending";
+  if (pending && proposal.skipReason === "payload_invalid") {
+    return [{ ok: false, text: "The action's schema has changed since this was proposed, and the payload no longer fits it." }];
+  }
+  if (hasSchema === undefined) return [];
+  if (!hasSchema) return [{ ok: false, text: "The action has no payload schema, so the payload's shape was not checked." }];
+  return [{ ok: true, text: pending ? "The payload fits the action's schema." : "The payload fit the action's schema when it was proposed." }];
+}
+
+/**
+ * What pgmandate itself checked, apart from what the agent claims.
+ * hasSchema is undefined while the action is not known yet, and the
+ * schema line is then left out rather than guessed.
+ */
+function Checks({ proposal, hasSchema }: { proposal: Proposal; hasSchema: boolean | undefined }) {
   const flagged = proposal.flags.length > 0;
   const items: { ok: boolean; text: string }[] = [
     { ok: true, text: `Proposed by ${proposal.agentName || shortId(proposal.agentId)}, with that agent's own token.` },
-    hasSchema
-      ? { ok: true, text: "The payload fits the action's schema." }
-      : { ok: false, text: "The action has no payload schema, so the payload's shape was not checked." },
+    ...schemaCheck(proposal, hasSchema),
     flagged
       ? { ok: false, text: "What the agent wrote holds text that tries to steer a model: the risk is high and no mandate allows it." }
       : { ok: true, text: "No known phrasing that tries to steer a model was found. This is a tripwire, not a guarantee." },
@@ -337,6 +356,11 @@ function Account({ proposal }: { proposal: Proposal }) {
   const flagged = proposal.flags.length > 0;
   const [open, setOpen] = React.useState(false);
   const [revealed, setRevealed] = React.useState(false);
+  // Revealing unmounts the button that had focus: the text it revealed takes it.
+  const text = React.useRef<HTMLParagraphElement>(null);
+  React.useEffect(() => {
+    if (revealed) text.current?.focus();
+  }, [revealed]);
   const provenance = proposal.provenance;
   const written = [
     provenance?.client ? `${provenance.client}${provenance.clientVersion ? ` ${provenance.clientVersion}` : ""}` : "",
@@ -360,7 +384,12 @@ function Account({ proposal }: { proposal: Proposal }) {
         </Card>
       ) : (
         <Card className="border-l-2 border-l-ai bg-ai-soft/40 p-4">
-          <p id="account-text" className={cn("whitespace-pre-wrap text-[14px] leading-relaxed", !open && long && "line-clamp-4")}>
+          <p
+            id="account-text"
+            ref={text}
+            tabIndex={-1}
+            className={cn("whitespace-pre-wrap text-[14px] leading-relaxed outline-none", !open && long && "line-clamp-4")}
+          >
             {proposal.rationale}
           </p>
           {open && proposal.evidence.length > 0 ? (
@@ -389,14 +418,6 @@ function Account({ proposal }: { proposal: Proposal }) {
       )}
     </section>
   );
-}
-
-function sameJson(a: string, b: string) {
-  try {
-    return JSON.stringify(JSON.parse(a)) === JSON.stringify(JSON.parse(b));
-  } catch {
-    return false;
-  }
 }
 
 function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
@@ -466,7 +487,9 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
   });
 
   if (one.isPending) return <Skeleton className="h-64" />;
-  if (one.isError) return <ErrorState error={one.error} onRetry={() => one.refetch()} />;
+  // A failed poll keeps the proposal it had, so a review in progress is
+  // not taken away; only a first load that fails shows the error.
+  if (!one.data) return <ErrorState error={one.error} onRetry={() => one.refetch()} />;
   const p = one.data.proposal!;
   const pending = p.status === "pending";
   const action = actions.data?.actions.find((a) => a.key === p.action);
@@ -486,6 +509,7 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
       <Link to="/inbox" className="-my-2 flex min-h-11 items-center gap-1 text-[13px] text-muted hover:text-foreground lg:hidden">
         <ArrowLeft className="size-3.5" /> Back to the inbox
       </Link>
+      {one.isError ? <StaleNote error={one.error} /> : null}
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[12px] text-accent">{p.action}</span>
@@ -529,7 +553,7 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
       {p.delivery ? <DeliveryCard proposalId={p.id} delivery={p.delivery} onChanged={invalidate} /> : null}
       {pending && p.skipReason ? (
         <Card className="bg-warning-soft p-4 text-[13.5px] text-warning-ink">
-          {dry ? "A person would have decided it" : "Waits for a person"}: {skipLabel[p.skipReason] ?? p.skipReason}.
+          {dry ? "A person would have decided it" : "Waits for a person"}: {skipText(p.skipReason)}.
           {p.unmetConditions.length > 0 ? (
             <ul className="mt-2 flex flex-col gap-1 font-mono text-[12px]">
               {p.unmetConditions.map((line) => (
@@ -575,15 +599,26 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
 
       <div>
         <p className="label-mono mb-2 text-[12px] text-muted">Where it goes</p>
-        <p className="text-[14px]">
-          {dry
-            ? "Nowhere: a dry run is never carried out by pgmandate."
-            : actionGone
-            ? "The action has been removed, so this can only be rejected."
-            : action?.connector === "webhook" && action.connectorUrl
-              ? `An approval is sent to ${hostOf(action.connectorUrl)}, which carries it out.`
-              : "An approval is carried out by this server's own code."}
-        </p>
+        {/* Where an approval goes depends on the action, so nothing is
+            claimed until the actions have loaded. A failed refetch keeps
+            the data it had, and that is still shown. */}
+        {!dry && !actionGone && !actions.data ? (
+          actions.isError ? (
+            <ErrorState title="Could not load the action" error={actions.error} onRetry={() => actions.refetch()} />
+          ) : (
+            <Skeleton className="h-5 w-2/3" />
+          )
+        ) : (
+          <p className="text-[14px]">
+            {dry
+              ? "Nowhere: a dry run is never carried out by pgmandate."
+              : actionGone
+              ? "The action has been removed, so this can only be rejected."
+              : action?.connector === "webhook" && action.connectorUrl
+                ? `An approval is sent to ${hostOf(action.connectorUrl)}, which carries it out.`
+                : "An approval is carried out by this server's own code."}
+          </p>
+        )}
       </div>
 
       <div>
@@ -611,8 +646,9 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
               rows={9}
               aria-label="Payload, edited before approval"
               aria-invalid={!!payloadError}
+              aria-describedby="payload-hint"
             />
-            <p className={cn("mt-1 text-[12px]", payloadError ? "text-danger-ink" : "text-muted")}>
+            <p id="payload-hint" className={cn("mt-1 text-[12px]", payloadError ? "text-danger-ink" : "text-muted")}>
               {payloadError || "Your edit is checked against the action's schema and recorded as an edit."}
             </p>
           </>
@@ -631,7 +667,7 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
         ) : null}
       </div>
 
-      <Checks proposal={p} hasSchema={!!action?.schemaJson} />
+      <Checks proposal={p} hasSchema={actions.data ? !!action?.schemaJson : undefined} />
       <Account proposal={p} />
 
       {pending && dry ? (
@@ -663,7 +699,9 @@ function Detail({ id, onDecided }: { id: string; onDecided: () => void }) {
           ) : null}
           <div className="flex gap-2">
             {actionGone ? null : (
-              <Button variant="success" onClick={() => approve.mutate()} loading={approve.isPending} disabled={(needsConfirm && !confirm) || !!payloadError}>
+              <Button variant="success" onClick={() => approve.mutate()} loading={approve.isPending} disabled={(needsConfirm && !confirm) || !!payloadError}
+                aria-describedby={payloadError ? "payload-hint" : undefined}
+              >
                 <Check /> {changed ? "Approve with edits" : "Approve"}
               </Button>
             )}
@@ -700,10 +738,12 @@ export function InboxPage() {
   const session = useSession();
   const [tab, setTab] = React.useState("pending");
   const current = tabs.find((t) => t.key === tab) ?? tabs[0];
+  // What waits is a queue, worked oldest first; the rest reads newest first.
+  // The dry-run tab waits too, so this goes by status, not by tab.
+  const oldestFirst = current.status === "pending";
   const list = useQuery({
     queryKey: ["proposals", tab],
-    // What waits is a queue, worked oldest first; the rest reads newest first.
-    queryFn: () => api.proposals.listProposals({ status: current.status, dryRun: current.dryRun, limit: 200, oldestFirst: current.status === "pending" }),
+    queryFn: () => api.proposals.listProposals({ status: current.status, dryRun: current.dryRun, limit: 200, oldestFirst }),
     refetchInterval: 10_000,
   });
   const proposals = list.data?.proposals ?? [];
@@ -773,7 +813,7 @@ export function InboxPage() {
           <div className={cn(id && "hidden lg:block")}>
             {list.isPending ? (
               <Skeleton className="h-40" />
-            ) : list.isError ? (
+            ) : !list.data ? (
               <ErrorState error={list.error} onRetry={() => list.refetch()} />
             ) : proposals.length === 0 ? (
               <EmptyState icon={<Inbox />} title={tab === "pending" ? "Nothing waits for you" : "Nothing here yet"}>
@@ -788,9 +828,10 @@ export function InboxPage() {
                 </ul>
               </Card>
             )}
+            {list.isError && list.data ? <StaleNote error={list.error} className="mt-2" /> : null}
             {total > proposals.length ? (
               <p className="mt-2 text-[12px] text-muted">
-                Showing {proposals.length} of {total}, {tab === "pending" ? "oldest" : "newest"} first.
+                Showing {proposals.length} of {total}, {oldestFirst ? "oldest" : "newest"} first.
               </p>
             ) : null}
           </div>

@@ -243,7 +243,8 @@ export type ProposeRequest = Message<"mandate.agent.v1.ProposeRequest"> & {
   payloadJson: string;
 
   /**
-   * The agent's own id for this chain of work.
+   * The agent's own id for this chain of work: 1 to 100 letters, digits
+   * and . _ : -; empty for none.
    *
    * @generated from field: string run_id = 4;
    */
@@ -290,20 +291,33 @@ export const ProposeRequestSchema: GenMessage<ProposeRequest> = /*@__PURE__*/
   messageDesc(file_mandate_agent_v1_agent, 6);
 
 /**
+ * One thing the agent looked at, so the person can check it rather than
+ * trust the agent. Spaces around each field are trimmed before the
+ * lengths are counted.
+ *
  * @generated from message mandate.agent.v1.Evidence
  */
 export type Evidence = Message<"mandate.agent.v1.Evidence"> & {
   /**
+   * Required: where the agent looked, such as the tool, system or table,
+   * 1 to 100 characters.
+   *
    * @generated from field: string source = 1;
    */
   source: string;
 
   /**
+   * An id, a query or an address that finds it again, up to 500
+   * characters; empty for none. Never a credential, a token or a query
+   * naming a person.
+   *
    * @generated from field: string ref = 2;
    */
   ref: string;
 
   /**
+   * Required: what it showed, 1 to 1000 characters.
+   *
    * @generated from field: string summary = 3;
    */
   summary: string;
@@ -454,6 +468,9 @@ export type ListProposalsRequest = Message<"mandate.agent.v1.ListProposalsReques
   status: string;
 
   /**
+   * Only the proposals made under this run id, in the form propose takes;
+   * empty for all.
+   *
    * @generated from field: string run_id = 2;
    */
   runId: string;
@@ -595,7 +612,7 @@ export type Proposal = Message<"mandate.agent.v1.Proposal"> & {
   runId: string;
 
   /**
-   * A person edited the payload when approving it.
+   * A person edited the title or the payload when approving it.
    *
    * @generated from field: bool edited = 11;
    */
@@ -614,7 +631,14 @@ export type Proposal = Message<"mandate.agent.v1.Proposal"> & {
   executionBasis?: ExecutionBasis | undefined;
 
   /**
-   * Why a waiting proposal waits for a person, as a code.
+   * Why a waiting proposal waits for a person, as a code: what the last
+   * execution attempt recorded, or what rules out executing it. One of
+   * no_mandate, risk_above_mandate, budget_spent, condition_not_met,
+   * flagged, action_not_executable, action_changed, payload_invalid,
+   * agent_revoked, action_failed, execution_failed or action_removed, or
+   * refused_ followed by the database's error code, as in
+   * refused_permission_denied. Codes may be added: handle one you do not
+   * know as "waits for a person".
    *
    * @generated from field: string skipped = 14;
    */
@@ -634,7 +658,8 @@ export type Proposal = Message<"mandate.agent.v1.Proposal"> & {
 
   /**
    * For a proposal no mandate's condition allowed: what in the payload
-   * stood in the way.
+   * stood in the way. get_proposal and propose fill it; list_proposals
+   * leaves it out, so read such a proposal with get_proposal.
    *
    * @generated from field: repeated string unmet = 17;
    */

@@ -328,7 +328,7 @@ func (q *Queries) ListDeliveriesByProposals(ctx context.Context, proposalIds []u
 
 const listDueToFinish = `-- name: ListDueToFinish :many
 SELECT id FROM mandate.deliveries
-WHERE status = 'pending' AND attempt_open_at IS NULL AND not_after - mandate.delivery_timeout() <= now()
+WHERE status = 'pending' AND attempt_open_at IS NULL AND not_after <= now() + mandate.delivery_timeout()
 ORDER BY not_after, id
 LIMIT $1
 FOR UPDATE SKIP LOCKED

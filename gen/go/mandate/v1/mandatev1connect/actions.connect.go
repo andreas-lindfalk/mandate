@@ -47,8 +47,11 @@ const (
 // ActionServiceClient is a client for the mandate.v1.ActionService service.
 type ActionServiceClient interface {
 	ListActions(context.Context, *v1.ListActionsRequest) (*v1.ListActionsResponse, error)
-	// DefineAction creates or updates the action with the key. A new webhook,
-	// or a rotation, returns the signing secret once.
+	// DefineAction creates or updates the action with the key. A webhook
+	// action gets an audience, drawn anew when the action becomes a webhook,
+	// is defined again after removal, or moves to a new URL. Its deliveries
+	// are signed with the server's key, published at
+	// /.well-known/pgmandate-keys; there is no secret per action.
 	DefineAction(context.Context, *v1.DefineActionRequest) (*v1.DefineActionResponse, error)
 	RemoveAction(context.Context, *v1.RemoveActionRequest) (*v1.RemoveActionResponse, error)
 }
@@ -122,8 +125,11 @@ func (c *actionServiceClient) RemoveAction(ctx context.Context, req *v1.RemoveAc
 // ActionServiceHandler is an implementation of the mandate.v1.ActionService service.
 type ActionServiceHandler interface {
 	ListActions(context.Context, *v1.ListActionsRequest) (*v1.ListActionsResponse, error)
-	// DefineAction creates or updates the action with the key. A new webhook,
-	// or a rotation, returns the signing secret once.
+	// DefineAction creates or updates the action with the key. A webhook
+	// action gets an audience, drawn anew when the action becomes a webhook,
+	// is defined again after removal, or moves to a new URL. Its deliveries
+	// are signed with the server's key, published at
+	// /.well-known/pgmandate-keys; there is no secret per action.
 	DefineAction(context.Context, *v1.DefineActionRequest) (*v1.DefineActionResponse, error)
 	RemoveAction(context.Context, *v1.RemoveActionRequest) (*v1.RemoveActionResponse, error)
 }

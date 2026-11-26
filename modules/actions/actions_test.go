@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +46,8 @@ func (s *ActionsSuite) Test_OwnerDefinesWebhookActions() {
 	s.Require().Equal(&t.OwnerId, defined.CreatedBy)
 	s.Require().Equal("https://helpdesk.example/hooks/mandate", defined.ConnectorUrl)
 	s.Require().JSONEq(string(ticketSchema), string(defined.Schema))
+	s.Require().Equal(actions.DefaultWaitLimit, defined.WaitLimit, "a wait limit not given is the default")
+	s.Require().Equal(actions.DefaultDeliverWithin, defined.DeliverWithin, "a delivery window not given is the default")
 	s.Require().Equal([]string{"action.defined"}, s.eventTypes(t.Owner, defined.Id))
 
 	// Defining again at the same address changes it and keeps the audience.
@@ -183,6 +187,9 @@ func (s *ActionsSuite) Test_DefineValidation() {
 		"wait fraction":  func(i *actions.Input) { i.WaitLimit = 90*time.Second + time.Millisecond },
 		"deliver short":  func(i *actions.Input) { i.DeliverWithin = time.Minute },
 		"deliver long":   func(i *actions.Input) { i.DeliverWithin = 8 * 24 * time.Hour },
+		"wait negative":  func(i *actions.Input) { i.WaitLimit = -time.Hour },
+		"deliver neg":    func(i *actions.Input) { i.DeliverWithin = -time.Hour },
+		"deliver frac":   func(i *actions.Input) { i.DeliverWithin = 3*time.Minute + time.Millisecond },
 		"bad connector":  func(i *actions.Input) { i.Connector = "smtp" },
 		"no url":         func(i *actions.Input) { i.Url = "" },
 		"bad url":        func(i *actions.Input) { i.Url = "ftp://x" },
@@ -198,6 +205,66 @@ func (s *ActionsSuite) Test_DefineValidation() {
 		s.code(err, fault.InvalidArgument)
 		s.T().Log(name, "refused")
 	}
+}
+
+func (s *ActionsSuite) Test_SchemaRefersOnlyToItself() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	// A readable schema file on the server, which would otherwise compile.
+	readable := filepath.Join(s.T().TempDir(), "readable.json")
+	s.Require().NoError(os.WriteFile(readable, []byte(`{"type":"object"}`), 0o600))
+	// The server's files are never read, and the refusal says nothing
+	// about them: a file that exists and one that does not read alike.
+	for name, schema := range map[string]string{
+		"readable file": `{"$ref":"file://` + filepath.ToSlash(readable) + `"}`,
+		"absolute file": `{"$ref":"file:///etc/hosts"}`,
+		"missing file":  `{"$ref":"file:///no/such/schema.json"}`,
+		"relative":      `{"$ref":"other.json"}`,
+		"under a key":   `{"type":"object","properties":{"a":{"$ref":"../go.mod"}}}`,
+		"remote":        `{"$ref":"https://schemas.example/ticket.json"}`,
+		"own meta":      `{"$schema":"file:///etc/hosts","type":"object"}`,
+	} {
+		input := webhook("tickets.create")
+		input.Schema = json.RawMessage(schema)
+		_, err := s.W.Kernel.Actions.Define(t.Owner, input)
+		s.code(err, fault.InvalidArgument)
+		s.Require().Equal("the schema is not valid: a schema may refer only to itself, such as #/$defs/name", fault.Message(err), name)
+		s.Require().NotContains(err.Error(), "/etc", name)
+		s.Require().NotContains(err.Error(), "file:", name)
+		s.Require().NotContains(err.Error(), "readable", name)
+	}
+
+	// Other refusals do not name the server's directory either, nor does
+	// a payload that the schema refuses.
+	dir, err := os.Getwd()
+	s.Require().NoError(err)
+	for name, schema := range map[string]string{
+		"not a schema":  `{"type":5}`,
+		"missing local": `{"$ref":"#/$defs/missing"}`,
+	} {
+		input := webhook("tickets.create")
+		input.Schema = json.RawMessage(schema)
+		_, err := s.W.Kernel.Actions.Define(t.Owner, input)
+		s.code(err, fault.InvalidArgument)
+		s.Require().NotContains(err.Error(), dir, name)
+		s.Require().NotContains(err.Error(), "file:", name)
+	}
+	required, err := actions.Compile(json.RawMessage(`{"type":"object","required":["subject"]}`))
+	s.Require().NoError(err)
+	refusal := required.Validate(map[string]any{})
+	s.Require().Error(refusal)
+	s.Require().NotContains(refusal.Error(), dir)
+	s.Require().NotContains(refusal.Error(), "file:")
+
+	// A ref inside the schema, and a known draft, still work.
+	input := webhook("tickets.create")
+	input.Schema = json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"subject":{"type":"string","minLength":1}},` +
+		`"type":"object","required":["subject"],"properties":{"subject":{"$ref":"#/$defs/subject"}}}`)
+	defined, err := s.W.Kernel.Actions.Define(t.Owner, input)
+	s.Require().NoError(err)
+	compiled, err := actions.Compile(defined.Schema)
+	s.Require().NoError(err)
+	s.Require().NoError(compiled.Validate(map[string]any{"subject": "Printer"}))
+	s.Require().Error(compiled.Validate(map[string]any{"subject": ""}), "the local ref is followed")
 }
 
 func (s *ActionsSuite) Test_OnlyOwnersAndTheDatabaseAgrees() {

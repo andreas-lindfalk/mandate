@@ -2,7 +2,7 @@
 INSERT INTO mandate.notifiers (id, tenant_id, kind, url) VALUES (@id, @tenant_id, @kind, @url);
 
 -- name: RemoveLiveNotifier :execrows
-UPDATE mandate.notifiers SET removed_at = now() WHERE removed_at IS NULL;
+UPDATE mandate.notifiers SET removed_at = now() WHERE id = @id AND removed_at IS NULL;
 
 -- name: LiveNotifier :one
 SELECT id, kind, created_by, created_at FROM mandate.notifiers WHERE removed_at IS NULL;

@@ -4,11 +4,12 @@ import * as React from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/AppShell";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, ErrorState, Field, Input, SectionLabel, Skeleton } from "@/components/ui/primitives";
+import { Badge, Card, ErrorState, Field, Input, SectionLabel, Skeleton, StaleNote } from "@/components/ui/primitives";
 import { Select } from "@/components/ui/select";
 import type { Person } from "@/gen/mandate/v1/persons_pb";
 import { api } from "@/lib/api";
 import { errorText } from "@/lib/errors";
+import { singleClick, useFocusBack } from "@/lib/utils";
 import { formatDate, roleLabel } from "@/lib/format";
 import { useSession } from "@/lib/session";
 
@@ -43,6 +44,7 @@ function NotifierCard({ isOwner }: { isOwner: boolean }) {
     onError: (error) => toast.error("The test message did not arrive", { description: errorText(error) }),
   });
   const [confirmingOff, setConfirmingOff] = React.useState(false);
+  const offTrigger = useFocusBack(confirmingOff);
   const current = notifier.data?.notifier;
   const kindLabel: Record<string, string> = { slack: "Slack", discord: "Discord" };
   return (
@@ -54,7 +56,7 @@ function NotifierCard({ isOwner }: { isOwner: boolean }) {
       </p>
       {notifier.isPending ? (
         <Skeleton className="mt-3 h-9" />
-      ) : notifier.isError ? (
+      ) : !notifier.data ? (
         <ErrorState error={notifier.error} onRetry={() => notifier.refetch()} />
       ) : (
         <div className="mt-3 flex flex-wrap items-center gap-3 text-[13.5px]">
@@ -71,15 +73,16 @@ function NotifierCard({ isOwner }: { isOwner: boolean }) {
                   </Button>
                   {confirmingOff ? (
                     <>
-                      <Button variant="ghost" size="sm" onClick={() => setConfirmingOff(false)}>
-                        Cancel
-                      </Button>
-                      <Button variant="danger" size="sm" onClick={() => remove.mutate()} loading={remove.isPending}>
+                      {/* Cancel takes the trigger's place, so the click that armed this never lands on the danger button. */}
+                      <Button variant="danger" size="sm" onClick={singleClick(() => remove.mutate())} loading={remove.isPending}>
                         Turn off now
+                      </Button>
+                      <Button variant="ghost" size="sm" autoFocus onClick={() => setConfirmingOff(false)}>
+                        Cancel
                       </Button>
                     </>
                   ) : (
-                    <Button variant="secondary" size="sm" onClick={() => setConfirmingOff(true)}>
+                    <Button variant="secondary" size="sm" ref={offTrigger()} onClick={() => setConfirmingOff(true)}>
                       Turn off
                     </Button>
                   )}
@@ -94,6 +97,7 @@ function NotifierCard({ isOwner }: { isOwner: boolean }) {
           )}
         </div>
       )}
+      {notifier.isError && notifier.data ? <StaleNote error={notifier.error} className="mt-1.5" /> : null}
       {isOwner ? (
         <form
           className="mt-4 grid gap-3 sm:grid-cols-[140px_1fr_auto] sm:items-end"
@@ -137,6 +141,7 @@ function NotifierCard({ isOwner }: { isOwner: boolean }) {
 
 function PersonRow({ person, canRemove, onChanged }: { person: Person; canRemove: boolean; onChanged: () => void }) {
   const [confirming, setConfirming] = React.useState(false);
+  const removeTrigger = useFocusBack(confirming);
   const remove = useMutation({
     mutationFn: () => api.persons.removePerson({ id: person.id }),
     onSuccess: () => {
@@ -156,15 +161,16 @@ function PersonRow({ person, canRemove, onChanged }: { person: Person; canRemove
           <div className="ml-auto flex gap-2">
             {confirming ? (
               <>
-                <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
-                  Cancel
-                </Button>
-                <Button variant="danger" size="sm" onClick={() => remove.mutate()} loading={remove.isPending}>
+                {/* Cancel takes the trigger's place, so the click that armed this never lands on the danger button. */}
+                <Button variant="danger" size="sm" onClick={singleClick(() => remove.mutate())} loading={remove.isPending}>
                   Remove now
+                </Button>
+                <Button variant="ghost" size="sm" autoFocus onClick={() => setConfirming(false)}>
+                  Cancel
                 </Button>
               </>
             ) : (
-              <Button variant="secondary" size="sm" onClick={() => setConfirming(true)}>
+              <Button variant="secondary" size="sm" ref={removeTrigger()} onClick={() => setConfirming(true)}>
                 Remove
               </Button>
             )}
@@ -249,9 +255,10 @@ export function PeoplePage() {
           <p className="text-[13.5px] text-muted">You are a reviewer here. Owners add and remove people.</p>
         )}
         <NotifierCard isOwner={session.isOwner} />
+        {people.isError && people.data ? <StaleNote error={people.error} className="mb-2" /> : null}
         {people.isPending ? (
           <Skeleton className="h-32" />
-        ) : people.isError ? (
+        ) : !people.data ? (
           <ErrorState error={people.error} onRetry={() => people.refetch()} />
         ) : (
           <Card>

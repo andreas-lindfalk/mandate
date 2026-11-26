@@ -161,9 +161,11 @@ var ErrAppRole = errors.New("the app role is not safe to serve with")
 // through membership (with or without INHERIT, since SET ROLE is enough), a
 // role that is a superuser, bypasses row level security, creates roles,
 // replicates (and so reads every change), is a managed service's admin or
-// one of Postgres's own roles with the server's files or every table, or
-// owns any of schemas or anything in them. role is a role name, or empty
-// for the current user, as when the app checks itself at start.
+// one of Postgres's own roles with the server's files or every table, owns
+// any of schemas or anything in them, or may truncate or add triggers to a
+// table in them (TRUNCATE fires no row triggers and ignores row level
+// security, so it empties a table for every tenant). role is a role name,
+// or empty for the current user, as when the app checks itself at start.
 func CheckAppRole(ctx context.Context, q Querier, role string, schemas []string) error {
 	if role == "" {
 		if err := q.QueryRow(ctx, `SELECT current_user`).Scan(&role); err != nil {
@@ -201,7 +203,10 @@ func CheckAppRole(ctx context.Context, q Querier, role string, schemas []string)
 			OR EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 				WHERE n.nspname = ANY($4::text[]) AND c.relowner = r.oid)
 			OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-				WHERE n.nspname = ANY($4::text[]) AND p.proowner = r.oid)
+				WHERE n.nspname = ANY($4::text[]) AND p.proowner = r.oid),
+			EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+				WHERE n.nspname = ANY($4::text[]) AND c.relkind IN ('r', 'p')
+				AND (has_table_privilege(r.oid, c.oid, 'TRUNCATE') OR has_table_privilege(r.oid, c.oid, 'TRIGGER')))
 		FROM pg_roles r
 		WHERE pg_has_role($1, r.oid, 'MEMBER')
 		ORDER BY r.rolname`, role, managedAdmins, powerfulPredefined, schemas)
@@ -211,8 +216,8 @@ func CheckAppRole(ctx context.Context, q Querier, role string, schemas []string)
 	defer rows.Close()
 	for rows.Next() {
 		var name string
-		var super, bypassRls, createRole, replication, managedAdmin, predefined, owner bool
-		if err := rows.Scan(&name, &super, &bypassRls, &createRole, &replication, &managedAdmin, &predefined, &owner); err != nil {
+		var super, bypassRls, createRole, replication, managedAdmin, predefined, owner, truncates bool
+		if err := rows.Scan(&name, &super, &bypassRls, &createRole, &replication, &managedAdmin, &predefined, &owner, &truncates); err != nil {
 			return fmt.Errorf("check the app role: %w", err)
 		}
 		who := role
@@ -239,6 +244,9 @@ func CheckAppRole(ctx context.Context, q Querier, role string, schemas []string)
 		}
 		if owner {
 			problems = append(problems, who+" owns pgmandate's schemas or objects")
+		}
+		if truncates {
+			problems = append(problems, who+" may truncate or add triggers to pgmandate's tables, which gets past row level security and the append-only guard")
 		}
 	}
 	if err := rows.Err(); err != nil {

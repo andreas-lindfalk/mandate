@@ -128,11 +128,11 @@ func (s *Service) Propose(ctx context.Context, req *agentv1.ProposeRequest) (*ag
 }
 
 func (s *Service) propose(ctx context.Context, req *agentv1.ProposeRequest) (*agentv1.ProposeResponse, error) {
-	if err := requireMatch(req.GetAction(), actionPattern, "action key"); err != nil {
+	if err := requireMatch(req.GetAction(), actionPattern, "action key", actionForm); err != nil {
 		return nil, err
 	}
 	if req.GetRunId() != "" {
-		if err := requireMatch(req.GetRunId(), runPattern, "run id"); err != nil {
+		if err := requireMatch(req.GetRunId(), runPattern, "run id", runForm); err != nil {
 			return nil, err
 		}
 	}
@@ -222,7 +222,7 @@ func provenance(p *agentv1.Provenance, call Call) proposals.Provenance {
 func (s *Service) GetProposal(ctx context.Context, req *agentv1.GetProposalRequest) (*agentv1.GetProposalResponse, error) {
 	arguments := map[string]any{"proposalId": logged(req.GetProposalId(), uuidPattern), "waitSeconds": req.GetWaitSeconds()}
 	return serve(s, ctx, "get_proposal", arguments, "", func(ctx context.Context) (*agentv1.GetProposalResponse, error) {
-		if err := requireMatch(req.GetProposalId(), uuidPattern, "proposal id"); err != nil {
+		if err := requireMatch(req.GetProposalId(), uuidPattern, "proposal id", uuidForm); err != nil {
 			return nil, err
 		}
 		id := uuid.MustParse(req.GetProposalId())
@@ -252,17 +252,19 @@ func (s *Service) ListProposals(ctx context.Context, req *agentv1.ListProposalsR
 	arguments := map[string]any{"status": logged(req.GetStatus(), statusPattern), "runId": logged(req.GetRunId(), runPattern), "limit": req.GetLimit()}
 	return serve(s, ctx, "list_proposals", arguments, "", func(ctx context.Context) (*agentv1.ListProposalsResponse, error) {
 		if req.GetStatus() != "" {
-			if err := requireMatch(req.GetStatus(), statusPattern, "status"); err != nil {
+			if err := requireMatch(req.GetStatus(), statusPattern, "status", statusForm); err != nil {
 				return nil, err
 			}
 		}
 		if req.GetRunId() != "" {
-			if err := requireMatch(req.GetRunId(), runPattern, "run id"); err != nil {
+			if err := requireMatch(req.GetRunId(), runPattern, "run id", runForm); err != nil {
 				return nil, err
 			}
 		}
-		limit := int(req.GetLimit())
-		if limit <= 0 || limit > 100 {
+		// Not given is 20; past the contract's 100 is 100, so an agent that
+		// asks for more gets as many as it may, not fewer than it asked.
+		limit := min(int(req.GetLimit()), 100)
+		if limit <= 0 {
 			limit = 20
 		}
 		a, _ := actor.From(ctx)
@@ -278,13 +280,19 @@ func (s *Service) ListProposals(ctx context.Context, req *agentv1.ListProposalsR
 		if err != nil {
 			return nil, err
 		}
+		// Why each waiting proposal waits, as get_proposal says it.
+		reasons, err := s.host.WaitReasons(ctx, list)
+		if err != nil {
+			return nil, err
+		}
 		resp := &agentv1.ListProposalsResponse{Proposals: make([]*agentv1.Proposal, 0, len(list))}
 		for _, p := range list {
+			reason := reasons[p.Id]
 			var d *deliveries.Delivery
 			if found, ok := delivered[p.Id]; ok {
 				d = &found
 			}
-			resp.Proposals = append(resp.Proposals, proposalView(p, "", d))
+			resp.Proposals = append(resp.Proposals, proposalView(p, reason, d))
 		}
 		return resp, nil
 	})
@@ -293,7 +301,7 @@ func (s *Service) ListProposals(ctx context.Context, req *agentv1.ListProposalsR
 func (s *Service) WithdrawProposal(ctx context.Context, req *agentv1.WithdrawProposalRequest) (*agentv1.WithdrawProposalResponse, error) {
 	arguments := map[string]any{"proposalId": logged(req.GetProposalId(), uuidPattern), "reasonChars": utf8.RuneCountInString(req.GetReason())}
 	return serve(s, ctx, "withdraw_proposal", arguments, "", func(ctx context.Context) (*agentv1.WithdrawProposalResponse, error) {
-		if err := requireMatch(req.GetProposalId(), uuidPattern, "proposal id"); err != nil {
+		if err := requireMatch(req.GetProposalId(), uuidPattern, "proposal id", uuidForm); err != nil {
 			return nil, err
 		}
 		p, err := s.host.ProposalsService().Withdraw(ctx, uuid.MustParse(req.GetProposalId()), req.GetReason())
@@ -302,24 +310,6 @@ func (s *Service) WithdrawProposal(ctx context.Context, req *agentv1.WithdrawPro
 		}
 		return &agentv1.WithdrawProposalResponse{Proposal: proposalView(p, "", nil)}, nil
 	})
-}
-
-// reason is why a pending proposal waits for a person: what the last
-// execution attempt said, or, for a proposal that is never executed, what
-// rules it out.
-func (s *Service) reason(ctx context.Context, proposal proposals.Proposal) (string, error) {
-	reason, found, err := s.host.ProposalsService().SkipReason(ctx, proposal.Id)
-	if err != nil || found {
-		return reason, err
-	}
-	action, ok, err := s.host.Lookup(ctx, proposal.Action)
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return "action_removed", nil
-	}
-	return proposals.WhyNotCandidate(action, proposal), nil
 }
 
 // settled reads a proposal's state, waiting up to wait for it to settle:
@@ -334,20 +324,18 @@ func (s *Service) settled(ctx context.Context, id uuid.UUID, wait time.Duration,
 			return nil, err
 		}
 		reason := ""
+		recorded := false
 		var delivery *deliveries.Delivery
 		done := false
-		if p.Status == proposals.StatusPending && p.PastDeadline {
-			// Nobody can decide it any more: waiting would change nothing.
-			done = true
-		} else if p.Status == proposals.StatusPending {
-			recorded, found, err := service.SkipReason(ctx, id)
-			if err != nil {
+		if p.Status == proposals.StatusPending {
+			if reason, recorded, err = service.SkipReason(ctx, id); err != nil {
 				return nil, err
 			}
-			reason = recorded
-			// Nobody decides a dry run, so a read does not wait for one;
-			// a proposal just made waits for its mandates' answer.
-			done = (justProposed && found) || (p.DryRun && !justProposed)
+			// Nobody can decide a proposal past its deadline any more, so
+			// waiting would change nothing. Nobody decides a dry run, so a
+			// read does not wait for one; a proposal just made waits for
+			// its mandates' answer.
+			done = p.PastDeadline || (justProposed && recorded) || (p.DryRun && !justProposed)
 		} else {
 			d, found, err := s.host.DeliveryOf(ctx, id)
 			if err != nil {
@@ -359,10 +347,13 @@ func (s *Service) settled(ctx context.Context, id uuid.UUID, wait time.Duration,
 			done = !found || d.Status != deliveries.StatusPending
 		}
 		if done || !time.Now().Before(deadline) {
-			if p.Status == proposals.StatusPending && reason == "" {
-				if reason, err = s.reason(ctx, p); err != nil {
+			if p.Status == proposals.StatusPending && !recorded {
+				// Nothing recorded: what rules it out, from the action.
+				action, found, err := s.host.Lookup(ctx, p.Action)
+				if err != nil {
 					return nil, err
 				}
+				reason = proposals.WaitReason(action, found, p)
 			}
 			view := proposalView(p, reason, delivery)
 			if p.Status == proposals.StatusPending && !p.PastDeadline && reason == mandates.SkipConditionUnmet {

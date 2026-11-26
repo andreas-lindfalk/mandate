@@ -216,8 +216,11 @@ func (s *LinkSuite) Test_2_APersonsLinkSignsThemInOnce() {
 
 	token, err := s.auth.NewPersonLink(t.System, bo.Id)
 	s.Require().NoError(err)
-	signedIn, err := s.client.RedeemLink(ctx, &mandatev1.RedeemLinkRequest{Token: token})
+	linkCtx, linkInfo := connect.NewClientContext(ctx)
+	signedIn, err := s.client.RedeemLink(linkCtx, &mandatev1.RedeemLinkRequest{Token: token})
 	s.Require().NoError(err)
+	s.Require().Contains(linkInfo.ResponseHeader().Get("Set-Cookie"), auth.CookieName+"="+signedIn.GetToken(), "the browser is signed in by cookie")
+	s.Require().Contains(linkInfo.ResponseHeader().Get("Set-Cookie"), "HttpOnly")
 	me, err := s.client.Me(as(signedIn.GetToken(), ""), &mandatev1.MeRequest{})
 	s.Require().NoError(err)
 	s.Require().Len(me.GetTenants(), 1, "pinned to Bo in Beta, not every tenant with his email")

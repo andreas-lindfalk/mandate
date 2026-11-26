@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,6 +28,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/examples/webhook"
 	"github.com/andreas-lindfalk/pgmandate/internal/testfix"
 	"github.com/andreas-lindfalk/pgmandate/modules/auth"
+	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/testkit"
 	"github.com/andreas-lindfalk/pgmandate/pkg/version"
@@ -69,6 +71,16 @@ func TestTheServerAnswersOnlyToThisMachineWhenDevLoginIsOn(t *testing.T) {
 	require.True(t, loopback("localhost:8585"))
 	require.False(t, loopback("0.0.0.0:8585"))
 	require.False(t, loopback(":8585"))
+	require.True(t, loopback("[::1]:8585"))
+	require.False(t, loopback("localhost"), "an address without a port is not one to listen on")
+	require.False(t, loopback("[::1]"))
+	// The listen address and the Host header are judged by the same check.
+	for _, addr := range []string{"127.0.0.1:8585", "127.1.2.3:8585", "localhost:8585", "[::1]:8585", "0.0.0.0:8585", "[::]:8585", "evil.example:8585", ":8585"} {
+		host, _, err := net.SplitHostPort(addr)
+		require.NoError(t, err)
+		require.Equal(t, loopbackHost(host), loopback(addr), addr)
+		require.Equal(t, loopbackHost(addr), loopback(addr), addr)
+	}
 }
 
 // A database whose clock is behind this machine's has not passed the
@@ -199,6 +211,15 @@ func TestDemoAndCommandLine(t *testing.T) {
 	require.NoError(t, run(ctx, "tenant", []string{"create", "-name", "Cli Co", "-owner", "cli@test.example", "-owner-name", "Cli"}, &out))
 	tenantId := submatch(t, `tenant ([0-9a-f-]{36})`, out.String())
 
+	// A token's lifetime is checked before the agent is made: a refused
+	// -days leaves no tokenless agent behind.
+	for _, days := range []string{"0", "366"} {
+		require.ErrorContains(t, run(ctx, "agent", []string{"create", "-tenant", tenantId, "-as", "cli@test.example", "-name", "cli-bot", "-days", days}, &out), "-days is 1 to 365")
+	}
+	out.Reset()
+	require.NoError(t, run(ctx, "events", []string{"-tenant", tenantId}, &out))
+	require.NotContains(t, out.String(), "agent.created", "a refused -days creates no agent")
+
 	out.Reset()
 	require.NoError(t, run(ctx, "agent", []string{"create", "-tenant", tenantId, "-as", "cli@test.example", "-name", "cli-bot"}, &out))
 	require.Contains(t, out.String(), "token mnd_")
@@ -300,6 +321,41 @@ func TestDemoAndCommandLine(t *testing.T) {
 	out.Reset()
 	require.NoError(t, run(ctx, "propose", []string{"-token", agentToken, "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "a\x01b \"quoted\"", "-rationale", "Quotes \"and\" control\x01 characters.", "-payload", `{"subject":"x"}`}, &out), "a title with control characters and quotes is sent as JSON")
 	require.Contains(t, out.String(), `"created": true`)
+	// A proposal past its deadline that the sweep has not reached is listed
+	// as expired, as the people API and the agent see it, so nobody picks
+	// it from the list to approve.
+	out.Reset()
+	require.NoError(t, run(ctx, "action", []string{"define", "-tenant", tenantId, "-as", "cli@test.example", "-key", "tickets.escalate", "-risk", "low", "-url", "https://helpdesk.example/hooks", "-schema", `{"type":"object"}`}, &out))
+	out.Reset()
+	require.NoError(t, run(ctx, "propose", []string{"-token", agentToken, "-url", mcpServer.URL + "/mcp", "-action", "tickets.escalate", "-title", "Late", "-rationale", "Nobody decides it.", "-payload", `{"subject":"x"}`, "-run", "late-1"}, &out))
+	lateId := submatch(t, `"proposalId": "([0-9a-f-]{36})"`, out.String())
+	require.NoError(t, pgx.BeginFunc(ctx, pg.Owner, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `UPDATE mandate.proposals SET created_at = now() - interval '2 hours', expires_at = now() - interval '1 second' WHERE id = $1 AND status = 'pending'`, lateId)
+		require.EqualValues(t, 1, tag.RowsAffected(), "the proposal waits for a person")
+		return err
+	}))
+	out.Reset()
+	require.NoError(t, run(ctx, "proposals", []string{"-tenant", tenantId}, &out))
+	require.Regexp(t, `(?m)^`+lateId+` expired   low     tickets\.escalate +"Late"$`, out.String(), "the stored status is still pending")
+	require.ErrorContains(t, run(ctx, "approve", []string{"-tenant", tenantId, "-as", "cli@test.example", "-proposal", lateId, "-confirm"}, &out), "the proposal has expired")
+	// The mandates command counts what each mandate has spent, as the
+	// database does: the demo's mandates have spent some and none.
+	out.Reset()
+	require.NoError(t, run(ctx, "mandates", []string{"-tenant", demoTenant(t, text)}, &out))
+	listed := regexp.MustCompile(`(?m)^mandate ([0-9a-f-]{36}): .*, (\d+) of \d+ executions this month`).FindAllStringSubmatch(out.String(), -1)
+	require.GreaterOrEqual(t, len(listed), 2, out.String())
+	counts := map[string]bool{}
+	for _, line := range listed {
+		var spent string
+		require.NoError(t, pg.Owner.QueryRow(ctx, `SELECT mandate.spent_count($1)::text`, line[1]).Scan(&spent))
+		require.Equal(t, spent, line[2], "mandate %s", line[1])
+		counts[spent] = true
+	}
+	require.True(t, counts["0"], out.String())
+	require.Greater(t, len(counts), 1, "some mandate has spent executions: %s", out.String())
 
 	// An approval from the command line queues its delivery for the server.
 	out.Reset()
@@ -376,6 +432,68 @@ func TestDescribeDeliveryShowsTheIdsAndTheBody(t *testing.T) {
 	// A body that is not JSON is printed as it is.
 	text = describeDelivery(webhook.Received{DeliveryId: deliveryId, Body: []byte("not json"), At: time.Now()})
 	require.Contains(t, text, "not json")
+}
+
+// An agent's title reaches a person's terminal escaped: a carriage return
+// and an escape sequence cannot rewrite the line a person reads to pick the
+// proposal to approve, nor can a bidi override reorder it.
+func TestAnAgentsTitleIsPrintedEscaped(t *testing.T) {
+	title := "x\r\x1b[2Kforged pending   low     tickets.note     add a note\u202e"
+	id := uuid.MustParse("3f2a91c0-0000-4000-8000-000000000000")
+	var out bytes.Buffer
+	printProposal(&out, proposals.Proposal{Id: id, Status: "pending", Risk: "high", Action: "refunds.issue", Title: title})
+	require.Equal(t, id.String()+` pending   high    refunds.issue    "x\r\x1b[2Kforged pending   low     tickets.note     add a note\u202e"`+"\n", out.String())
+
+	var payload webhook.Payload
+	payload.Proposal.Action = "refunds.issue"
+	payload.Proposal.Title = title
+	payload.Decision.Status = "approved"
+	text := describeDelivery(webhook.Received{Payload: payload, Body: []byte(`{}`), At: time.Date(2026, 11, 25, 9, 30, 0, 0, time.UTC)})
+	first, _, _ := strings.Cut(text, "\n")
+	require.Equal(t, `09:30:00  approved  refunds.issue      "x\r\x1b[2Kforged pending   low     tickets.note     add a note\u202e"`, first)
+	for _, raw := range []string{"\r", "\x1b", "\u202e"} {
+		require.NotContains(t, text, raw)
+		require.NotContains(t, out.String(), raw)
+	}
+}
+
+// The body a receiver prints carries the agent's title and payload, and a
+// JSON encoder leaves bidi overrides, C1 controls and DEL raw: they are
+// escaped there too, and what is printed is still the same JSON.
+func TestADeliveryBodyIsPrintedEscaped(t *testing.T) {
+	title := "refund \u202edlo\u2066 \u009b2K\x7f\u200b\U000e0001 done"
+	var payload webhook.Payload
+	payload.Proposal.Action = "refunds.issue"
+	payload.Proposal.Title = title
+	payload.Decision.Status = "approved"
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+	require.Contains(t, string(body), "\u202e", "the encoder leaves a bidi override raw")
+	require.Contains(t, string(body), "\u009b", "and a C1 control")
+
+	text := describeDelivery(webhook.Received{Payload: payload, Body: append(body, '\n'), At: time.Date(2026, 11, 25, 9, 30, 0, 0, time.UTC)})
+	for _, raw := range []string{"\u202e", "\u2066", "\u009b", "\x7f", "\u200b", "\U000e0001"} {
+		require.NotContains(t, text, raw)
+	}
+	require.Contains(t, text, `refund \u202edlo\u2066 \u009b2K\u007f\u200b\udb40\udc01 done`)
+	require.True(t, strings.HasSuffix(text, "}\n\n"), "trailing space after the body is not printed")
+
+	_, printed, _ := strings.Cut(text, "correlation \n")
+	var back webhook.Payload
+	require.NoError(t, json.Unmarshal([]byte(printed), &back), "the escaped body is still JSON")
+	require.Equal(t, title, back.Proposal.Title, "and means the same")
+
+	// A byte that is not UTF-8 is shown as an encoder would make it.
+	text = describeDelivery(webhook.Received{Body: []byte("{\"title\":\"a\x9bb\"}"), At: time.Now()})
+	require.Contains(t, text, `"title": "a\ufffdb"`)
+	require.NotContains(t, text, "\x9b")
+
+	// A body that is not JSON is quoted.
+	text = describeDelivery(webhook.Received{Body: []byte("not json \u202e\u009b"), At: time.Now()})
+	require.Contains(t, text, `"not json \u202e\u009b"`)
+	for _, raw := range []string{"\u202e", "\u009b"} {
+		require.NotContains(t, text, raw)
+	}
 }
 
 func TestTheDefaultAppPasswordStaysOnThisMachine(t *testing.T) {
@@ -615,4 +733,33 @@ func TestTheSetupLinkAndSignInLink(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "alice@acme.example", me.Email)
 	require.Error(t, run(ctx, "sign-in-link", []string{"-tenant", tenantId, "-email", "nobody@acme.example"}, &out), "only a person of the tenant")
+
+	// With the app connection set, the administrative commands use it and
+	// never the owner connection, as running.md says.
+	t.Setenv("MANDATE_DATABASE_URL", "postgres://mandate_owner:owner@127.0.0.1:1/mandate?sslmode=disable&connect_timeout=1")
+	t.Setenv("MANDATE_APP_DATABASE_URL", pg.AppUrl)
+	out.Reset()
+	require.NoError(t, run(ctx, "sign-in-link", []string{"-tenant", tenantId, "-email", "alice@acme.example"}, &out))
+	submatch(t, `(http://localhost:8585/sign-in#[A-Za-z0-9_-]{43})`, out.String())
+}
+
+// An address in use is refused before the job queue starts, so no job is
+// cut off by the pool closing under it.
+func TestAnAddressInUseIsRefusedBeforeAnyJobRuns(t *testing.T) {
+	ctx := context.Background()
+	pg, err := testkit.StartPostgres(ctx)
+	require.NoError(t, err)
+	defer pg.Close()
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer taken.Close() //nolint:errcheck
+	seed := make([]byte, ed25519.SeedSize)
+	t.Setenv("MANDATE_SIGNING_KEY", base64.StdEncoding.EncodeToString(seed))
+	addr := taken.Addr().String()
+
+	err = serve(ctx, config{appUrl: pg.AppUrl, httpAddr: addr, publicUrl: "http://" + addr, sessionTtl: time.Hour})
+	require.ErrorContains(t, err, "address already in use")
+	var queues int
+	require.NoError(t, pg.Owner.QueryRow(ctx, `SELECT count(*) FROM mandate_river.river_queue`).Scan(&queues))
+	require.Zero(t, queues, "the job queue never started")
 }

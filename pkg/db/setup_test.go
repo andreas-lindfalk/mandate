@@ -173,6 +173,29 @@ func TestATooStrongAppRoleIsRefused(t *testing.T) {
 	require.ErrorContains(t, err, "as a member of owners, owns pgmandate's schemas or objects")
 	exec(t, m.superuser, `ALTER TABLE mandate.events OWNER TO cloud_admin`, `REVOKE owners FROM mandate_app`, `DROP ROLE owners`)
 	require.NoError(t, m.setUp(t, db.Setup{CreateRole: true, NewRolePassword: "secret", Schemas: schemas}))
+
+	// TRUNCATE fires no row triggers and ignores row level security, and a
+	// trigger of the app's own could do anything as whoever writes: a role
+	// that may do either is refused, directly, through a role it can
+	// become, or through a grant to everyone, as is one too wide a grant
+	// on the job queue's tables.
+	for name, c := range map[string]struct{ grant, revoke []string }{
+		"truncates the log":            {[]string{`GRANT TRUNCATE ON mandate.events TO mandate_app`}, []string{`REVOKE TRUNCATE ON mandate.events FROM mandate_app`}},
+		"adds triggers":                {[]string{`GRANT TRIGGER ON mandate.proposals TO mandate_app`}, []string{`REVOKE TRIGGER ON mandate.proposals FROM mandate_app`}},
+		"granted all on every table":   {[]string{`GRANT ALL ON ALL TABLES IN SCHEMA mandate TO mandate_app`}, []string{`REVOKE TRUNCATE, TRIGGER, REFERENCES ON ALL TABLES IN SCHEMA mandate FROM mandate_app`}},
+		"granted to everyone":          {[]string{`GRANT TRUNCATE ON mandate.events TO PUBLIC`}, []string{`REVOKE TRUNCATE ON mandate.events FROM PUBLIC`}},
+		"truncates the job queue":      {[]string{`GRANT TRUNCATE ON ALL TABLES IN SCHEMA ` + jobs.Schema + ` TO mandate_app`}, []string{`REVOKE TRUNCATE ON ALL TABLES IN SCHEMA ` + jobs.Schema + ` FROM mandate_app`}},
+		"through a role it can become": {[]string{`CREATE ROLE truncaters NOLOGIN`, `GRANT TRUNCATE ON mandate.events TO truncaters`, `GRANT truncaters TO mandate_app WITH INHERIT FALSE`}, []string{`REVOKE truncaters FROM mandate_app`, `REVOKE TRUNCATE ON mandate.events FROM truncaters`, `DROP ROLE truncaters`}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			exec(t, m.superuser, c.grant...)
+			err := m.setUp(t, db.Setup{CreateRole: true, NewRolePassword: "secret", Schemas: schemas})
+			require.ErrorIs(t, err, db.ErrAppRole)
+			require.ErrorContains(t, err, "may truncate or add triggers to pgmandate's tables")
+			exec(t, m.superuser, c.revoke...)
+			require.NoError(t, m.setUp(t, db.Setup{CreateRole: true, NewRolePassword: "secret", Schemas: schemas}), "and served with again once the grant is gone")
+		})
+	}
 }
 
 // CREATE on the schema public is revoked from everyone only when asked.

@@ -17,7 +17,27 @@ Any other MCP client takes the same in its configuration:
     "headers": { "Authorization": "Bearer mnd_..." } } } }
 ```
 
-The server tells the agent how to work with it. In short: call `list_actions`, then `propose` with an `idempotency_key` made from its run and step and a `rationale`, its account for the person who decides of what it found and why this action follows, with `evidence` the person can check (where it looked, an id to find it again, what it showed). The answer is `{"created", "repeat"?, "proposal": {…}}`, and the proposal's `outcome` and `next` say whether it was allowed, carried out, or waits for a person and why. This justification is kept with the proposal as written, shown in the inbox as the agent's claim, and named in the log by digest. A mandate never reads it. Each answer is both text for a model and structured content for code, and an error carries a code (`invalid_argument`, `conflict`, `permission_denied`, `not_found`, `rate_limited`, `unauthenticated`, `canceled`, `internal`). After `internal` or `canceled` a proposal may have been stored: the same call under the same key returns it.
+The server tells the agent how to work with it. In short: call `list_actions`, then `propose` with an `idempotency_key` made from its run and step and a `rationale`, its account for the person who decides of what it found and why this action follows, with `evidence` the person can check (where it looked, an id to find it again, what it showed). The answer is `{"created", "repeat"?, "accountIgnored"?, "proposal": {…}}`, and the proposal's `outcome` and `next` say whether it was allowed, carried out, or waits for a person and why. This justification is kept with the proposal as written, shown in the inbox as the agent's claim, and named in the log by digest. A mandate never reads it. Each answer is both text for a model and structured content for code, and an error carries a code (`invalid_argument`, `conflict`, `permission_denied`, `not_found`, `rate_limited`, `unauthenticated`, `canceled`, `internal`). After `internal` or `canceled` a proposal may have been stored: the same call under the same key returns it.
+
+A waiting proposal says why it waits as a code in `skipped`, for code that branches on it: what the last execution attempt recorded, or what rules out executing it.
+
+| Code | Why it waits |
+|---|---|
+| `no_mandate` | None of the agent's mandates covers the action |
+| `risk_above_mandate` | A mandate covers the action, but not at this risk; a high-risk proposal always waits |
+| `budget_spent` | The mandate's budget for the period is used up |
+| `condition_not_met` | The mandates cover it, but the payload fails their conditions; `get_proposal` names what stood in the way in `unmet` |
+| `flagged` | Its text matches a known attempt to steer a model |
+| `action_not_executable` | The action may never be carried out under a mandate, or nothing is set up to carry it out |
+| `action_changed` | The action's risk was raised after the agent proposed |
+| `payload_invalid` | The payload no longer fits the action's schema, which changed after the agent proposed |
+| `agent_revoked` | The agent's access was revoked |
+| `action_failed` | The action itself failed when it was carried out |
+| `execution_failed` | Carrying it out kept failing before the action ran |
+| `action_removed` | The action is no longer registered; a person can only reject it |
+| `refused_<code>` | The database refused it on its own rules, such as a mandate revoked at the same moment; the database's error code follows, as in `refused_permission_denied` |
+
+Codes may be added in a later version: treat one you do not know as "waits for a person".
 
 The same contract is served as JSON over HTTP, for an agent or a script that does not speak MCP. It is defined in [proto/mandate/agent/v1/agent.proto](../proto/mandate/agent/v1/agent.proto). Payloads, results and refusals travel as JSON text (`payloadJson`), so every digit of a number is kept; over MCP they are objects. Errors use the Connect codes, with `already_exists` for a key used for another request, `failed_precondition` for withdrawing what no longer waits, and `resource_exhausted` with the seconds to wait. Only an agent's token opens it: a person's session is refused.
 
@@ -30,7 +50,7 @@ curl -s http://127.0.0.1:8585/mandate.agent.v1.AgentService/Propose \
 
 For whoever runs the agent:
 
-- **Give each run a run id**, in the prompt or the task. Keys are made from it, and a run that reuses one gets the earlier run's answers. An agent given none takes `suggestedRunId` from `list_actions`.
+- **Give each run a run id**, in the prompt or the task: 1 to 100 letters, digits and `. _ : -`. Keys are made from it, and a run that reuses one gets the earlier run's answers. An agent given none takes `suggestedRunId` from `list_actions`.
 - **Allow tool calls at least five seconds.** `propose` waits up to two seconds for a mandate's decision, and `get_proposal` can wait longer when asked; some clients give up sooner by default.
 - An agent's calls are limited to five a second per token, over MCP and HTTP together, with bursts of thirty, in each server instance; its proposals to 30 a minute and 300 an hour unless an owner sets other limits, which the database holds across instances. An agent sees its limits in `list_actions`, and a refusal says when to try again.
 - **Withdrawing.** An agent can take back its own waiting proposal with `withdraw_proposal`, as when it proposes a corrected version; a person then never approves both.

@@ -178,9 +178,11 @@ func (s *Service) AddPerson(ctx context.Context, email, name, role string) (Pers
 	return person, fault.FromDb(err)
 }
 
-// RemovePerson takes a person's role away for good and ends their
-// sessions. Only an owner may, and never the last owner; the database
-// enforces both. The row stays, so the chain still names them.
+// RemovePerson takes a person's role in the tenant away for good. Only an
+// owner may, and never the last owner; the database enforces both. Their
+// sessions are left alone, since a session spans tenants: removal takes
+// effect on their next call in this tenant. The row stays, so the chain
+// still names them.
 func (s *Service) RemovePerson(ctx context.Context, id uuid.UUID) error {
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		if err := db.RequireOwner(ctx, tx); err != nil {
@@ -197,8 +199,14 @@ func (s *Service) RemovePerson(ctx context.Context, id uuid.UUID) error {
 		if row.RemovedAt != nil {
 			return fault.New(fault.Conflict, "the person is already removed")
 		}
-		if _, err := q.RemovePerson(ctx, id); err != nil {
+		// A removal that committed after the read above leaves nothing to
+		// change, and is the same conflict.
+		changed, err := q.RemovePerson(ctx, id)
+		if err != nil {
 			return err
+		}
+		if changed == 0 {
+			return fault.New(fault.Conflict, "the person is already removed")
 		}
 		// Sessions are by email and span tenants, so they are left alone:
 		// removal from this tenant takes effect on the next call, which

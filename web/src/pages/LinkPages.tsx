@@ -82,7 +82,7 @@ export function SetupPage() {
           Set up and sign in <ArrowRight />
         </Button>
         {error ? (
-          <p role="alert" className="text-sm text-danger">
+          <p role="alert" className="text-sm text-danger-ink">
             {error}
           </p>
         ) : null}
@@ -115,7 +115,7 @@ export function SignInLinkPage() {
     <Frame eyebrow="Sign in" title={error ? "This link does not work" : "Signing you in…"}>
       {error ? (
         <>
-          <p role="alert" className="mt-4 text-sm text-danger">
+          <p role="alert" className="mt-4 text-sm text-danger-ink">
             {error}
           </p>
           <Link to="/login" className="mt-4 inline-block text-sm underline underline-offset-2">

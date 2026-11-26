@@ -460,6 +460,33 @@ func (q *Queries) ListProposals(ctx context.Context, arg ListProposalsParams) ([
 	return items, nil
 }
 
+const lockAction = `-- name: LockAction :exec
+SELECT 1 FROM mandate.actions WHERE key = $1 FOR SHARE
+`
+
+// The tenant's definition of the action, if it has one, locked until the
+// transaction ends, so that a change to it or its removal waits for an
+// execution already running. Read it after this: under read committed a
+// statement sees what committed before it began.
+func (q *Queries) LockAction(ctx context.Context, key string) error {
+	_, err := q.db.Exec(ctx, lockAction, key)
+	return err
+}
+
+const lockAgent = `-- name: LockAgent :one
+SELECT (revoked_at IS NULL)::boolean AS live FROM mandate.agents WHERE id = $1 FOR SHARE
+`
+
+// Whether the agent is live, its row locked until the transaction ends: a
+// revocation, or a change of mode, waits for what runs on the agent's word
+// now, and what starts after one waits for it and reads it.
+func (q *Queries) LockAgent(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, lockAgent, id)
+	var live bool
+	err := row.Scan(&live)
+	return live, err
+}
+
 const pastDeadline = `-- name: PastDeadline :one
 SELECT (now() >= expires_at)::boolean FROM mandate.proposals WHERE id = $1
 `

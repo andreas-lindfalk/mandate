@@ -294,14 +294,12 @@ export const TenantMembershipSchema: GenMessage<TenantMembership> = /*@__PURE__*
 
 /**
  * AuthService handles sessions. A session token is sent as
- * "Authorization: Bearer", or as the cookie the OIDC callback sets.
+ * "Authorization: Bearer", or as the session cookie that sign-in sets.
  *
  * @generated from service mandate.v1.AuthService
  */
 export const AuthService: GenService<{
   /**
-   * DevLogin signs in with only an email. Available only when dev login is
-   * enabled, which the server allows only on localhost.
    * SignInMethods says how a person can sign in here. It needs no session.
    *
    * @generated from rpc mandate.v1.AuthService.SignInMethods
@@ -312,6 +310,9 @@ export const AuthService: GenService<{
     output: typeof SignInMethodsResponseSchema;
   },
   /**
+   * DevLogin signs in with only an email. Available only when dev login is
+   * enabled, which the server allows only on localhost.
+   *
    * @generated from rpc mandate.v1.AuthService.DevLogin
    */
   devLogin: {

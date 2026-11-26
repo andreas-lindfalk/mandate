@@ -5,12 +5,12 @@ package mandate.v1;
 option go_package = "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1;mandatev1";
 
 // AuthService handles sessions. A session token is sent as
-// "Authorization: Bearer", or as the cookie the OIDC callback sets.
+// "Authorization: Bearer", or as the session cookie that sign-in sets.
 service AuthService {
-  // DevLogin signs in with only an email. Available only when dev login is
-  // enabled, which the server allows only on localhost.
   // SignInMethods says how a person can sign in here. It needs no session.
   rpc SignInMethods(SignInMethodsRequest) returns (SignInMethodsResponse);
+  // DevLogin signs in with only an email. Available only when dev login is
+  // enabled, which the server allows only on localhost.
   rpc DevLogin(DevLoginRequest) returns (DevLoginResponse);
   // SetUp uses the setup link the server writes to its log while there is
   // no tenant: it makes the first tenant and its owner, and signs the owner

@@ -9,34 +9,33 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 	"github.com/andreas-lindfalk/pgmandate/pkg/actor"
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
 )
 
 // Skip reasons, as written to the chain when an execution leaves the
-// proposal for a person.
+// proposal for a person. They are the modules' own, under one name here.
 const (
-	SkipNotExecutable  = proposals.SkipNotExecutable
-	SkipPayloadInvalid = proposals.SkipPayloadInvalid
-	SkipActionChanged  = proposals.SkipActionChanged
-	SkipFlagged        = proposals.SkipFlagged
-	SkipNoMandate      = "no_mandate"
-	SkipRiskAbove      = "risk_above_mandate"
-	SkipBudgetSpent    = "budget_spent"
-	SkipConditionUnmet = "condition_not_met"
-	SkipAgentRevoked   = "agent_revoked"
-	// SkipActionFailed is written when the action itself failed under an
-	// execution: at once when it refused with a coded error, and after the
-	// job's last attempt otherwise.
-	SkipActionFailed = "action_failed"
-	// SkipExecutionFailed is written after the job's last attempt when the
-	// execution itself kept failing before the action ran.
-	SkipExecutionFailed = "execution_failed"
+	SkipNotExecutable   = proposals.SkipNotExecutable
+	SkipPayloadInvalid  = proposals.SkipPayloadInvalid
+	SkipActionChanged   = proposals.SkipActionChanged
+	SkipFlagged         = proposals.SkipFlagged
+	SkipNoMandate       = mandates.SkipNoMandate
+	SkipRiskAbove       = mandates.SkipRiskAbove
+	SkipBudgetSpent     = mandates.SkipBudgetSpent
+	SkipConditionUnmet  = mandates.SkipConditionUnmet
+	SkipAgentRevoked    = proposals.SkipAgentRevoked
+	SkipActionFailed    = proposals.SkipActionFailed
+	SkipExecutionFailed = proposals.SkipExecutionFailed
+	// SkipActionRemoved is not written to the chain; it is the reason the
+	// API gives for a pending proposal whose action is no longer registered.
+	SkipActionRemoved = proposals.SkipActionRemoved
 	// SkipRefused is the prefix when the database refused the execution on
 	// its own rules, such as a mandate revoked between the check and the
 	// write.
-	SkipRefused = "refused_"
+	SkipRefused = proposals.SkipRefused
 )
 
 // ExecuteProposal carries a proposal out as the system when a mandate
@@ -47,25 +46,8 @@ const (
 // decided proposal is left alone.
 func (k *Kernel) ExecuteProposal(ctx context.Context, tenantId, proposalId uuid.UUID) error {
 	ctx = actor.AsSystem(ctx, tenantId)
-	proposal, err := k.Proposals.Get(ctx, proposalId)
-	if err != nil {
-		if fault.CodeOf(err) == fault.NotFound {
-			return nil
-		}
-		return err
-	}
-	if proposal.Status != proposals.StatusPending {
-		return nil
-	}
-	// A revoked agent's proposals wait for a person, whatever its mandates
-	// said; the database refuses the execution too.
-	agent, err := k.Agents.Get(ctx, proposal.AgentId)
-	if err != nil {
-		return err
-	}
-	if agent.RevokedAt != nil {
-		return k.Proposals.RecordSkip(ctx, proposalId, SkipAgentRevoked)
-	}
+	// Execute checks under its own locks that the proposal is there and
+	// pending, and records a revoked agent as agent_revoked.
 	done, skipped, err := k.Proposals.Execute(ctx, proposalId, k.basisFor)
 	switch {
 	case err == nil && skipped != "":

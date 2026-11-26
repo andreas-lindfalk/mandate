@@ -3,11 +3,13 @@ package mandates_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
@@ -75,6 +77,23 @@ func (s *MandatesSuite) Test_GrantValidation() {
 	}
 	_, err := s.W.Kernel.Mandates.Grant(context.Background(), ok)
 	s.code(err, fault.InvalidArgument)
+}
+
+// A policy reference that is too long is refused with the rule, not with
+// the message for a missing one, and 200 characters are still allowed.
+func (s *MandatesSuite) Test_GrantPolicyRefLengthStatesTheLimit() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	input := mandates.Input{Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, Days: 30}
+	for name, ref := range map[string]string{"missing": "  ", "too long": strings.Repeat("ä", 201)} {
+		input.PolicyRef = ref
+		_, err := s.W.Kernel.Mandates.Grant(t.Owner, input)
+		s.code(err, fault.InvalidArgument)
+		s.Require().Equal("a mandate rests on a policy document: give its reference, 1 to 200 characters", fault.Message(err), name)
+	}
+	input.PolicyRef = strings.Repeat("ä", 200)
+	m, err := s.W.Kernel.Mandates.Grant(t.Owner, input)
+	s.Require().NoError(err)
+	s.Require().Equal(input.PolicyRef, m.PolicyRef)
 }
 
 func (s *MandatesSuite) Test_OwnerGrantsAndRevokesOnce() {
@@ -170,6 +189,58 @@ func (s *MandatesSuite) Test_ResolveFindsTheMandateThatAllowsIt() {
 	medium := s.grant(t.Owner, mandates.Input{Actions: []string{"test.low"}, MaxRisk: mandates.RiskMedium})
 	r = s.resolve(t.System, t.AgentId, "test.low", mandates.RiskLow)
 	s.Require().Equal(medium.Id, r.Mandate.Id, "the most permissive mandate with room is chosen")
+}
+
+// resolveWithin resolves in a transaction of its own that waits at most a
+// second for a lock, so a resolution that queues behind another fails with
+// lock_not_available instead of waiting.
+func (s *MandatesSuite) resolveWithin(ctx context.Context, agentId uuid.UUID, action string) (mandates.Resolution, error) {
+	var r mandates.Resolution
+	err := db.InTx(ctx, s.W.Pg.App, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '1s'"); err != nil {
+			return err
+		}
+		var err error
+		r, err = s.W.Kernel.Mandates.Resolve(ctx, tx, agentId, action, mandates.RiskLow, json.RawMessage(`{}`))
+		return err
+	})
+	return r, err
+}
+
+func (s *MandatesSuite) Test_ResolveLocksOnlyTheMandatesThatCoverTheAction() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other-bot", "", "live")
+	s.Require().NoError(err)
+	own := s.grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"refunds.*"}})
+	tenantWide := s.grant(t.Owner, mandates.Input{Actions: []string{"tickets.*"}})
+
+	// The first agent resolves refunds.create and holds its transaction
+	// open; the tenant-wide mandate for tickets is live for it too, but does
+	// not cover the action.
+	s.Require().NoError(db.InTx(t.System, s.W.Pg.App, func(tx pgx.Tx) error {
+		r, err := s.W.Kernel.Mandates.Resolve(t.System, tx, t.AgentId, "refunds.create", mandates.RiskLow, json.RawMessage(`{}`))
+		s.Require().NoError(err)
+		s.Require().Equal(own.Id, r.Mandate.Id)
+
+		r, err = s.resolveWithin(t.System, other.Id, "tickets.create")
+		s.Require().NoError(err, "another agent's execution of another action does not wait")
+		s.Require().Equal(tenantWide.Id, r.Mandate.Id)
+		return nil
+	}))
+
+	// A mandate that covers the action is still locked: a second execution
+	// under it waits for the first, so the budget is counted in turn.
+	s.Require().NoError(db.InTx(t.System, s.W.Pg.App, func(tx pgx.Tx) error {
+		r, err := s.W.Kernel.Mandates.Resolve(t.System, tx, t.AgentId, "tickets.create", mandates.RiskLow, json.RawMessage(`{}`))
+		s.Require().NoError(err)
+		s.Require().Equal(tenantWide.Id, r.Mandate.Id)
+
+		_, err = s.resolveWithin(t.System, other.Id, "tickets.create")
+		var pgErr *pgconn.PgError
+		s.Require().ErrorAs(err, &pgErr)
+		s.Require().Equal("55P03", pgErr.Code, "lock_not_available")
+		return nil
+	}))
 }
 
 func (s *MandatesSuite) Test_ValidityAndRevocation() {

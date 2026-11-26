@@ -16,6 +16,8 @@ on:
       - "schema/**"
       - "web/**"
       - "proto/**"
+      - "sign/**"
+      - "examples/**"
       - "*.go"
       - "go.mod"
       - "go.sum"

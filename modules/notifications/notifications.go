@@ -12,8 +12,6 @@ package notifications
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +28,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
 	"github.com/andreas-lindfalk/pgmandate/modules/notifications/internal/repo"
+	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 	"github.com/andreas-lindfalk/pgmandate/pkg/actor"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/events"
@@ -131,7 +131,7 @@ func (s *Service) Set(ctx context.Context, kind, url string) (Notifier, error) {
 			return err
 		}
 		q := repo.New(tx)
-		if err := s.removeLive(ctx, tx, q); err != nil {
+		if _, err := s.removeLive(ctx, tx, q); err != nil {
 			return err
 		}
 		id := uuid.New()
@@ -144,18 +144,11 @@ func (s *Service) Set(ctx context.Context, kind, url string) (Notifier, error) {
 		}
 		result = Notifier{Id: row.Id, Kind: row.Kind, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt}
 		_, err = events.Append(ctx, tx, events.Event{
-			Type: "notifier.set", SubjectId: id, Payload: map[string]any{"kind": kind, "urlSha256": urlDigest(url)},
+			Type: "notifier.set", SubjectId: id, Payload: map[string]any{"kind": kind, "urlSha256": events.UrlDigest(url)},
 		})
 		return err
 	})
 	return result, fault.FromDb(err)
-}
-
-// urlDigest names an address in the log without writing it there: the
-// SHA-256 of the address as written, as for connectors.
-func urlDigest(url string) string {
-	sum := sha256.Sum256([]byte(url))
-	return hex.EncodeToString(sum[:])
 }
 
 // Remove stops notifications for the tenant.
@@ -164,30 +157,37 @@ func (s *Service) Remove(ctx context.Context) error {
 		if err := db.RequireOwner(ctx, tx); err != nil {
 			return err
 		}
-		q := repo.New(tx)
-		if _, err := q.LiveNotifier(ctx); errors.Is(err, pgx.ErrNoRows) {
-			return fault.New(fault.NotFound, "no notifier is set")
-		} else if err != nil {
+		removed, err := s.removeLive(ctx, tx, repo.New(tx))
+		if err != nil {
 			return err
 		}
-		return s.removeLive(ctx, tx, q)
+		if !removed {
+			return fault.New(fault.NotFound, "no notifier is set")
+		}
+		return nil
 	})
 	return fault.FromDb(err)
 }
 
-func (s *Service) removeLive(ctx context.Context, tx pgx.Tx, q *repo.Queries) error {
+// removeLive removes the live notifier and records it, and says whether
+// there was one. The read takes no lock, so the update names the notifier
+// it read: when a removal or a Set commits between the two, the update
+// changes nothing and nothing is recorded, as if the read had found no
+// notifier. A notifier that Set made in between stays live.
+func (s *Service) removeLive(ctx context.Context, tx pgx.Tx, q *repo.Queries) (bool, error) {
 	live, err := q.LiveNotifier(ctx)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	if _, err := q.RemoveLiveNotifier(ctx); err != nil {
-		return err
+	changed, err := q.RemoveLiveNotifier(ctx, live.Id)
+	if err != nil || changed == 0 {
+		return false, err
 	}
 	_, err = events.Append(ctx, tx, events.Event{Type: "notifier.removed", SubjectId: live.Id, Payload: map[string]any{"kind": live.Kind}})
-	return err
+	return err == nil, err
 }
 
 // Get returns the tenant's notifier, or nil when none is set.
@@ -252,14 +252,8 @@ func (s *Service) Notify(ctx context.Context, tenantId, proposalId uuid.UUID) er
 	if err != nil || !waiting {
 		return err
 	}
-	var target *repo.NotifierOfRow
-	if err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
-		rows, err := repo.New(tx).NotifierOf(ctx)
-		if len(rows) > 0 {
-			target = &rows[0]
-		}
-		return err
-	}); err != nil || target == nil {
+	target, err := s.target(ctx)
+	if err != nil || target == nil {
 		return err
 	}
 	if err := s.post(ctx, target.Kind, target.Url, s.render(target.Kind, message)); err != nil {
@@ -274,6 +268,21 @@ func (s *Service) Notify(ctx context.Context, tenantId, proposalId uuid.UUID) er
 		slog.ErrorContext(ctx, "a notification was sent but not recorded", "tenant", tenantId, "proposal", proposalId, "error", err)
 	}
 	return nil
+}
+
+// target reads where the tenant's notifications go, or nil when nowhere.
+// The address is a secret that only the system reads, so ctx must be
+// scoped as the system (actor.AsSystem).
+func (s *Service) target(ctx context.Context) (*repo.NotifierOfRow, error) {
+	var target *repo.NotifierOfRow
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		rows, err := repo.New(tx).NotifierOf(ctx)
+		if len(rows) > 0 {
+			target = &rows[0]
+		}
+		return err
+	})
+	return target, err
 }
 
 // post sends one message to a chat tool. A refusal the tool will repeat is
@@ -322,14 +331,8 @@ func (s *Service) SendTest(ctx context.Context) error {
 	}
 	// The address is read as the system, the only reader it has.
 	system := actor.AsSystem(ctx, tenantId)
-	var target *repo.NotifierOfRow
-	if err := db.InTx(system, s.pool, func(tx pgx.Tx) error {
-		rows, err := repo.New(tx).NotifierOf(system)
-		if len(rows) > 0 {
-			target = &rows[0]
-		}
-		return err
-	}); err != nil {
+	target, err := s.target(system)
+	if err != nil {
 		return err
 	}
 	if target == nil {
@@ -347,26 +350,31 @@ func (s *Service) SendTest(ctx context.Context) error {
 	return nil
 }
 
-// reasons are the skip reasons as a person reads them; the web app has the
-// same words.
+// reasons are the skip reasons as a person reads them in a chat tool. The web
+// app (skipText) and the agent API (agentapi) word the same reasons for their
+// own readers; a reason the database refused is worded in render.
 var reasons = map[string]string{
-	"no_mandate":            "no mandate covers it",
-	"risk_above_mandate":    "the risk is above what the mandate allows",
-	"budget_spent":          "the mandate's budget for this month is spent",
-	"condition_not_met":     "the payload does not meet the mandate's condition",
-	"flagged":               "it carries text that tries to steer a model",
-	"action_not_executable": "a person always decides this action",
-	"action_failed":         "the system that carries it out refused it",
-	"execution_failed":      "the execution failed",
-	"agent_revoked":         "the agent is revoked",
-	"action_changed":        "the action's risk was raised since it was proposed",
-	"payload_invalid":       "the payload no longer fits the action's schema",
+	mandates.SkipNoMandate:        "no mandate covers it",
+	mandates.SkipRiskAbove:        "the risk is above what the mandate allows",
+	mandates.SkipBudgetSpent:      "the mandate's budget for this month is spent",
+	mandates.SkipConditionUnmet:   "the payload does not meet the mandate's condition",
+	proposals.SkipFlagged:         "it carries text that tries to steer a model",
+	proposals.SkipNotExecutable:   "a person always decides this action",
+	proposals.SkipActionFailed:    "the system that carries it out refused it",
+	proposals.SkipExecutionFailed: "the execution failed",
+	proposals.SkipAgentRevoked:    "the agent is revoked",
+	proposals.SkipActionChanged:   "the action's risk was raised since it was proposed",
+	proposals.SkipPayloadInvalid:  "the payload no longer fits the action's schema",
+	proposals.SkipActionRemoved:   "the action has been removed, so it can only be rejected",
 }
 
 // render writes the message for the chat tool. Every value in it comes
 // from an owner's definitions or the server, and is escaped all the same.
 func (s *Service) render(kind string, m Message) map[string]any {
 	reason := reasons[m.Reason]
+	if code, ok := strings.CutPrefix(m.Reason, proposals.SkipRefused); ok && reason == "" {
+		reason = "the database refused to carry it out under its own rules (" + code + ")"
+	}
 	if reason == "" && m.Reason != "" {
 		reason = "it was left for a person"
 	}

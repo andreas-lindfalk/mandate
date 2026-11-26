@@ -55,6 +55,7 @@ export const eventLabel: Record<string, string> = {
   "tenant.created": "Tenant created",
   "person.added": "Person added",
   "person.removed": "Person removed",
+  "person.bound": "Person bound to a sign-in identity",
   "agent.created": "Agent registered",
   "agent.revoked": "Agent revoked",
   "agent.token_issued": "Token issued",
@@ -89,6 +90,33 @@ export const eventLabel: Record<string, string> = {
   "delivery.retried": "Delivery sent again",
   "delivery.settled": "Settled by a person",
 };
+
+/**
+ * The events whose subject is a proposal, so the Evidence table can link them
+ * to it in the inbox. A list, not a prefix: proposal.rapid_approvals has the
+ * person who approved as its subject, and a new event type links only once it
+ * is added here.
+ */
+export const proposalEvents = new Set([
+  "proposal.created",
+  "proposal.approved",
+  "proposal.rejected",
+  "proposal.executed",
+  "proposal.execution_skipped",
+  "proposal.withdrawn",
+  "proposal.expired",
+  "proposal.would_allow",
+  "proposal.dismissed",
+  "proposal.notified",
+  "delivery.retargeted",
+  "delivery.done",
+  "delivery.refused",
+  "delivery.not_sent",
+  "delivery.unknown",
+  "delivery.conflict",
+  "delivery.retried",
+  "delivery.settled",
+]);
 
 /** The host of a URL, for showing where something goes without the whole address. */
 export function hostOf(url: string) {
@@ -136,16 +164,22 @@ export const skipLabel: Record<string, string> = {
   payload_invalid: "The action's schema has changed and the payload no longer fits it",
 };
 
+/** The prefix of a reason where the database refused the execution, as in refused_permission_denied. */
+const skipRefused = "refused_";
+
+/** Plain words for why a proposal waits for a person; an unknown reason is shown as is. */
+export function skipText(reason: string) {
+  const label = skipLabel[reason];
+  if (label) return label;
+  if (reason.startsWith(skipRefused)) {
+    return `The database refused to carry it out under its own rules (${reason.slice(skipRefused.length)})`;
+  }
+  return reason;
+}
+
 export const roleLabel: Record<string, string> = { owner: "Owner", reviewer: "Reviewer" };
 
-/** Pretty JSON, or the text as is when it is not JSON. */
-export function prettyJson(text: string) {
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2);
-  } catch {
-    return text;
-  }
-}
+export { prettyJson } from "@/lib/json";
 
 export function shortId(id: string) {
   return id.slice(0, 8);

@@ -178,10 +178,10 @@ An attempt counts as possibly sent from the moment it starts, until it is proven
 
 **Opening an attempt.** Before each call, in its own committed transaction, the worker opens an attempt: `attempts_started + 1`, and `attempt_open_at = now()`. The same transaction reads the database's clock for the signed timestamp. The guard refuses the opening when:
 - `now() > not_after − 15 s`, so no attempt starts too late
-- an attempt is already open and younger than the request timeout
+- an attempt is already open and younger than 45 seconds (`mandate.delivery_stale`: the request timeout plus a margin)
 - the delivery has moved since the job read it
 
-An open attempt older than that was left by a crash. It stays counted as possibly sent, and a new one may open.
+An open attempt older than 45 seconds was left by a crash. It stays counted as possibly sent, and a new one may open.
 
 **Closing it.** After the call, the worker closes the attempt by clearing `attempt_open_at`, and records what it learned:
 - **A failure before the request's headers were written** (`httptrace.WroteHeaders` never fired), such as DNS, a refused connection, a TLS handshake, a blocked or private address, or plain http, adds 1 to `attempts_unsent`. Only this proves an attempt unsent.
@@ -225,7 +225,7 @@ After `refused`, `settled_not_done`, or `not_sent` past `not_after − 15 s`, th
 - **One periodic River job, `mandate.sweep`,** runs every minute on River's leader only. It calls a SECURITY DEFINER function, `mandate.tenants_with_due_work()`, backed by partial indexes. The function returns only the ids of tenants that have one of:
   - a pending proposal past `expires_at`
   - a pending delivery past `not_after − 15 s` with no attempt open
-  - an attempt open for longer than the request timeout
+  - an attempt open for longer than 45 seconds (`mandate.delivery_stale`)
 - **For each such tenant,** the sweep inserts a `mandate.sweep_tenant` job, unique per tenant while it waits or runs. The job scopes itself to the tenant as the system. It takes each row with `FOR UPDATE SKIP LOCKED`, so a delivery worker or a second sweep never acts on the same row at once, and it:
   - expires the proposals
   - closes attempts left open by a crash, which stay counted as possibly sent; such a delivery stays `pending` for its job to retry or finish

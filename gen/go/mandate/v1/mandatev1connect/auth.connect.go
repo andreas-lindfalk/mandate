@@ -50,10 +50,10 @@ const (
 
 // AuthServiceClient is a client for the mandate.v1.AuthService service.
 type AuthServiceClient interface {
-	// DevLogin signs in with only an email. Available only when dev login is
-	// enabled, which the server allows only on localhost.
 	// SignInMethods says how a person can sign in here. It needs no session.
 	SignInMethods(context.Context, *v1.SignInMethodsRequest) (*v1.SignInMethodsResponse, error)
+	// DevLogin signs in with only an email. Available only when dev login is
+	// enabled, which the server allows only on localhost.
 	DevLogin(context.Context, *v1.DevLoginRequest) (*v1.DevLoginResponse, error)
 	// SetUp uses the setup link the server writes to its log while there is
 	// no tenant: it makes the first tenant and its owner, and signs the owner
@@ -183,10 +183,10 @@ func (c *authServiceClient) Me(ctx context.Context, req *v1.MeRequest) (*v1.MeRe
 
 // AuthServiceHandler is an implementation of the mandate.v1.AuthService service.
 type AuthServiceHandler interface {
-	// DevLogin signs in with only an email. Available only when dev login is
-	// enabled, which the server allows only on localhost.
 	// SignInMethods says how a person can sign in here. It needs no session.
 	SignInMethods(context.Context, *v1.SignInMethodsRequest) (*v1.SignInMethodsResponse, error)
+	// DevLogin signs in with only an email. Available only when dev login is
+	// enabled, which the server allows only on localhost.
 	DevLogin(context.Context, *v1.DevLoginRequest) (*v1.DevLoginResponse, error)
 	// SetUp uses the setup link the server writes to its log while there is
 	// no tenant: it makes the first tenant and its owner, and signs the owner

@@ -2,10 +2,13 @@ package tenants_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/stretchr/testify/suite"
 
@@ -128,6 +131,84 @@ func (s *TenantsSuite) Test_TwoOwnersRemovingEachOtherLeaveOne() {
 	}
 }
 
+// The last owner is counted after the tenant's lock, which holds only
+// when that count sees what committed before it. Under repeatable read
+// both of two owners removing each other would see the other still there,
+// so the database refuses people's changes under any other level, and
+// db.InTx begins read committed whatever the default is.
+func (s *TenantsSuite) Test_PeopleAreChangedUnderReadCommittedOnly() {
+	ctx := context.Background()
+	t := s.W.NewTenant(s.T(), "Acme")
+	second, err := s.W.Kernel.Tenants.AddPerson(t.Owner, "second@test.example", "Second", tenants.RoleOwner)
+	s.Require().NoError(err)
+	owners := func() int {
+		var n int
+		s.Require().NoError(s.W.Pg.Owner.QueryRow(ctx,
+			`SELECT count(*) FROM mandate.persons WHERE tenant_id = $1 AND role = 'owner' AND removed_at IS NULL`, t.Id).Scan(&n))
+		return n
+	}
+
+	// Both take their snapshot with the scope, as db.InTx's first statement
+	// would, before either removes the other.
+	begin := func(by uuid.UUID) pgx.Tx {
+		tx, err := s.W.Pg.App.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+		s.Require().NoError(err)
+		_, err = tx.Exec(ctx, `SELECT set_config('mandate.tenant_id', $1, true), set_config('mandate.actor_kind', 'person', true), set_config('mandate.actor_id', $2, true)`,
+			t.Id.String(), by.String())
+		s.Require().NoError(err)
+		return tx
+	}
+	first, other := begin(t.OwnerId), begin(second.Id)
+	defer first.Rollback(ctx) //nolint:errcheck
+	defer other.Rollback(ctx) //nolint:errcheck
+	remove := func(tx pgx.Tx, id uuid.UUID) error {
+		if _, err := tx.Exec(ctx, `UPDATE mandate.persons SET removed_at = now() WHERE id = $1`, id); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	s.Require().ErrorContains(remove(first, second.Id), "read committed")
+	s.Require().ErrorContains(remove(other, t.OwnerId), "read committed")
+	s.Require().Equal(2, owners(), "neither removal under repeatable read went through")
+
+	// A pool whose sessions default to repeatable read, as a DBA or a host
+	// may set it: db.InTx still runs read committed, so the removal is
+	// counted after the lock and taken.
+	config, err := pgxpool.ParseConfig(s.W.Pg.AppUrl)
+	s.Require().NoError(err)
+	config.ConnConfig.RuntimeParams["default_transaction_isolation"] = "repeatable read"
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	s.Require().NoError(err)
+	defer pool.Close()
+	var level string
+	s.Require().NoError(pool.QueryRow(ctx, `SHOW transaction_isolation`).Scan(&level))
+	s.Require().Equal("repeatable read", level, "the pool's own default")
+	s.Require().NoError(db.InTx(t.Owner, pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(t.Owner, `SHOW transaction_isolation`).Scan(&level); err != nil {
+			return err
+		}
+		_, err := tx.Exec(t.Owner, `UPDATE mandate.persons SET removed_at = now() WHERE id = $1`, second.Id)
+		return err
+	}))
+	s.Require().Equal("read committed", level)
+	s.Require().Equal(1, owners())
+}
+
+// Two removals of the same person can both read them as present. The one
+// whose update then finds them removed is refused, as a removal after a
+// removal is, and records nothing.
+func (s *TenantsSuite) Test_ARemovalThatLosesTheRaceIsRefused() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	err := s.W.CommitUnder(s.T(), t.Owner, func(tx pgx.Tx) error {
+		_, err := tx.Exec(t.Owner, `UPDATE mandate.persons SET removed_at = now() WHERE id = $1`, t.ReviewerId)
+		return err
+	}, "name: RemovePerson ", func() error {
+		return s.W.Kernel.Tenants.RemovePerson(t.Owner, t.ReviewerId)
+	})
+	s.code(err, fault.Conflict)
+	s.Require().NotContains(s.eventTypes(t.Owner, t.ReviewerId), "person.removed", "the refused removal is not in the chain")
+}
+
 func (s *TenantsSuite) Test_ATenantIsCreatedWithItsOwner() {
 	tenant, owner, err := s.W.Kernel.Tenants.CreateWithOwner(context.Background(), "Atomic", "First@Test.example", "First")
 	s.Require().NoError(err)
@@ -172,6 +253,43 @@ func (s *TenantsSuite) Test_TheChainNamesItsActorAndContinuesItself() {
 		_, err := events.Verify(t.Owner, tx)
 		return err
 	}), "the refused inserts left the chain intact")
+}
+
+// The rows can be changed by someone with the database's superuser, who can
+// turn the append-only triggers off. Verification must then name the first
+// event that no longer fits.
+func (s *TenantsSuite) Test_VerifyNamesTheFirstEventThatWasTamperedWith() {
+	for _, c := range []struct {
+		name, statement string
+		at, count       int64
+	}{
+		{"a changed payload", `UPDATE mandate.events SET payload = payload || '{"forged": true}' WHERE tenant_id = $1 AND seq = 2`, 2, 2},
+		{"a removed event", `DELETE FROM mandate.events WHERE tenant_id = $1 AND seq = 3`, 4, 3},
+		{"a changed actor", `UPDATE mandate.events SET actor_kind = CASE actor_kind WHEN 'person' THEN 'system' ELSE 'person' END
+			WHERE tenant_id = $1 AND seq = 4`, 4, 4},
+	} {
+		s.Run(c.name, func() {
+			t := s.W.NewTenant(s.T(), "Acme")
+			verify := func() (int64, error) {
+				var count int64
+				err := db.InTx(t.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
+					var err error
+					count, err = events.Verify(t.Owner, tx)
+					return err
+				})
+				return count, err
+			}
+			before, err := verify()
+			s.Require().NoError(err, "the chain is intact before")
+			s.Require().Greater(before, int64(4), "the tenant has events past the tampered one")
+
+			s.Require().NoError(s.W.Pg.Tamper(context.Background(), c.statement, t.Id))
+			count, err := verify()
+			s.Require().ErrorIs(err, events.ErrBroken)
+			s.Require().Contains(err.Error(), fmt.Sprintf("at seq %d", c.at))
+			s.Require().Equal(c.count, count, "events read up to the broken one")
+		})
+	}
 }
 
 func (s *TenantsSuite) Test_PersonsAreAppendOnly() {

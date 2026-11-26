@@ -38,7 +38,10 @@ type Action struct {
 	Connector    string `protobuf:"bytes,8,opt,name=connector,proto3" json:"connector,omitempty"`
 	ConnectorUrl string `protobuf:"bytes,9,opt,name=connector_url,json=connectorUrl,proto3" json:"connector_url,omitempty"`
 	// Who a webhook's deliveries are for: the receiver is configured with
-	// it, and accepts nothing else. A new one is drawn when the webhook moves.
+	// it, and accepts nothing else. A new one is drawn when the action
+	// becomes a webhook, is defined again after removal, or moves to a new
+	// URL, so an audience never repeats. Empty for an action without a
+	// webhook.
 	Audience   string                 `protobuf:"bytes,10,opt,name=audience,proto3" json:"audience,omitempty"`
 	Department string                 `protobuf:"bytes,11,opt,name=department,proto3" json:"department,omitempty"`
 	CreatedAt  *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`

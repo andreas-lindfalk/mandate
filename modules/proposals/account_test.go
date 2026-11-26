@@ -117,6 +117,12 @@ func (s *AccountSuite) Test_TheAccountIsChecked() {
 		"evidence no summary": {func(i *proposals.Input) {
 			i.Evidence = []proposals.Evidence{{Source: "s"}, {Source: "s", Summary: " "}}
 		}, "evidence 1: summary"},
+		"long source": {func(i *proposals.Input) {
+			i.Evidence = []proposals.Evidence{{Source: strings.Repeat("é", 101), Summary: "x"}}
+		}, "evidence 1: source is 1 to 100"},
+		"long summary": {func(i *proposals.Input) {
+			i.Evidence = []proposals.Evidence{{Source: "s", Summary: strings.Repeat("é", 1001)}}
+		}, "evidence 1: summary is 1 to 1000"},
 		"long ref": {func(i *proposals.Input) {
 			i.Evidence = []proposals.Evidence{{Source: "s", Summary: "x", Ref: strings.Repeat("r", 501)}}
 		}, "ref is at most 500"},
@@ -131,9 +137,11 @@ func (s *AccountSuite) Test_TheAccountIsChecked() {
 		s.code(err, fault.InvalidArgument)
 		s.Require().Contains(err.Error(), c.why, name)
 	}
+	// The bounds agent.proto states for Evidence, counted in characters.
+	atLimits := append([]proposals.Evidence{{Source: strings.Repeat("é", 100), Ref: strings.Repeat("é", 500), Summary: strings.Repeat("é", 1000)}}, many[:19]...)
 	_, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{
 		IdempotencyKey: "k-ok", Action: "test.low", Title: "x", Payload: json.RawMessage(`{}`), Rationale: strings.Repeat("é", 8000),
-		Evidence: many[:20], Provenance: proposals.Provenance{Model: "a/b:c@d+e(f)g_h-i.j"},
+		Evidence: atLimits, Provenance: proposals.Provenance{Model: "a/b:c@d+e(f)g_h-i.j"},
 	})
 	s.Require().NoError(err, "the limits themselves are allowed")
 }

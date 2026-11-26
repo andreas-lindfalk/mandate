@@ -468,6 +468,12 @@ func (s *Service) Propose(ctx context.Context, input Input) (Proposal, bool, err
 	created := false
 	err = db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		q := repo.New(tx)
+		// Locked so that a revocation, or a change of mode, waits for this
+		// proposal to be stored, or this one for it. The insert's trigger
+		// reads the agent after the lock and refuses a revoked one.
+		if _, err := q.LockAgent(ctx, a.Id); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 		id, err := q.InsertProposal(ctx, repo.InsertProposalParams{
 			Id: uuid.New(), TenantId: tenantId, AgentId: a.Id, Action: action.Key, Risk: risk, Title: title,
 			Payload: payload, Flags: flags, IdempotencyKey: input.IdempotencyKey, RequestHash: request,
@@ -564,6 +570,16 @@ func WhyNotCandidate(action Action, proposal Proposal) string {
 	return ""
 }
 
+// WaitReason is why a pending proposal with no recorded skip reason waits
+// for a person: SkipActionRemoved when its action is no longer registered
+// (found is false), otherwise what rules it out as a candidate, if anything.
+func WaitReason(action Action, found bool, proposal Proposal) string {
+	if !found {
+		return SkipActionRemoved
+	}
+	return WhyNotCandidate(action, proposal)
+}
+
 func checkPayload(action Action, payload json.RawMessage) (json.RawMessage, map[string]any, error) {
 	if key, ambiguous := ambiguousKey(payload); ambiguous {
 		return nil, nil, fault.New(fault.InvalidArgument, fmt.Sprintf(
@@ -624,7 +640,23 @@ func dbNow(ctx context.Context, tx pgx.Tx) (time.Time, error) {
 	return now, err
 }
 
+// statuses are the values a proposal's status takes, in the order the
+// refusal names them.
+var statuses = []string{StatusPending, StatusApproved, StatusRejected, StatusExecuted, StatusWithdrawn, StatusExpired, StatusWouldAllow, StatusDismissed}
+
+// checkStatus refuses a status filter that no proposal can have, so a typo
+// is not mistaken for an empty queue. Empty means any status.
+func checkStatus(status string) error {
+	if status == "" || slices.Contains(statuses, status) {
+		return nil
+	}
+	return fault.New(fault.InvalidArgument, "status is one of "+strings.Join(statuses, ", ")+", or empty for all")
+}
+
 func (s *Service) List(ctx context.Context, filter Filter) ([]Proposal, error) {
+	if err := checkStatus(filter.Status); err != nil {
+		return nil, err
+	}
 	limit := filter.Limit
 	if limit <= 0 || limit > maxListLimit {
 		limit = maxListLimit
@@ -657,6 +689,9 @@ func (s *Service) List(ctx context.Context, filter Filter) ([]Proposal, error) {
 // how many there are at all when the status is empty; dryRun, when set,
 // counts only dry runs or only live proposals.
 func (s *Service) Count(ctx context.Context, status string, dryRun *bool) (int64, error) {
+	if err := checkStatus(status); err != nil {
+		return 0, err
+	}
 	var count int64
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		var filter *string
@@ -695,7 +730,8 @@ func (s *Service) History(ctx context.Context, id uuid.UUID) ([]events.Stored, e
 	return result, err
 }
 
-// SkipReasons is SkipReason for many proposals in one query.
+// SkipReasons is why the last attempt to execute each proposal left it for
+// a person, in one query. A proposal never skipped has no entry.
 func (s *Service) SkipReasons(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
 	result := map[uuid.UUID]string{}
 	if len(ids) == 0 {
@@ -711,26 +747,15 @@ func (s *Service) SkipReasons(ctx context.Context, ids []uuid.UUID) (map[uuid.UU
 	return result, err
 }
 
-// SkipReason is why the last attempt to execute the proposal left it for a
-// person, if there was one.
+// SkipReason is SkipReasons for one proposal, so the one and the list
+// cannot disagree.
 func (s *Service) SkipReason(ctx context.Context, id uuid.UUID) (string, bool, error) {
-	var reason string
-	found := false
-	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
-		event, ok, err := events.Last(ctx, tx, id, "proposal.execution_skipped")
-		if err != nil || !ok {
-			return err
-		}
-		var payload struct {
-			Reason string `json:"reason"`
-		}
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return err
-		}
-		reason, found = payload.Reason, true
-		return nil
-	})
-	return reason, found, err
+	reasons, err := s.SkipReasons(ctx, []uuid.UUID{id})
+	if err != nil {
+		return "", false, err
+	}
+	reason, found := reasons[id]
+	return reason, found, nil
 }
 
 // Approve decides a proposal as approved, optionally with an edited title
@@ -950,8 +975,7 @@ func (s *Service) decide(ctx context.Context, id uuid.UUID, status string, decis
 		// An approval names the connector it was made against, so a later
 		// move of the action shows as a move, not as what was approved.
 		if status == StatusApproved && action.Webhook != nil {
-			sum := sha256.Sum256([]byte(action.Webhook.Url))
-			decidedEvent["connectorUrlSha256"] = hex.EncodeToString(sum[:])
+			decidedEvent["connectorUrlSha256"] = events.UrlDigest(action.Webhook.Url)
 		}
 		if _, err := events.Append(ctx, tx, events.Event{
 			Type: "proposal." + status, SubjectId: id, Payload: decidedEvent,
@@ -1016,6 +1040,23 @@ const (
 	// the agent proposed.
 	SkipActionChanged = "action_changed"
 	SkipFlagged       = "flagged"
+	// SkipAgentRevoked is written when the proposing agent is revoked, so its
+	// proposals wait for a person whatever its mandates say.
+	SkipAgentRevoked = "agent_revoked"
+	// SkipActionFailed is written when the action itself failed under an
+	// execution: at once when it refused with a coded error, and after the
+	// job's last attempt otherwise.
+	SkipActionFailed = "action_failed"
+	// SkipExecutionFailed is written after the job's last attempt when the
+	// execution itself kept failing before the action ran.
+	SkipExecutionFailed = "execution_failed"
+	// SkipActionRemoved is never written to the chain: it is the reason a
+	// pending proposal waits when its action is no longer registered.
+	SkipActionRemoved = "action_removed"
+	// SkipRefused is the prefix of the reason written when the database
+	// refused the execution on its own rules; the error code's name follows
+	// it, as in refused_permission_denied.
+	SkipRefused = "refused_"
 )
 
 // ErrActionFailed wraps an error from the action's Apply under an
@@ -1062,24 +1103,33 @@ func (s *Service) Execute(ctx context.Context, id uuid.UUID, basisFor BasisFor) 
 		proposal := toProposal(row)
 		skip := func(reason string) error {
 			skipped = reason
-			if _, err := events.Append(ctx, tx, events.Event{
-				Type: "proposal.execution_skipped", SubjectId: id, Payload: tagged(map[string]any{"reason": reason, "action": proposal.Action}, proposal.DryRun),
-			}); err != nil {
-				return err
-			}
-			return s.waiting(ctx, tx, id, proposal.DryRun)
+			return s.appendSkip(ctx, tx, id, proposal.Action, reason, proposal.DryRun)
+		}
+		// The action's definition and the agent are locked before they are
+		// read, after the proposal and before the mandates: a revocation, or
+		// a change to the action, waits for this execution, or this one for
+		// it, so neither commits between the checks and the commit here.
+		if err := q.LockAction(ctx, proposal.Action); err != nil {
+			return err
+		}
+		live, err := q.LockAgent(ctx, proposal.AgentId)
+		if err != nil {
+			return err
+		}
+		if !live {
+			return skip(SkipAgentRevoked)
 		}
 		action, ok, err := s.actions.LookupIn(ctx, tx, proposal.Action)
 		if err != nil {
 			return err
 		}
-		switch {
-		case !ok || !action.MayExecute || !action.Applicable():
+		// The same gate the proposal was queued under. A removed action is
+		// recorded as not executable: action_removed is never written.
+		if !ok {
 			return skip(SkipNotExecutable)
-		case len(proposal.Flags) > 0:
-			return skip(SkipFlagged)
-		case proposal.Risk == mandates.RiskHigh:
-			return skip(mandates.SkipRiskAbove)
+		}
+		if reason := WhyNotCandidate(action, proposal); reason != "" {
+			return skip(reason)
 		}
 		if _, _, err := checkPayload(action, proposal.Payload); err != nil {
 			return skip(SkipPayloadInvalid)
@@ -1181,11 +1231,17 @@ func (s *Service) ExpireDue(ctx context.Context) (int, error) {
 	}
 }
 
-// RecordSkip writes a skip reason to the chain outside an execution, for
-// when the database refused the execution itself.
+// RecordSkip writes a skip reason to the chain outside the execution's
+// transaction, and tells whoever waits for the proposal (nobody for a dry
+// run), when the execution was refused or failed: for an action that
+// refused on its own rules, the database's own refusal, and the job's last
+// failed attempt. It runs after the execution's own transaction,
+// so it holds the proposal and writes nothing when the proposal is gone, or
+// when a person decided it, or it expired, in between: the chain explains
+// only proposals that still wait.
 func (s *Service) RecordSkip(ctx context.Context, id uuid.UUID, reason string) error {
 	return db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
-		row, err := repo.New(tx).GetProposal(ctx, id)
+		row, err := repo.New(tx).GetProposalForUpdate(ctx, id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Gone, as with its tenant: nothing left to explain.
 			return nil
@@ -1193,13 +1249,26 @@ func (s *Service) RecordSkip(ctx context.Context, id uuid.UUID, reason string) e
 		if err != nil {
 			return err
 		}
-		if _, err := events.Append(ctx, tx, events.Event{
-			Type: "proposal.execution_skipped", SubjectId: id, Payload: tagged(map[string]any{"reason": reason}, row.DryRun),
-		}); err != nil {
-			return err
+		if row.Status != StatusPending {
+			return nil
 		}
-		return s.waiting(ctx, tx, id, row.DryRun)
+		return s.appendSkip(ctx, tx, id, row.Action, reason, row.DryRun)
 	})
+}
+
+// eventExecutionSkipped is the chain event that says why an execution left
+// a proposal for a person. The LastSkips query names it too.
+const eventExecutionSkipped = "proposal.execution_skipped"
+
+// appendSkip writes the one shape of a skip, from inside the execution and
+// after it alike, and tells whoever waits for the proposal.
+func (s *Service) appendSkip(ctx context.Context, tx pgx.Tx, id uuid.UUID, action, reason string, dryRun bool) error {
+	if _, err := events.Append(ctx, tx, events.Event{
+		Type: eventExecutionSkipped, SubjectId: id, Payload: tagged(map[string]any{"reason": reason, "action": action}, dryRun),
+	}); err != nil {
+		return err
+	}
+	return s.waiting(ctx, tx, id, dryRun)
 }
 
 func flagRapidApprovals(ctx context.Context, tx pgx.Tx, q *repo.Queries, personId uuid.UUID) error {
@@ -1269,8 +1338,8 @@ func (s *Service) repeated(ctx context.Context, agentId uuid.UUID, key string, r
 func sameRequest(row repo.MandateProposal, request []byte) (Proposal, error) {
 	if !bytes.Equal(row.RequestHash, request) {
 		return Proposal{}, fault.New(fault.Conflict, fmt.Sprintf(
-			"this idempotency key was already used, at %s, for proposal %s (%s) with another payload. If you meant to retry that request, read it with get_proposal and its proposal_id instead of proposing again; if this is a new request, use a new key that includes your run id",
-			row.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"), row.Id, row.Action))
+			"this idempotency key was already used, at %s, for proposal %s (%s) with another action or payload. If you meant to retry that request, read it with get_proposal and its proposal_id instead of proposing again; if this is a new request, use a new key that includes your run id",
+			row.CreatedAt.UTC().Format(time.RFC3339), row.Id, row.Action))
 	}
 	return toProposal(row), nil
 }
@@ -1364,7 +1433,7 @@ func toProposal(row repo.MandateProposal) Proposal {
 		Id: row.Id, AgentId: row.AgentId, RunId: deref(row.RunId), Action: row.Action, Risk: row.Risk, Title: row.Title,
 		Payload: json.RawMessage(row.Payload), ProposedPayload: json.RawMessage(row.ProposedPayload), Flags: slices.Clone(row.Flags),
 		IdempotencyKey: row.IdempotencyKey, Status: row.Status, Edited: row.Edited, DecidedBy: row.DecidedBy,
-		DecisionNote: deref(row.DecisionNote), CreatedAt: row.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		DecisionNote: deref(row.DecisionNote), CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339),
 		ExpiresAt: row.ExpiresAt, DeliverWithin: intervalDuration(row.DeliverWithin), DryRun: row.DryRun,
 	}
 	if result.Flags == nil {
@@ -1379,7 +1448,7 @@ func toProposal(row repo.MandateProposal) Proposal {
 		slog.Error("proposal has an unreadable provenance", "proposal", row.Id, "error", err)
 	}
 	if row.DecidedAt != nil {
-		at := row.DecidedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+		at := row.DecidedAt.UTC().Format(time.RFC3339)
 		result.DecidedAt = &at
 	}
 	if len(row.ExecutionBasis) > 0 {

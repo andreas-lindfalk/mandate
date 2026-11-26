@@ -75,34 +75,13 @@ func (h *proposalHandler) enrich(ctx context.Context, list []proposals.Proposal)
 	if err != nil {
 		return nil, err
 	}
-	skips, err := h.kernel.Proposals.SkipReasons(ctx, ids)
+	reasons, err := h.kernel.WaitReasons(ctx, list)
 	if err != nil {
 		return nil, err
 	}
-	actionsByKey := map[string]*proposals.Action{}
 	out := make([]*mandatev1.Proposal, 0, len(list))
 	for _, p := range list {
-		reason := ""
-		if p.Status == proposals.StatusPending {
-			if r, found := skips[p.Id]; found {
-				reason = r
-			} else {
-				action, cached := actionsByKey[p.Action]
-				if !cached {
-					if found, ok, err := h.kernel.Lookup(ctx, p.Action); err != nil {
-						return nil, err
-					} else if ok {
-						action = &found
-					}
-					actionsByKey[p.Action] = action
-				}
-				if action != nil {
-					reason = proposals.WhyNotCandidate(*action, p)
-				} else {
-					reason = "action_removed"
-				}
-			}
-		}
+		reason := reasons[p.Id]
 		var d *deliveries.Delivery
 		if found, ok := delivered[p.Id]; ok {
 			d = &found

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/andreas-lindfalk/pgmandate/modules/agents"
@@ -66,6 +67,23 @@ func (s *AgentsSuite) Test_OnlyOwners() {
 	s.code(s.W.Kernel.Agents.RevokeToken(t.Agent, t.Grant.TokenId), fault.PermissionDenied)
 }
 
+// Two revocations of the same token can both read it as live. The one
+// whose update then finds it revoked is refused, as a revocation after a
+// revocation is, and records nothing.
+func (s *AgentsSuite) Test_ARevocationThatLosesTheRaceIsRefused() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	err := s.W.CommitUnder(s.T(), t.Owner, func(tx pgx.Tx) error {
+		_, err := tx.Exec(t.Owner, `UPDATE mandate.agent_tokens SET revoked_at = now() WHERE id = $1`, t.Grant.TokenId)
+		return err
+	}, "name: RevokeToken ", func() error {
+		return s.W.Kernel.Agents.RevokeToken(t.Owner, t.Grant.TokenId)
+	})
+	s.code(err, fault.Conflict)
+	s.Require().Equal([]string{"agent.created", "agent.token_issued"}, s.eventTypes(t.Owner, t.AgentId), "the refused revocation is not in the chain")
+	_, err = s.W.Kernel.Agents.Authenticate(context.Background(), t.Token)
+	s.code(err, fault.Unauthenticated)
+}
+
 func (s *AgentsSuite) Test_TokensStopWorking() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	ctx := context.Background()
@@ -83,10 +101,13 @@ func (s *AgentsSuite) Test_TokensStopWorking() {
 
 	// Expiry is checked against the database's clock, so the token is
 	// issued with a clock eleven days back and ten days of validity.
-	s.W.SetNow(time.Now().AddDate(0, 0, -11))
-	_, expired, err := s.W.Kernel.Agents.IssueToken(t.Owner, t.AgentId, 10)
+	back := time.Now().AddDate(0, 0, -11).UTC().Truncate(time.Second)
+	s.W.SetNow(back)
+	stamped, expired, err := s.W.Kernel.Agents.IssueToken(t.Owner, t.AgentId, 10)
 	s.W.SetNow(time.Time{})
 	s.Require().NoError(err)
+	s.Require().True(back.Equal(stamped.CreatedAt), "the clock stamps the token's creation")
+	s.Require().True(back.AddDate(0, 0, 10).Equal(stamped.ExpiresAt), "and its expiry")
 	_, err = s.W.Kernel.Agents.Authenticate(ctx, expired)
 	s.code(err, fault.Unauthenticated)
 
@@ -173,4 +194,16 @@ func (s *AgentsSuite) Test_TheModeIsAnOwnersToSet() {
 	s.refused(t.Owner, `UPDATE mandate.agents SET mode = 'dry_run' WHERE id = $1`, fresh.Id)
 	_, err = s.W.Kernel.Agents.SetMode(t.Owner, fresh.Id, agents.ModeDryRun)
 	s.code(err, fault.NotFound)
+	s.Require().ErrorContains(err, "no agent that is not revoked with that id")
+}
+
+// A revoked agent's limits are refused in the same words as its mode, never
+// with "live", which names a mode.
+func (s *AgentsSuite) Test_ARevokedAgentsLimitsAreRefusedAsItsMode() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	s.Require().NoError(s.W.Kernel.Agents.Revoke(t.Owner, t.AgentId))
+	_, err := s.W.Kernel.Agents.SetLimits(t.Owner, t.AgentId, 5, 50)
+	s.code(err, fault.NotFound)
+	s.Require().ErrorContains(err, "no agent that is not revoked with that id")
+	s.Require().NotContains(err.Error(), "live")
 }

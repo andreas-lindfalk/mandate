@@ -45,6 +45,10 @@ type Host interface {
 	// ActionsOf lists the actions of the tenant in ctx.
 	ActionsOf(ctx context.Context) ([]proposals.Action, error)
 	Lookup(ctx context.Context, key string) (proposals.Action, bool, error)
+	// WaitReasons is why each pending proposal in list waits for a person:
+	// the recorded skip reason, or otherwise what rules it out. A proposal
+	// that is not pending has no entry.
+	WaitReasons(ctx context.Context, list []proposals.Proposal) (map[uuid.UUID]string, error)
 	LiveMandates(ctx context.Context) ([]mandates.Mandate, error)
 	// SpentCount is how many executions each mandate has allowed this month.
 	SpentCount(ctx context.Context, mandateIds []uuid.UUID) (map[uuid.UUID]int64, error)
@@ -162,24 +166,38 @@ func (s *Service) limiter(tokenId uuid.UUID) *rate.Limiter {
 // that match are kept in the chain: an agent cannot write free text, such
 // as personal data, into the permanent record.
 var (
-	uuidPattern   = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	actionPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`)
-	runPattern    = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,100}$`)
-	statusPattern = regexp.MustCompile(`^(?:pending|approved|rejected|executed|withdrawn|expired|would_allow|dismissed)$`)
+	uuidPattern   = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`).MatchString
+	runPattern    = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,100}$`).MatchString
+	statusPattern = regexp.MustCompile(`^(?:pending|approved|rejected|executed|withdrawn|expired|would_allow|dismissed)$`).MatchString
+	// An action key has the rule the rest of pgmandate checks it with, so
+	// a key the contract lets through is never refused later without its
+	// form.
+	actionPattern = mandates.ValidKey
+)
+
+// What a refusal tells the agent a valid value looks like, so it can
+// correct itself; each says in words what its pattern above allows.
+const (
+	uuidForm   = "a UUID, as propose and list_proposals return it"
+	actionForm = "lowercase words of letters, digits and _, each starting with a letter and joined by dots, at most 100 characters in all, such as tickets.create"
+	runForm    = "1 to 100 letters, digits and . _ : -"
+	statusForm = "one of pending, approved, rejected, executed, withdrawn, expired, would_allow or dismissed"
 )
 
 // maxArgument bounds any id-like argument before it is matched or kept.
 const maxArgument = 200
 
-func requireMatch(value string, pattern *regexp.Regexp, what string) error {
-	if len(value) > maxArgument || !pattern.MatchString(value) {
-		return fault.New(fault.InvalidArgument, fmt.Sprintf("invalid %s (%d characters)", what, utf8.RuneCountInString(value)))
+// requireMatch refuses a value that does not match pattern, naming what it
+// is and the form it must have, but never the value itself.
+func requireMatch(value string, pattern func(string) bool, what, form string) error {
+	if len(value) > maxArgument || !pattern(value) {
+		return fault.New(fault.InvalidArgument, fmt.Sprintf("invalid %s (%d characters): %s", what, utf8.RuneCountInString(value), form))
 	}
 	return nil
 }
 
-func logged(value string, pattern *regexp.Regexp) any {
-	if value == "" || (len(value) <= maxArgument && pattern.MatchString(value)) {
+func logged(value string, pattern func(string) bool) any {
+	if value == "" || (len(value) <= maxArgument && pattern(value)) {
 		return value
 	}
 	return map[string]any{"invalidChars": utf8.RuneCountInString(value)}
@@ -202,7 +220,7 @@ func serve[Resp any](s *Service, ctx context.Context, name string, arguments map
 	scoped := call.Grant.Context(ctx)
 	// A valid run id tags the call's own event too, so the chain can group
 	// a run's calls with the proposals they made.
-	if runId != "" && len(runId) <= maxArgument && runPattern.MatchString(runId) {
+	if runId != "" && len(runId) <= maxArgument && runPattern(runId) {
 		scoped = actor.WithRun(scoped, runId)
 	}
 	out, err := do(scoped)

@@ -247,6 +247,16 @@ func Digest(value any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// UrlDigest names an address in the chain without its text, which may
+// carry credentials: the hex SHA-256 of the address exactly as written.
+// Every event that names a connector or a notifier uses it, so an auditor
+// can match the address a decision was made against to the one an action
+// was defined with.
+func UrlDigest(url string) string {
+	sum := sha256.Sum256([]byte(url))
+	return hex.EncodeToString(sum[:])
+}
+
 // canonicalJson encodes value so that the result is stable across a jsonb
 // round trip: object keys sorted, no insignificant whitespace, numbers in the
 // plain form jsonb gives back, and no NUL characters (which jsonb refuses).
@@ -291,16 +301,34 @@ func withoutNul(text string) string {
 	return strings.ReplaceAll(text, "\x00", "�")
 }
 
-// plainDecimal writes a JSON number the way Postgres numeric does: without
-// an exponent, with as many decimals as the number had after the exponent is
-// applied (1.50e1 is 15.0), and never negative zero. The digits are moved,
-// never converted through a float.
 // The most digits Postgres's numeric keeps before and after the point.
 // Numbers beyond them cannot be stored in a payload anyway.
 const (
 	MaxIntegerDigits = 131072
 	MaxDecimalDigits = 16383
 )
+
+// splitNumber splits a JSON number into its sign ("" or "-"), the digits
+// before and after the point, and its exponent. ok is false when the
+// exponent is not an integer or lies beyond any number Postgres can store;
+// it is bounded here, so that sums over it cannot overflow.
+func splitNumber(number string) (sign, whole, fraction string, exponent int, ok bool) {
+	mantissa, exponentText, found := strings.Cut(strings.ToLower(number), "e")
+	if rest, negative := strings.CutPrefix(mantissa, "-"); negative {
+		sign, mantissa = "-", rest
+	}
+	if found {
+		var err error
+		if exponent, err = strconv.Atoi(exponentText); err != nil {
+			return "", "", "", 0, false
+		}
+	}
+	if exponent > MaxIntegerDigits || exponent < -(MaxIntegerDigits+MaxDecimalDigits) {
+		return "", "", "", 0, false
+	}
+	whole, fraction, _ = strings.Cut(mantissa, ".")
+	return sign, whole, fraction, exponent, true
+}
 
 // PlainLength is how many characters a JSON number takes once spelled out
 // without an exponent, as the canonical form writes it, or -1 when it is
@@ -309,12 +337,7 @@ func PlainLength(number string) int {
 	if !NumberFits(number) {
 		return -1
 	}
-	mantissa, exponentText, found := strings.Cut(strings.ToLower(strings.TrimPrefix(number, "-")), "e")
-	exponent := 0
-	if found {
-		exponent, _ = strconv.Atoi(exponentText)
-	}
-	whole, fraction, _ := strings.Cut(mantissa, ".")
+	_, whole, fraction, exponent, _ := splitNumber(number)
 	digits := len(whole) + len(fraction)
 	point := len(whole) + exponent
 	switch {
@@ -328,45 +351,27 @@ func PlainLength(number string) int {
 
 // NumberFits says whether a JSON number can be stored as Postgres keeps it.
 func NumberFits(number string) bool {
-	mantissa, exponentText, found := strings.Cut(strings.ToLower(strings.TrimPrefix(number, "-")), "e")
-	exponent := 0
-	if found {
-		var err error
-		if exponent, err = strconv.Atoi(exponentText); err != nil {
-			return false
-		}
-	}
-	// Bounded first, so the sums below cannot overflow.
-	if exponent > MaxIntegerDigits || exponent < -(MaxIntegerDigits+MaxDecimalDigits) {
+	_, whole, fraction, exponent, ok := splitNumber(number)
+	if !ok {
 		return false
 	}
-	whole, fraction, _ := strings.Cut(mantissa, ".")
-	whole = strings.TrimLeft(whole, "0")
-	point := len(whole) + exponent
+	point := len(strings.TrimLeft(whole, "0")) + exponent
 	return point <= MaxIntegerDigits && len(fraction)-exponent <= MaxDecimalDigits
 }
 
+// plainDecimal writes a JSON number the way Postgres numeric does: without
+// an exponent, with as many decimals as the number had after the exponent is
+// applied (1.50e1 is 15.0), and never negative zero. The digits are moved,
+// never converted through a float.
 func plainDecimal(number string) string {
-	mantissa, exponentText, found := strings.Cut(strings.ToLower(number), "e")
-	sign := ""
-	if strings.HasPrefix(mantissa, "-") {
-		sign, mantissa = "-", mantissa[1:]
-	}
-	exponent := 0
-	if found {
-		var err error
-		if exponent, err = strconv.Atoi(exponentText); err != nil {
-			return number
-		}
-	}
-	whole, fraction, _ := strings.Cut(mantissa, ".")
-	digits := whole + fraction
 	// A number Postgres cannot store is left as written rather than spelled
 	// out: an exponent chosen by a caller must not choose how much memory
-	// this takes. The exponent is bounded first, so the sums cannot overflow.
-	if exponent > MaxIntegerDigits || exponent < -(MaxIntegerDigits+MaxDecimalDigits) {
+	// this takes.
+	sign, whole, fraction, exponent, ok := splitNumber(number)
+	if !ok {
 		return number
 	}
+	digits := whole + fraction
 	point := len(whole) + exponent
 	if point > MaxIntegerDigits || 1-point > MaxDecimalDigits || len(digits) > MaxIntegerDigits+MaxDecimalDigits {
 		return number

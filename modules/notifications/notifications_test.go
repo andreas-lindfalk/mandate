@@ -12,7 +12,10 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"github.com/andreas-lindfalk/pgmandate/internal/testfix"
+	"github.com/andreas-lindfalk/pgmandate/modules/actions"
+	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
 	"github.com/andreas-lindfalk/pgmandate/modules/notifications"
+	"github.com/andreas-lindfalk/pgmandate/modules/notifications/internal/repo"
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
@@ -89,6 +92,83 @@ func (s *NotifiersSuite) Test_AnOwnerSetsWhereNotificationsGo() {
 
 // The address is a secret: no one reads it back but the system, which
 // sends to it.
+// Remove and Set read the live notifier before they remove it. When a
+// removal or a Set commits in between, their update changes nothing: Remove
+// answers that no notifier is set, Set goes on, and neither records a
+// removal of the old notifier a second time.
+func (s *NotifiersSuite) Test_ARemovalThatLosesTheRaceRecordsNothing() {
+	service := s.W.Kernel.Notifications
+	removeLive := `UPDATE mandate.notifiers SET removed_at = now() WHERE removed_at IS NULL`
+	for _, c := range []struct {
+		name     string
+		replaced bool
+		second   func(t testfix.Tenant) error
+		notFound bool
+		live     string
+	}{
+		{name: "a removal under a removal", second: func(t testfix.Tenant) error { return service.Remove(t.Owner) }, notFound: true},
+		{name: "a removal under a Set", replaced: true, second: func(t testfix.Tenant) error { return service.Remove(t.Owner) },
+			notFound: true, live: notifications.KindDiscord},
+		{name: "a Set under a removal", second: func(t testfix.Tenant) error {
+			_, err := service.Set(t.Owner, notifications.KindDiscord, discordUrl)
+			return err
+		}, live: notifications.KindDiscord},
+	} {
+		s.Run(c.name, func() {
+			t := s.W.NewTenant(s.T(), "Acme")
+			old, err := service.Set(t.Owner, notifications.KindSlack, slackUrl)
+			s.Require().NoError(err)
+			err = s.W.CommitUnder(s.T(), t.Owner, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(t.Owner, removeLive); err != nil || !c.replaced {
+					return err
+				}
+				_, err := tx.Exec(t.Owner, `INSERT INTO mandate.notifiers (id, tenant_id, kind, url) VALUES ($1, $2, $3, $4)`,
+					uuid.New(), t.Id, notifications.KindDiscord, discordUrl)
+				return err
+			}, "name: RemoveLiveNotifier ", func() error { return c.second(t) })
+			if c.notFound {
+				s.code(err, fault.NotFound)
+			} else {
+				s.Require().NoError(err)
+			}
+			s.Require().Equal([]string{"notifier.set"}, s.eventTypes(t.Owner, old.Id), "the old notifier's removal is not recorded by the loser")
+			live, err := service.Get(t.Owner)
+			s.Require().NoError(err)
+			if c.live == "" {
+				s.Require().Nil(live)
+				return
+			}
+			s.Require().NotNil(live, "the notifier set last stays live")
+			s.Require().Equal(c.live, live.Kind)
+		})
+	}
+}
+
+// A Set that commits after a removal has read the live notifier, but
+// before it updates, leaves its new notifier alone: the update names the
+// notifier the removal read, not whichever is live by then.
+func (s *NotifiersSuite) Test_ARemovalLeavesANotifierSetAfterItsRead() {
+	service := s.W.Kernel.Notifications
+	t := s.W.NewTenant(s.T(), "Acme")
+	old, err := service.Set(t.Owner, notifications.KindSlack, slackUrl)
+	s.Require().NoError(err)
+	// The Set that wins, committed after the loser read old.
+	replaced, err := service.Set(t.Owner, notifications.KindDiscord, discordUrl)
+	s.Require().NoError(err)
+	s.Require().NotEqual(old.Id, replaced.Id)
+
+	var changed int64
+	s.Require().NoError(db.InTx(t.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
+		changed, err = repo.New(tx).RemoveLiveNotifier(t.Owner, old.Id)
+		return err
+	}))
+	s.Require().Zero(changed, "the notifier read is already removed")
+	live, err := service.Get(t.Owner)
+	s.Require().NoError(err)
+	s.Require().NotNil(live, "the notifier set after the read stays live")
+	s.Require().Equal(replaced.Id, live.Id)
+}
+
 func (s *NotifiersSuite) Test_TheAddressIsReadOnlyByTheSystem() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	_, err := s.W.Kernel.Notifications.Set(t.Owner, notifications.KindSlack, slackUrl)
@@ -178,6 +258,53 @@ func (s *NotifiersSuite) Test_TheMessageCarriesNothingTheAgentWrote() {
 	count := len(s.W.Chat.Posts())
 	s.Require().NoError(s.W.Kernel.Notifications.Notify(context.Background(), t.Id, r.Id))
 	s.Require().Len(s.W.Chat.Posts(), count)
+	s.Require().Equal([]string{"proposal.created"}, s.eventTypes(t.Owner, r.Id), "nothing sent is nothing recorded")
+}
+
+// A proposal past its deadline waits for nobody, even before the sweep
+// expires it: nobody can decide it, so no chat is told to open it.
+func (s *NotifiersSuite) Test_AProposalPastItsDeadlineIsNotNotified() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	_, err := s.W.Kernel.Notifications.Set(t.Owner, notifications.KindSlack, slackUrl)
+	s.Require().NoError(err)
+	p := s.propose(t, "test.manual")
+	_, err = s.W.Pg.Owner.Exec(context.Background(), `
+		BEGIN;
+		SET LOCAL session_replication_role = replica;
+		UPDATE mandate.proposals SET expires_at = now() - interval '1 second' WHERE id = '`+p.Id.String()+`';
+		COMMIT;`)
+	s.Require().NoError(err)
+	read, err := s.W.Kernel.Proposals.Get(t.Owner, p.Id)
+	s.Require().NoError(err)
+	s.Require().Equal(proposals.StatusPending, read.Status, "the sweep has not expired it")
+	s.Require().True(read.PastDeadline)
+
+	before := len(s.W.Chat.Posts())
+	s.Require().NoError(s.W.Kernel.Notifications.Notify(context.Background(), t.Id, p.Id))
+	s.Require().Len(s.W.Chat.Posts(), before, "nothing is sent")
+	s.Require().Equal([]string{"proposal.created"}, s.eventTypes(t.Owner, p.Id), "and nothing is recorded as notified")
+}
+
+// A proposal whose action was removed says so, as the inbox and the agent
+// read it, and not that it waits for nothing.
+func (s *NotifiersSuite) Test_ARemovedActionIsTheReason() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	_, err := s.W.Kernel.Notifications.Set(t.Owner, notifications.KindSlack, slackUrl)
+	s.Require().NoError(err)
+	_, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{
+		Key: "notes.add", Risk: mandates.RiskLow, MayExecute: true, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
+		Schema: json.RawMessage(`{"type":"object"}`),
+	})
+	s.Require().NoError(err)
+	p := s.propose(t, "notes.add")
+	s.Require().NoError(s.W.Kernel.Actions.Remove(t.Owner, "notes.add"))
+	before := len(s.W.Chat.Posts())
+	s.Require().NoError(s.W.Kernel.Notifications.Notify(context.Background(), t.Id, p.Id))
+	posts := s.W.Chat.Posts()[before:]
+	s.Require().Len(posts, 1)
+	text := posts[0].Body["text"].(string)
+	s.Require().Contains(text, "`notes.add`")
+	s.Require().Contains(text, "Why: the action has been removed, so it can only be rejected.")
 }
 
 func (s *NotifiersSuite) Test_ARefusalIsFinalAndAFailureIsRetried() {
@@ -242,4 +369,20 @@ func (s *NotifiersSuite) Test_AnOwnerSendsATestMessage() {
 	s.code(err, fault.InvalidArgument)
 	s.Require().Contains(err.Error(), "check the address")
 	s.Require().NotContains(err.Error(), "secret_part")
+	s.W.Chat.Answer(http.StatusOK)
+
+	// The test goes where notifications go now: to the notifier that
+	// replaced the last, and nowhere once it is removed.
+	_, err = s.W.Kernel.Notifications.Set(t.Owner, notifications.KindSlack, slackUrl)
+	s.Require().NoError(err)
+	before = len(s.W.Chat.Posts())
+	s.Require().NoError(s.W.Kernel.Notifications.SendTest(t.Owner))
+	posts = s.W.Chat.Posts()[before:]
+	s.Require().Len(posts, 1)
+	s.Require().Equal(slackUrl, posts[0].Url)
+	s.Require().Contains(posts[0].Body["text"], "a test message")
+	s.Require().NoError(s.W.Kernel.Notifications.Remove(t.Owner))
+	before = len(s.W.Chat.Posts())
+	s.code(s.W.Kernel.Notifications.SendTest(t.Owner), fault.NotFound)
+	s.Require().Len(s.W.Chat.Posts(), before)
 }

@@ -22,18 +22,13 @@ const pendingNext = "A person may take minutes or days. Do not propose it again 
 func proposalView(p proposals.Proposal, skipReason string, delivery *deliveries.Delivery) *agentv1.Proposal {
 	view := &agentv1.Proposal{
 		ProposalId: p.Id.String(), Action: p.Action, Title: p.Title, PayloadJson: string(p.Payload), Risk: p.Risk, Flags: p.Flags,
-		Status: p.Status, ExpiresAt: timestamppb.New(p.ExpiresAt), RunId: p.RunId, DecisionNote: p.DecisionNote, DryRun: proto.Bool(p.DryRun),
+		Status: p.ShownStatus(), ExpiresAt: timestamppb.New(p.ExpiresAt), RunId: p.RunId, DecisionNote: p.DecisionNote, DryRun: proto.Bool(p.DryRun),
 	}
 	if created, err := time.Parse(time.RFC3339Nano, p.CreatedAt); err == nil {
 		view.CreatedAt = timestamppb.New(created)
 	}
 	if p.DryRun {
 		return dryRunView(view, p, skipReason)
-	}
-	// Past its deadline by the database's clock, a proposal the sweep has
-	// not yet reached can no longer be decided: say so now.
-	if p.PastDeadline {
-		view.Status = proposals.StatusExpired
 	}
 	decided := ""
 	switch {
@@ -112,9 +107,6 @@ const dryRunReadNext = "This was a dry run: pgmandate carried nothing of it out.
 // dryRunView is a dry run's outcome: what would have happened, never what
 // did.
 func dryRunView(view *agentv1.Proposal, p proposals.Proposal, skipReason string) *agentv1.Proposal {
-	if p.PastDeadline {
-		view.Status = proposals.StatusExpired
-	}
 	view.Next = dryRunReadNext
 	switch view.Status {
 	case proposals.StatusWouldAllow:
@@ -160,11 +152,11 @@ func explain(reason string) string {
 		return "the payload does not meet your mandate's condition; unmet says what stands in the way. A missing field or a wrong type is yours to correct; a value beyond a limit is for the person"
 	case proposals.SkipFlagged:
 		return "the proposal holds text that tries to steer a model, so a person must look at it"
-	case "action_removed":
+	case proposals.SkipActionRemoved:
 		return "the action has been removed; a person can only reject this"
-	case "action_failed":
+	case proposals.SkipActionFailed:
 		return "the system that carries the action out refused it"
-	case "execution_failed":
+	case proposals.SkipExecutionFailed:
 		return "the execution failed before the action ran"
 	case proposals.SkipNotExecutable:
 		return "this action is never carried out without a person"
@@ -172,8 +164,11 @@ func explain(reason string) string {
 		return "the action's risk was raised since you proposed it, so a person must look at it"
 	case proposals.SkipPayloadInvalid:
 		return "the action's schema has changed and the payload no longer fits it; a person can edit it or reject it"
-	case "agent_revoked":
+	case proposals.SkipAgentRevoked:
 		return "your agent is revoked"
+	}
+	if code, ok := strings.CutPrefix(reason, proposals.SkipRefused); ok {
+		return "the database refused to carry it out under its own rules (" + code + "), so a person must look at it"
 	}
 	return reason
 }

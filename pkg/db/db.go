@@ -33,8 +33,13 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 // fn short and never make outgoing calls inside it. If fn does not return,
 // because it panics or calls runtime.Goexit (as t.FailNow does), the
 // transaction is rolled back first.
+//
+// The transaction is read committed whatever the server's or the role's
+// default: the triggers count what is there after taking a lock (the
+// budget, an agent's limits, the last owner), which holds only when each
+// statement sees what committed before it.
 func InTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) (err error) {
-	tx, err := pool.Begin(ctx)
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}

@@ -71,7 +71,10 @@ export type Action = Message<"mandate.v1.Action"> & {
 
   /**
    * Who a webhook's deliveries are for: the receiver is configured with
-   * it, and accepts nothing else. A new one is drawn when the webhook moves.
+   * it, and accepts nothing else. A new one is drawn when the action
+   * becomes a webhook, is defined again after removal, or moves to a new
+   * URL, so an audience never repeats. Empty for an action without a
+   * webhook.
    *
    * @generated from field: string audience = 10;
    */
@@ -284,8 +287,11 @@ export const ActionService: GenService<{
     output: typeof ListActionsResponseSchema;
   },
   /**
-   * DefineAction creates or updates the action with the key. A new webhook,
-   * or a rotation, returns the signing secret once.
+   * DefineAction creates or updates the action with the key. A webhook
+   * action gets an audience, drawn anew when the action becomes a webhook,
+   * is defined again after removal, or moves to a new URL. Its deliveries
+   * are signed with the server's key, published at
+   * /.well-known/pgmandate-keys; there is no secret per action.
    *
    * @generated from rpc mandate.v1.ActionService.DefineAction
    */

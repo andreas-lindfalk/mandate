@@ -2,7 +2,7 @@ import * as React from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router";
 import { ErrorBoundary } from "@/components/errorBoundary";
 import { AppShell } from "@/components/layout/AppShell";
-import { Skeleton } from "@/components/ui/primitives";
+import { ErrorState, Skeleton } from "@/components/ui/primitives";
 import { useSession } from "@/lib/session";
 import { AgentsPage } from "@/pages/AgentsPage";
 import { EvidencePage } from "@/pages/EvidencePage";
@@ -57,6 +57,15 @@ function RequireSession({ children }: { children: React.ReactNode }) {
     return (
       <div className="p-10">
         <Skeleton className="h-10 w-64" />
+      </div>
+    );
+  }
+  // A server that cannot be reached is not a sign-out: the sign-in page
+  // would say no provider is configured.
+  if (!session.signedIn && session.error) {
+    return (
+      <div className="p-10">
+        <ErrorState title="Could not reach pgmandate" error={session.error} onRetry={session.retry} />
       </div>
     );
   }

@@ -23,7 +23,7 @@ ORDER BY revoked_at IS NOT NULL, created_at DESC;
 -- name: GetToken :one
 SELECT id, agent_id, revoked_at FROM mandate.agent_tokens WHERE id = @id;
 
--- name: RevokeToken :exec
+-- name: RevokeToken :execrows
 UPDATE mandate.agent_tokens SET revoked_at = now() WHERE id = @id AND revoked_at IS NULL;
 
 -- name: TouchToken :exec

@@ -27,6 +27,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -121,10 +124,16 @@ Environment:
   MANDATE_APP_PASSWORD       the password of the mandate_app role (default app, refused beyond loopback)
   MANDATE_APP_DATABASE_URL   connect as the app role directly; with it and without MANDATE_DATABASE_URL,
                                serve does not migrate and never holds the owner's credentials
+  MANDATE_CREATE_APP_ROLE    default true: migrate creates mandate_app when it is missing; false: a DBA
+                               created it, and migrate only checks it
+  MANDATE_REVOKE_PUBLIC_CREATE  true revokes CREATE on the schema public from everyone (default false)
   MANDATE_HTTP_ADDR          default 127.0.0.1:8585
   MANDATE_PUBLIC_URL         default http://<addr>
   MANDATE_DEV_LOGIN          true lets anyone sign in with an email; only on a loopback address
   MANDATE_SESSION_TTL        default 168h
+  MANDATE_CLIENT_IP_HEADER   the header a trusted reverse proxy writes the client's address in, such as
+                               X-Forwarded-For (its last entry is used); set it only when the proxy
+                               overwrites the header
   MANDATE_OIDC_ISSUER, MANDATE_OIDC_CLIENT_ID, MANDATE_OIDC_CLIENT_SECRET, MANDATE_OIDC_REDIRECT_URL
   MANDATE_ALLOW_PRIVATE_CONNECTORS   true lets webhook connectors live on local and private addresses
   MANDATE_RECEIVER_ADDR      where receiver and the demo's receiver listen, default 127.0.0.1:8586
@@ -132,6 +141,8 @@ Environment:
   MANDATE_SIGNING_KEY        the Ed25519 seed deliveries are signed with, 32 bytes in standard base64
   MANDATE_SIGNING_KEY_FILE   the same, in a file. Without either, on a loopback address, one is made
                                in .local/signing-key; beyond loopback, serve refuses to start
+  MANDATE_SIGNING_KEY_CREATE true makes the file named by MANDATE_SIGNING_KEY_FILE once, when it is
+                               missing, as the quickstart does; without it a missing file stops serve
   MANDATE_SIGNING_KEYS_PREVIOUS  comma separated public keys still published at
                                /.well-known/pgmandate-keys, after a rotation
 `
@@ -203,17 +214,11 @@ func loadConfig() (config, error) {
 }
 
 // loopback says whether an address listens on this machine only, which is
-// the only place dev login is allowed.
+// the only place dev login is allowed. An address needs a port; the host is
+// judged by loopbackHost, the same check the Host header gets.
 func loopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return err == nil && loopbackHost(host)
 }
 
 func env(key, fallback string) string {
@@ -506,6 +511,13 @@ func serve(ctx context.Context, cfg config) error {
 	if err := queue.Init(4); err != nil {
 		return err
 	}
+	// The address is taken before anything starts: an address in use is
+	// refused with no setup link made and no job run.
+	listener, err := net.Listen("tcp", cfg.httpAddr)
+	if err != nil {
+		return err
+	}
+	defer listener.Close() //nolint:errcheck // Serve closes it; this is for the returns before
 	authService := auth.NewService(pool, auth.Config{DevLogin: cfg.devLogin, SessionTtl: cfg.sessionTtl, PublicUrl: cfg.publicUrl, Oidc: cfg.oidc})
 	if err := announceSetup(ctx, authService, cfg.publicUrl, os.Stderr); err != nil {
 		return err
@@ -565,10 +577,13 @@ func serve(ctx context.Context, cfg config) error {
 	}()
 	slog.Info("pgmandate serving", "version", version.String(), "ui", cfg.publicUrl, "mcp", cfg.publicUrl+"/mcp", "devLogin", cfg.devLogin, "oidc", cfg.oidc != nil,
 		"privateConnectors", cfg.allowPrivate)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		// The jobs are running: stop them, and wait, before the pool closes.
+		stop()
+		<-done
 		return err
 	}
-	// ListenAndServe returns as soon as shutdown begins; wait for it, and
+	// Serve returns as soon as shutdown begins; wait for it, and
 	// for the jobs, before the pool closes.
 	<-done
 	return nil
@@ -675,7 +690,8 @@ func receiver(ctx context.Context, cfg config, args []string, out io.Writer) err
 	r := webhook.NewReceiver(keys)
 	if *keyList == "" {
 		// Keys fetched from the server are fetched again on a key id the
-		// receiver does not know, as after a rotation.
+		// receiver does not know, as after a rotation, and once they are
+		// five minutes old, so that a dropped key is no longer trusted.
 		r.Refresh = func(ctx context.Context) (sign.KeySet, error) { return sign.Fetch(ctx, nil, *keysUrl) }
 	}
 	for _, audience := range splitList(*audiences) {
@@ -742,18 +758,47 @@ func summarizeDelivery(received webhook.Received) string {
 }
 
 // describeDelivery is what the receiver prints for a delivery: a line to
-// scan, and the body exactly as it arrived.
+// scan, and the body as it arrived, indented. The title and the payload are
+// the agent's text, and a JSON encoder leaves bidi overrides, C1 controls
+// and DEL raw, so both are escaped: the title is quoted, and in the body
+// every rune that is not graphic is written \uXXXX, which is still the
+// same JSON. A body that is not JSON is quoted. A control or bidi character
+// is shown escaped and never reaches the terminal.
 func describeDelivery(received webhook.Received) string {
 	p := received.Payload
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s  %-9s %-18s %s\n", received.At.Format("15:04:05"), p.Decision.Status, p.Proposal.Action, p.Proposal.Title)
+	fmt.Fprintf(&b, "%s  %-9s %-18s %q\n", received.At.Format("15:04:05"), p.Decision.Status, p.Proposal.Action, p.Proposal.Title)
 	fmt.Fprintf(&b, "          delivery %s  correlation %s\n", received.DeliveryId, p.CorrelationId)
 	var body bytes.Buffer
-	if err := json.Indent(&body, received.Body, "          ", "  "); err != nil {
-		body.Reset()
-		body.Write(received.Body)
+	text := strconv.QuoteToGraphic(string(received.Body))
+	if err := json.Indent(&body, received.Body, "          ", "  "); err == nil {
+		text = escapeJSONText(bytes.TrimRight(body.Bytes(), " \t\r\n"))
 	}
-	fmt.Fprintf(&b, "          %s\n\n", body.String())
+	fmt.Fprintf(&b, "          %s\n\n", text)
+	return b.String()
+}
+
+// escapeJSONText writes every rune of indented JSON that is not graphic,
+// other than the newlines json.Indent puts between values, as a \uXXXX
+// escape. Such a rune can only stand inside a string there, where the
+// escape means the same rune; a byte that is not UTF-8 becomes \ufffd, as
+// an encoder would make it.
+func escapeJSONText(data []byte) string {
+	var b strings.Builder
+	for len(data) > 0 {
+		r, size := utf8.DecodeRune(data)
+		data = data[size:]
+		notUTF8 := r == utf8.RuneError && size == 1
+		if r == '\n' || (!notUTF8 && unicode.IsGraphic(r)) {
+			b.WriteRune(r)
+			continue
+		}
+		if r1, r2 := utf16.EncodeRune(r); r1 != utf8.RuneError {
+			fmt.Fprintf(&b, `\u%04x\u%04x`, r1, r2)
+			continue
+		}
+		fmt.Fprintf(&b, `\u%04x`, r)
+	}
 	return b.String()
 }
 
@@ -1020,6 +1065,10 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 		}
 		printDelivery(out, d)
 	case "agent create":
+		// Checked first: an agent created without a token is left behind.
+		if *days < 1 || *days > agents.MaxTokenDays {
+			return fmt.Errorf("-days is 1 to %d: how long the agent's token is valid", agents.MaxTokenDays)
+		}
 		a, err := kernel.Agents.Create(scoped, *name, *department, *mode)
 		if err != nil {
 			return err
@@ -1148,12 +1197,16 @@ func admin(ctx context.Context, cfg config, command string, args []string, out i
 		if err != nil {
 			return err
 		}
+		ids := make([]uuid.UUID, 0, len(list))
 		for _, m := range list {
-			spent, err := kernel.Mandates.Spent(scoped, m.Id)
-			if err != nil {
-				return err
-			}
-			printMandate(out, m, spent)
+			ids = append(ids, m.Id)
+		}
+		spent, err := kernel.Mandates.SpentFor(scoped, ids)
+		if err != nil {
+			return err
+		}
+		for _, m := range list {
+			printMandate(out, m, spent[m.Id])
 		}
 	case "proposals":
 		list, err := kernel.Proposals.List(scoped, proposals.Filter{Status: *status, Limit: *limit})
@@ -1338,6 +1391,9 @@ func printDelivery(out io.Writer, d deliveries.Delivery) {
 	fmt.Fprintf(out, "%36s delivery %-9s %s %s\n", "", d.Status, d.Url, detail)
 }
 
+// printProposal prints a proposal's line. The title is the agent's text, so
+// it is quoted: an escape sequence or carriage return in it cannot rewrite
+// the line a person reads to pick the proposal to approve.
 func printProposal(out io.Writer, p proposals.Proposal) {
 	extra := ""
 	switch {
@@ -1349,7 +1405,7 @@ func printProposal(out io.Writer, p proposals.Proposal) {
 	if p.DryRun {
 		extra += " (dry run: never carried out)"
 	}
-	fmt.Fprintf(out, "%s %-9s %-7s %-16s %s%s\n", p.Id, p.Status, p.Risk, p.Action, p.Title, extra)
+	fmt.Fprintf(out, "%s %-9s %-7s %-16s %q%s\n", p.Id, p.ShownStatus(), p.Risk, p.Action, p.Title, extra)
 }
 
 func printEvent(out io.Writer, e events.Stored) {

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -154,9 +155,6 @@ type PayloadDecision struct {
 	ExecutionBasis *proposals.ExecutionBasis `json:"executionBasis,omitempty"`
 }
 
-// timeFormat is RFC 3339 in UTC to the second, as a proposal's own times.
-const timeFormat = "2006-01-02T15:04:05Z07:00"
-
 // payloadOf builds the body for a delivery of a decided proposal.
 func payloadOf(tenantId uuid.UUID, delivery Delivery, proposal proposals.Proposal) (Payload, error) {
 	if proposal.DecidedAt == nil {
@@ -168,7 +166,7 @@ func payloadOf(tenantId uuid.UUID, delivery Delivery, proposal proposals.Proposa
 	}
 	return Payload{
 		Version: sign.Version, Kind: sign.KindDelivery, Audience: delivery.Audience, TenantId: tenantId, DeliveryId: delivery.Id,
-		CorrelationId: correlationId, CreatedAt: delivery.CreatedAt.UTC().Format(timeFormat), NotAfter: delivery.NotAfter.UTC().Format(timeFormat),
+		CorrelationId: correlationId, CreatedAt: delivery.CreatedAt.UTC().Format(time.RFC3339), NotAfter: delivery.NotAfter.UTC().Format(time.RFC3339),
 		Proposal: PayloadProposal{Id: proposal.Id, Action: proposal.Action, Title: proposal.Title, Payload: proposal.Payload, Risk: proposal.Risk,
 			AgentId: proposal.AgentId, RunId: proposal.RunId, ProposedAt: proposal.CreatedAt},
 		Decision: PayloadDecision{Status: proposal.Status, DecidedAt: *proposal.DecidedAt, DecidedBy: proposal.DecidedBy, Note: proposal.DecisionNote,
@@ -318,15 +316,8 @@ func (s *Service) Retarget(ctx context.Context, tx pgx.Tx, actionKey, url, audie
 func retargetEvent(actionKey, url, audience string, deliveryId, proposalId uuid.UUID) events.Event {
 	return events.Event{
 		Type: "delivery.retargeted", SubjectId: proposalId,
-		Payload: map[string]any{"deliveryId": deliveryId, "action": actionKey, "connectorUrlSha256": urlDigest(url), "audience": audience},
+		Payload: map[string]any{"deliveryId": deliveryId, "action": actionKey, "connectorUrlSha256": events.UrlDigest(url), "audience": audience},
 	}
-}
-
-// urlDigest names a receiver's address in the chain without its text,
-// which may carry credentials.
-func urlDigest(url string) string {
-	sum := sha256.Sum256([]byte(url))
-	return hex.EncodeToString(sum[:])
 }
 
 // DeliverArgs is the job that delivers one decision.
@@ -350,14 +341,23 @@ func (w *worker) Timeout(*river.Job[DeliverArgs]) time.Duration {
 }
 
 // NextRetry backs off as River does, never later than the last moment an
-// attempt may open. A job that runs then finds the attempt refused and
-// finishes the delivery.
+// attempt may open. A backoff that would pass that moment becomes one more
+// real try, RequestTimeout before it so that queue latency still lands in
+// time. Once that try is behind, the retry lands on the last moment itself:
+// the attempt is refused then and the delivery finishes.
 func (w *worker) NextRetry(job *river.Job[DeliverArgs]) time.Time {
 	next := (&river.DefaultClientRetryPolicy{}).NextRetry(job.JobRow)
-	if last := job.Args.NotAfter.Add(-RequestTimeout); !job.Args.NotAfter.IsZero() && next.After(last) {
-		return last
+	if job.Args.NotAfter.IsZero() {
+		return next
 	}
-	return next
+	last := job.Args.NotAfter.Add(-RequestTimeout)
+	if !next.After(last) {
+		return next
+	}
+	if finalTry := last.Add(-RequestTimeout); time.Now().Before(finalTry) {
+		return finalTry
+	}
+	return last
 }
 
 func (w *worker) Work(ctx context.Context, job *river.Job[DeliverArgs]) error {
@@ -457,7 +457,10 @@ func (s *Service) Deliver(ctx context.Context, tenantId, deliveryId uuid.UUID, l
 		}
 	}
 	if err != nil {
-		// Nothing was sent: the body could not be built.
+		// Nothing was sent: the body could not be built. The cause is ours
+		// or the database's and names no receiver, so it is logged here, as
+		// closed keeps only the words.
+		slog.ErrorContext(ctx, "the delivery's body could not be built", "delivery", delivery.Id, "proposal", delivery.ProposalId, "error", err)
 		return s.closed(ctx, delivery, attemptResult{err: err, message: "the delivery's body could not be built"}, lastAttempt, nil)
 	}
 
@@ -475,12 +478,14 @@ type attemptResult struct {
 	// sent says the request's headers were written: it may have reached
 	// the receiver.
 	sent bool
-	// outcome is the receiver's explicit answer, if it gave one, and kept
-	// is what is kept of it.
-	outcome string
-	kept    json.RawMessage
-	err     error
-	message string
+	// outcome is the receiver's explicit answer, if it gave one, answered
+	// is the part of it the chain digests (the result, the refusal, or the
+	// whole of an unknown answer), and kept is what is stored of that.
+	outcome  string
+	answered json.RawMessage
+	kept     json.RawMessage
+	err      error
+	message  string
 }
 
 // closed records how an attempt ended, and finishes the delivery when that
@@ -492,6 +497,18 @@ func (s *Service) closed(ctx context.Context, delivery Delivery, r attemptResult
 		lastStatus = &code
 	}
 	permanent := errors.Is(r.err, errBlocked) || errors.Is(r.err, errPlain)
+	// Recorded even when the job's own context ran out after the receiver
+	// answered: a lost answer would leave the attempt open, to be sent
+	// again or to end unknown. The bound keeps a stuck database from
+	// holding the job.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	// What went wrong, in words: never r.err itself, whose text from the
+	// client names the address, which may carry credentials.
+	message := r.message
+	if message == "" {
+		message = describe(r.err, r.status)
+	}
 	finished, conflict := false, false
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		q := repo.New(tx)
@@ -504,14 +521,10 @@ func (s *Service) closed(ctx context.Context, delivery Delivery, r attemptResult
 				// The attempt was closed meanwhile, by the sweep after it
 				// stood open too long: the answer came too late to count.
 				conflict = true
-				return appendConflict(ctx, tx, delivery, r)
+				return appendConflict(ctx, tx, delivery, r, body)
 			}
 			finished = true
 			return appendOutcome(ctx, tx, delivery, r.outcome, outcomeFields(delivery, r, body))
-		}
-		message := r.message
-		if message == "" {
-			message = describe(r.err, r.status)
 		}
 		var rows int64
 		var err error
@@ -534,7 +547,10 @@ func (s *Service) closed(ctx context.Context, delivery Delivery, r attemptResult
 		return nil
 	})
 	if err != nil {
-		return errors.Join(r.err, fault.FromDb(err))
+		if r.outcome != "" {
+			return fault.FromDb(err)
+		}
+		return errors.Join(fmt.Errorf("deliver %s: %s", delivery.Id, message), fault.FromDb(err))
 	}
 	if finished {
 		// Done with: the job completes, and nothing is retried.
@@ -543,7 +559,7 @@ func (s *Service) closed(ctx context.Context, delivery Delivery, r attemptResult
 	if conflict {
 		return fmt.Errorf("deliver %s: the receiver answered %s after its attempt was closed; logged as a conflict", delivery.Id, r.outcome)
 	}
-	return fmt.Errorf("deliver %s: %s", delivery.Id, describe(r.err, r.status))
+	return fmt.Errorf("deliver %s: %s", delivery.Id, message)
 }
 
 // finish ends a waiting delivery with no attempt open, in the caller's
@@ -562,25 +578,48 @@ func (s *Service) finish(ctx context.Context, tx pgx.Tx, delivery Delivery, reas
 	}
 	return appendOutcome(ctx, tx, delivery, status, map[string]any{
 		"deliveryId": delivery.Id, "action": delivery.ActionKey, "attempts": delivery.AttemptsStarted, "unsent": delivery.AttemptsUnsent, "reason": reason,
+		"connectorUrlSha256": events.UrlDigest(delivery.Url), "audience": delivery.Audience,
 	})
 }
 
 func outcomeFields(delivery Delivery, r attemptResult, body []byte) map[string]any {
 	fields := map[string]any{
 		"deliveryId": delivery.Id, "action": delivery.ActionKey, "status": r.status, "attempts": delivery.AttemptsStarted + 1,
-		"connectorUrlSha256": urlDigest(delivery.Url), "audience": delivery.Audience,
+		"connectorUrlSha256": events.UrlDigest(delivery.Url), "audience": delivery.Audience,
 	}
+	addDigests(fields, r, body)
+	return fields
+}
+
+// addDigests adds what pins down the exchange: the exact bytes that were
+// signed and sent, and the result the receiver answered with.
+func addDigests(fields map[string]any, r attemptResult, body []byte) {
 	if body != nil {
-		// The exact bytes that were signed and sent.
 		sum := sha256.Sum256(body)
 		fields["bodySha256"] = hex.EncodeToString(sum[:])
 	}
-	if len(r.kept) > 0 {
-		if digest, err := events.Digest(r.kept); err == nil {
-			fields["resultSha256"] = digest
-		}
+	if len(r.answered) == 0 {
+		return
 	}
-	return fields
+	// The digest is of what the receiver answered, not of what is stored:
+	// the same when it is stored, and still true when it is not.
+	digest, err := events.Digest(r.answered)
+	if err != nil {
+		sum := sha256.Sum256(r.answered)
+		digest = hex.EncodeToString(sum[:])
+	}
+	fields["resultSha256"] = digest
+	if len(r.kept) == 0 || !bytes.Equal(r.kept, canonicalOrNil(r.answered)) {
+		fields["resultKept"] = false
+	}
+}
+
+func canonicalOrNil(raw json.RawMessage) json.RawMessage {
+	canonical, err := events.Canonical(raw)
+	if err != nil {
+		return nil
+	}
+	return canonical
 }
 
 func appendOutcome(ctx context.Context, tx pgx.Tx, delivery Delivery, status string, fields map[string]any) error {
@@ -588,14 +627,13 @@ func appendOutcome(ctx context.Context, tx pgx.Tx, delivery Delivery, status str
 	return err
 }
 
-func appendConflict(ctx context.Context, tx pgx.Tx, delivery Delivery, r attemptResult) error {
+func appendConflict(ctx context.Context, tx pgx.Tx, delivery Delivery, r attemptResult, body []byte) error {
 	slog.WarnContext(ctx, "a receiver answered after its attempt was closed; a person should look", "delivery", delivery.Id, "outcome", r.outcome)
-	fields := map[string]any{"deliveryId": delivery.Id, "action": delivery.ActionKey, "answered": r.outcome, "status": r.status}
-	if len(r.kept) > 0 {
-		if digest, err := events.Digest(r.kept); err == nil {
-			fields["resultSha256"] = digest
-		}
+	fields := map[string]any{
+		"deliveryId": delivery.Id, "action": delivery.ActionKey, "answered": r.outcome, "status": r.status,
+		"connectorUrlSha256": events.UrlDigest(delivery.Url), "audience": delivery.Audience,
 	}
+	addDigests(fields, r, body)
 	_, err := events.Append(ctx, tx, events.Event{Type: "delivery.conflict", SubjectId: delivery.ProposalId, Payload: fields})
 	return err
 }
@@ -654,15 +692,17 @@ func (s *Service) send(req *http.Request, wrote *atomic.Bool) attemptResult {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	answer, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
-	outcome, kept := explicitAnswer(resp.StatusCode, answer)
-	return attemptResult{status: resp.StatusCode, sent: true, outcome: outcome, kept: kept}
+	outcome, answered, kept := explicitAnswer(resp.StatusCode, answer)
+	return attemptResult{status: resp.StatusCode, sent: true, outcome: outcome, answered: answered, kept: kept}
 }
 
 // explicitAnswer reads a receiver's answer: a JSON object of at most 4 kB
-// that says what happened. Anything else says nothing final.
-func explicitAnswer(status int, answer []byte) (string, json.RawMessage) {
+// that says what happened. Anything else says nothing final. It returns
+// the outcome, the part of the answer the chain digests, and what is kept
+// of that part.
+func explicitAnswer(status int, answer []byte) (string, json.RawMessage, json.RawMessage) {
 	if len(answer) > maxResponse {
-		return "", nil
+		return "", nil, nil
 	}
 	var parsed struct {
 		Outcome string          `json:"outcome"`
@@ -670,27 +710,117 @@ func explicitAnswer(status int, answer []byte) (string, json.RawMessage) {
 		Refusal json.RawMessage `json:"refusal"`
 	}
 	if json.Unmarshal(answer, &parsed) != nil {
-		return "", nil
+		return "", nil, nil
 	}
 	ok := status >= 200 && status <= 299
 	switch {
 	case parsed.Outcome == StatusDone && ok:
-		return StatusDone, objectOrNil(parsed.Result)
+		return StatusDone, nonNull(parsed.Result), objectOrNil(parsed.Result)
 	case parsed.Outcome == StatusRefused:
-		return StatusRefused, objectOrNil(parsed.Refusal)
+		return StatusRefused, nonNull(parsed.Refusal), objectOrNil(parsed.Refusal)
 	case parsed.Outcome == StatusUnknown && ok:
-		// Kept whole: what the receiver said when it could not tell.
-		return StatusUnknown, objectOrNil(answer)
+		// Kept whole: what the receiver said when it could not tell. An
+		// unknown answer is always kept, if only as an empty object.
+		kept := objectOrNil(answer)
+		if kept == nil {
+			kept = json.RawMessage(`{}`)
+		}
+		return StatusUnknown, json.RawMessage(answer), kept
 	}
-	return "", nil
+	return "", nil, nil
 }
 
-func objectOrNil(raw json.RawMessage) json.RawMessage {
-	var object map[string]any
-	if len(raw) == 0 || json.Unmarshal(raw, &object) != nil || object == nil {
+// nonNull is a part of an answer, or nil when the receiver left it out.
+func nonNull(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
 	return raw
+}
+
+// objectOrNil keeps a JSON object as the database can store it, so that
+// the receiver's final answer is never lost to the column refusing it: a
+// NUL character is replaced as the chain replaces it, and an object with a
+// number Postgres numeric cannot hold, or one too long to spell out or to
+// fit the column, is not kept at all. The chain digests the receiver's
+// answer itself, whether it is kept or not.
+func objectOrNil(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var object map[string]any
+	if decoder.Decode(&object) != nil || object == nil || !numbersFit(raw) {
+		return nil
+	}
+	canonical, err := events.Canonical(raw)
+	if err != nil || storedLength(canonical) > maxResult {
+		return nil
+	}
+	return canonical
+}
+
+// maxResult is the most a delivery's result takes as jsonb text
+// (deliveries.result in the schema).
+const maxResult = 16384
+
+// storedLength is at most the length of a canonical object as jsonb text.
+// jsonb writes the same numbers, '<', '>' and '&' unescaped, no escape
+// longer than encoding/json's, and one space after each ':' and ','.
+// Counting those inside strings too only overstates it.
+func storedLength(canonical json.RawMessage) int {
+	decoder := json.NewDecoder(bytes.NewReader(canonical))
+	decoder.UseNumber()
+	var value any
+	if decoder.Decode(&value) != nil {
+		return math.MaxInt
+	}
+	var text bytes.Buffer
+	encoder := json.NewEncoder(&text)
+	encoder.SetEscapeHTML(false)
+	if encoder.Encode(value) != nil {
+		return math.MaxInt
+	}
+	plain := bytes.TrimSuffix(text.Bytes(), []byte("\n"))
+	return len(plain) + bytes.Count(plain, []byte(":")) + bytes.Count(plain, []byte(","))
+}
+
+// Bounds on the numbers in a receiver's answer, once spelled out without
+// exponents as the canonical form writes them, so that 4 kB of answer
+// never becomes megabytes to spell out. Real results are far below both,
+// and no more than maxResult could be kept anyway.
+const (
+	maxAnswerNumberLength  = 1000
+	maxAnswerNumbersLength = maxResult
+)
+
+// numbersFit says whether every number in a JSON value can be stored as
+// Postgres keeps it, within the bounds above.
+func numbersFit(raw json.RawMessage) bool {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	total := 0
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+		number, ok := token.(json.Number)
+		if !ok {
+			continue
+		}
+		length := events.PlainLength(string(number))
+		if length < 0 || length > maxAnswerNumberLength {
+			return false
+		}
+		if total += length; total > maxAnswerNumbersLength {
+			return false
+		}
+	}
 }
 
 // SendAgain sends a delivery that was never sent, as a person of the
@@ -737,7 +867,10 @@ func (s *Service) SendAgain(ctx context.Context, proposalId uuid.UUID) (Delivery
 			return err
 		}
 		if _, err := events.Append(ctx, tx, events.Event{
-			Type: "delivery.retried", SubjectId: proposalId, Payload: map[string]any{"deliveryId": row.Id, "action": row.ActionKey, "audience": connector.Audience},
+			Type: "delivery.retried", SubjectId: proposalId, Payload: map[string]any{
+				"deliveryId": row.Id, "action": row.ActionKey,
+				"connectorUrlSha256": events.UrlDigest(connector.Url), "audience": connector.Audience,
+			},
 		}); err != nil {
 			return err
 		}
@@ -794,7 +927,10 @@ func (s *Service) Settle(ctx context.Context, proposalId uuid.UUID, done bool) (
 			return err
 		}
 		if _, err := events.Append(ctx, tx, events.Event{
-			Type: "delivery.settled", SubjectId: proposalId, Payload: map[string]any{"deliveryId": row.Id, "action": row.ActionKey, "outcome": status},
+			Type: "delivery.settled", SubjectId: proposalId, Payload: map[string]any{
+				"deliveryId": row.Id, "action": row.ActionKey, "outcome": status,
+				"connectorUrlSha256": events.UrlDigest(delivery.Url), "audience": delivery.Audience,
+			},
 		}); err != nil {
 			return err
 		}
