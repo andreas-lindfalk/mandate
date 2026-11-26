@@ -24,7 +24,7 @@ Every step is a row in pgmandate's own Postgres. Your systems can run on any dat
 
 ![Below, the agent proposes over MCP; above, the receiver gets the ticket as a signed webhook. The refund waits for a person, and nothing arrives.](docs/terminal.gif)
 
-> **Status: early (0.1.0, Apache-2.0).** It runs, and it is tested against a real Postgres, including the rules with the service bypassed. It has no production users and no external security review. From 0.1.0 a database is upgraded, never reset; before 1.0 the APIs may still change, and a contract whose meaning changes gets a new version. Read [the threat model](docs/threat-model.md) before relying on it.
+> **Status: early (0.1.1, Apache-2.0).** It runs, and it is tested against a real Postgres, including the rules with the service bypassed. It has no production users and no external security review. From 0.1.0 a database is upgraded, never reset; before 1.0 the APIs may still change, and a contract whose meaning changes gets a new version. Read [the threat model](docs/threat-model.md) before relying on it.
 
 ## How it works
 

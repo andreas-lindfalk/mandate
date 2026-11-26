@@ -71,14 +71,14 @@ A new agent starts in a dry run unless it is created with `-mode live`: see [a d
 
 ## Running it
 
-One image and one Postgres. Each release is published as **`ghcr.io/andreas-lindfalk/pgmandate:<tag>`**, such as `:v0.1.0`, and `:latest` follows the newest. It is built for linux/amd64 and linux/arm64, with the web app inside. Its entrypoint is the `pgmandate` command, so `docker run --rm ghcr.io/andreas-lindfalk/pgmandate:v0.1.0 version` prints the release; without arguments it serves.
+One image and one Postgres. Each release is published as **`ghcr.io/andreas-lindfalk/pgmandate:<tag>`**, such as `:v0.1.1`, and `:latest` follows the newest. It is built for linux/amd64 and linux/arm64, with the web app inside. Its entrypoint is the `pgmandate` command, so `docker run --rm ghcr.io/andreas-lindfalk/pgmandate:v0.1.1 version` prints the release; without arguments it serves.
 
 The compose files run that image. A one-off `migrate` container holds the database owner's credentials; the server connects only as the application role:
 
 ```sh
 export MANDATE_APP_PASSWORD=$(openssl rand -hex 16) MANDATE_OWNER_PASSWORD=$(openssl rand -hex 16)
 export MANDATE_SIGNING_KEY=$(openssl rand -base64 32)
-export MANDATE_VERSION=v0.1.0                         # the release to run: the image's tag
+export MANDATE_VERSION=v0.1.1                         # the release to run: the image's tag
 export MANDATE_OIDC_ISSUER=... MANDATE_OIDC_CLIENT_ID=... MANDATE_OIDC_CLIENT_SECRET=...
 docker compose -f deploy/compose.yaml -f deploy/compose.server.yaml up -d   # --build builds this clone instead
 ```

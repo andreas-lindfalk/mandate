@@ -178,7 +178,7 @@ pgmandate means something only when these hold. The software cannot make them ho
 
 ## Piloting it
 
-**Pilot on 0.1.0.** It is the first version a database is upgraded from rather than reset; before it nothing was kept compatible. It brings what a pilot needs:
+**Pilot on 0.1.1 or later.** 0.1.0 is the first version a database is upgraded from rather than reset; before it nothing was kept compatible. It brings what a pilot needs:
 - a Docker-only quickstart
 - setup on managed Postgres without a superuser
 - proposal expiry
@@ -188,7 +188,7 @@ pgmandate means something only when these hold. The software cannot make them ho
 **What a team does:**
 - **Run** one container and a Postgres, with sign-in through your OpenID Connect provider. Locally, the README's demo shows the whole loop.
 - **Define** the actions an agent may propose: a key, a payload schema, a risk and the receiver's address.
-- **Write** a receiver for each system. It verifies the signature, does nothing twice for the same delivery id, checks the facts, and writes. `examples/refunds` does this in about a hundred lines of Go today, comments aside. The 0.1.0 contract is specified for any language, with a template in Python and a conformance test in phase 2.
+- **Write** a receiver for each system. It verifies the signature, does nothing twice for the same delivery id, checks the facts, and writes. `examples/refunds` does this in about a hundred lines of Go today, comments aside. The delivery contract is specified for any language, with a template in Python and a conformance test in phase 2.
 - **Change** the agent so that it proposes instead of calling the system.
 - **Grant** mandates for what may run without a person. Decide the rest in the inbox, with a Slack or Discord notice when something waits.
 
@@ -335,7 +335,7 @@ pgmandate's own store cannot be swapped for another, because the database as the
 
 ## Status
 
-Version 0.1.0. pgmandate is an open-source project (Apache-2.0) with one maintainer. It is not a product, and nobody offers it hosted. It runs, it is tested against a real Postgres, and the demo in the README shows the core loop.
+Version 0.1.1. pgmandate is an open-source project (Apache-2.0) with one maintainer. It is not a product, and nobody offers it hosted. It runs, it is tested against a real Postgres, and the demo in the README shows the core loop.
 
 - No production users.
 - No external security review.
