@@ -59,12 +59,12 @@ const usage = `pgmandate: agents propose, a person or a mandate decides, Postgre
   pgmandate migrate                  create the app role and apply the schema (needs the owner connection)
   pgmandate serve                    migrate when the owner connection is given, then serve the UI, the API
                                      and the agent contract over MCP (/mcp) and HTTP on $MANDATE_HTTP_ADDR
-  pgmandate demo                     the five-minute demo (needs a running Postgres)
+  pgmandate demo                     the demo (needs a running Postgres)
   pgmandate version                  the release this binary was built from
-  pgmandate receiver -tenant ID -audience A1,A2 [-keys K1,K2 | -keys-url URL] [-addr 127.0.0.1:8586]
+  pgmandate receiver -tenant ID -audience A1,A2 [-keys K1,K2 | -keys-url URL] [-addr 127.0.0.1:8586] [-brief]
                                      a local receiver that prints the deliveries it accepts; it trusts the
                                      server's published keys unless -keys names them
-  pgmandate propose -token mnd_... -action a.b -title T -rationale WHY -payload '{...}' [-evidence '[...]'] [-key K] [-run R] [-url U]
+  pgmandate propose -token mnd_... -action a.b -title T -rationale WHY -payload '{...}' [-evidence '[...]'] [-key K] [-run R] [-url U] [-brief]
                                      propose as an agent over MCP, as any agent would, and print the answer
 
 The commands below act on the database directly, as the person named with -as. Run migrate or serve first.
@@ -258,6 +258,7 @@ func run(ctx context.Context, command string, args []string, out io.Writer) erro
 	case "serve":
 		return serve(ctx, cfg)
 	case "demo":
+		quietLogs()
 		if err := migrate(ctx, cfg); err != nil {
 			return err
 		}
@@ -355,6 +356,12 @@ func openApp(ctx context.Context, cfg config) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 	return db.Open(ctx, appUrl)
+}
+
+// quietLogs keeps the demo's output its story: the server and the queue it
+// runs log only warnings and errors beside it.
+func quietLogs() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 }
 
 // newKernel wires the kernel with a queue. serve and demo start the queue
@@ -653,6 +660,7 @@ func receiver(ctx context.Context, cfg config, args []string, out io.Writer) err
 	audiences := flags.String("audience", "", "comma separated audiences of the actions that point here")
 	keyList := flags.String("keys", "", "comma separated public keys to trust, in standard base64")
 	keysUrl := flags.String("keys-url", strings.TrimSuffix(cfg.publicUrl, "/")+"/.well-known/pgmandate-keys", "where to fetch the published keys")
+	brief := flags.Bool("brief", false, "print one line per delivery instead of its body")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("receiver: %w", err)
 	}
@@ -674,6 +682,10 @@ func receiver(ctx context.Context, cfg config, args []string, out io.Writer) err
 		r.Trust(audience, tenantId)
 	}
 	r.OnReceive = func(received webhook.Received) {
+		if *brief {
+			fmt.Fprint(out, summarizeDelivery(received))
+			return
+		}
 		fmt.Fprint(out, describeDelivery(received))
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -683,7 +695,11 @@ func receiver(ctx context.Context, cfg config, args []string, out io.Writer) err
 		<-ctx.Done()
 		_ = server.Shutdown(context.WithoutCancel(ctx))
 	}()
-	fmt.Fprintf(out, "receiver listening on http://%s/ (signature, audience and tenant checked; each delivery done once)\n", *addr)
+	if *brief {
+		fmt.Fprintf(out, "receiver listening on http://%s/\n", *addr)
+	} else {
+		fmt.Fprintf(out, "receiver listening on http://%s/ (signature, audience and tenant checked; each delivery done once)\n", *addr)
+	}
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -718,6 +734,13 @@ func modeText(mode string) string {
 	return "in dry run: what it proposes is recorded and never carried out, while it acts with its own credential"
 }
 
+// summarizeDelivery is the receiver's one line for a delivery, under -brief.
+func summarizeDelivery(received webhook.Received) string {
+	p := received.Payload
+	return fmt.Sprintf("%s  %s %q, %s: signature checked, done\n",
+		received.At.Format("15:04:05"), p.Proposal.Action, p.Proposal.Title, p.Decision.Status)
+}
+
 // describeDelivery is what the receiver prints for a delivery: a line to
 // scan, and the body exactly as it arrived.
 func describeDelivery(received webhook.Received) string {
@@ -748,6 +771,7 @@ func proposeCommand(ctx context.Context, cfg config, args []string, out io.Write
 	evidenceList := flags.String("evidence", "[]", `what was looked at, a JSON array of {"source", "ref", "summary"}`)
 	runId := flags.String("run", "", "the run id; a new one when empty")
 	key := flags.String("key", "", "the idempotency key; <run>:1 when empty. Send the same key to retry")
+	brief := flags.Bool("brief", false, "print what happened in a few lines instead of the answer")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("propose: %w", err)
 	}
@@ -793,6 +817,10 @@ func proposeCommand(ctx context.Context, cfg config, args []string, out io.Write
 	}
 	for _, content := range result.Content {
 		if text, ok := content.(*sdk.TextContent); ok {
+			if *brief && !result.IsError {
+				fmt.Fprint(out, summarizeAnswer([]byte(text.Text)))
+				continue
+			}
 			var pretty bytes.Buffer
 			if json.Indent(&pretty, []byte(text.Text), "", "  ") == nil {
 				fmt.Fprintln(out, pretty.String())
@@ -801,11 +829,48 @@ func proposeCommand(ctx context.Context, cfg config, args []string, out io.Write
 			}
 		}
 	}
-	fmt.Fprintf(out, "run %s, key %s: send the same -run and -key to retry\n", *runId, *key)
+	if !*brief || result.IsError {
+		fmt.Fprintf(out, "run %s, key %s: send the same -run and -key to retry\n", *runId, *key)
+	}
 	if result.IsError {
 		return errors.New("refused")
 	}
 	return nil
+}
+
+// summarizeAnswer is propose's answer in a few lines, under -brief: the
+// proposal, what became of it, and the receiver's result when there is one.
+func summarizeAnswer(answer []byte) string {
+	var parsed struct {
+		Repeat   bool `json:"repeat"`
+		Proposal struct {
+			ProposalId string          `json:"proposalId"`
+			Action     string          `json:"action"`
+			Risk       string          `json:"risk"`
+			Status     string          `json:"status"`
+			Outcome    string          `json:"outcome"`
+			Result     json.RawMessage `json:"result"`
+			Refusal    json.RawMessage `json:"refusal"`
+		} `json:"proposal"`
+	}
+	if err := json.Unmarshal(answer, &parsed); err != nil || parsed.Proposal.ProposalId == "" {
+		return string(answer) + "\n"
+	}
+	p := parsed.Proposal
+	var b strings.Builder
+	repeat := ""
+	if parsed.Repeat {
+		repeat = " (a repeat: the first proposal, as it stands now)"
+	}
+	fmt.Fprintf(&b, "proposal %s  %s, %s risk: %s%s\n", p.ProposalId[:min(8, len(p.ProposalId))], p.Action, p.Risk, p.Status, repeat)
+	fmt.Fprintf(&b, "→ %s\n", p.Outcome)
+	if len(p.Result) > 0 && string(p.Result) != "null" {
+		fmt.Fprintf(&b, "  the receiver answered: %s\n", p.Result)
+	}
+	if len(p.Refusal) > 0 && string(p.Refusal) != "null" {
+		fmt.Fprintf(&b, "  refused: %s\n", p.Refusal)
+	}
+	return b.String()
 }
 
 // admin runs a person's command against the database, scoped to the tenant

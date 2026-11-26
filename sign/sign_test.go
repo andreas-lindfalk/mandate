@@ -23,7 +23,7 @@ func seed(fill byte) []byte {
 	return s
 }
 
-// TestVector is the example in the README, so a receiver written in any
+// TestVector is the example in docs/receivers.md, so a receiver written in any
 // language can check its own verification against a known answer.
 func TestVector(t *testing.T) {
 	const (

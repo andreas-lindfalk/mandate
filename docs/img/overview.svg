@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1020 300" width="1020" height="300" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-labelledby="title desc">
+  <title id="title">How pgmandate sits between agents and your systems</title>
+  <desc id="desc">An agent with no credentials proposes to pgmandate, which runs on your Postgres. A person decides, or grants mandates that decide. A decided proposal is delivered, signed, to a receiver that holds the credential and writes to your system. The result goes back to the agent.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/>
+    </marker>
+    <style>
+      .box { stroke-width: 1.5; }
+      .title { font-size: 16px; font-weight: 600; fill: #1f2328; }
+      .sub { font-size: 13px; fill: #424a53; }
+      .edge { stroke: #8c959f; stroke-width: 2; fill: none; }
+      .pill { fill: #f6f8fa; stroke: #d0d7de; }
+      .label { font-size: 12.5px; fill: #1f2328; }
+    </style>
+  </defs>
+
+  <!-- Agent -->
+  <rect class="box" x="20" y="55" width="170" height="90" rx="10" fill="#ddf4ff" stroke="#54aeff"/>
+  <text class="title" x="105" y="90" text-anchor="middle">Agent</text>
+  <text class="sub" x="105" y="110" text-anchor="middle">any framework</text>
+  <text class="sub" x="105" y="127" text-anchor="middle">holds no credentials</text>
+
+  <!-- pgmandate, a cylinder -->
+  <path class="box" d="M330,62 a100,12 0 0 1 200,0 v96 a100,12 0 0 1 -200,0 z" fill="#fff1e5" stroke="#fb8f44"/>
+  <path d="M330,62 a100,12 0 0 0 200,0" fill="none" stroke="#fb8f44" stroke-width="1.5"/>
+  <text class="title" x="430" y="104" text-anchor="middle">pgmandate</text>
+  <text class="sub" x="430" y="124" text-anchor="middle">on your Postgres:</text>
+  <text class="sub" x="430" y="141" text-anchor="middle">rules, mandates, the log</text>
+
+  <!-- Receiver -->
+  <rect class="box" x="660" y="55" width="160" height="90" rx="10" fill="#dafbe1" stroke="#4ac26b"/>
+  <text class="title" x="740" y="90" text-anchor="middle">Receiver</text>
+  <text class="sub" x="740" y="110" text-anchor="middle">holds the credential,</text>
+  <text class="sub" x="740" y="127" text-anchor="middle">checks the facts</text>
+
+  <!-- Your system -->
+  <rect class="box" x="880" y="65" width="120" height="70" rx="10" fill="#f6f8fa" stroke="#afb8c1"/>
+  <text class="title" x="940" y="96" text-anchor="middle">Your</text>
+  <text class="title" x="940" y="116" text-anchor="middle">system</text>
+
+  <!-- Person -->
+  <rect class="box" x="345" y="225" width="170" height="60" rx="10" fill="#fbefff" stroke="#c297ff"/>
+  <text class="title" x="430" y="251" text-anchor="middle">Person</text>
+  <text class="sub" x="430" y="270" text-anchor="middle">in the inbox</text>
+
+  <!-- Agent and pgmandate -->
+  <line class="edge" x1="192" y1="88" x2="326" y2="88" marker-end="url(#arrow)"/>
+  <line class="edge" x1="326" y1="114" x2="192" y2="114" marker-end="url(#arrow)"/>
+  <rect class="pill" x="222" y="62" width="74" height="20" rx="10"/>
+  <text class="label" x="259" y="76" text-anchor="middle">propose</text>
+  <rect class="pill" x="198" y="120" width="122" height="20" rx="10"/>
+  <text class="label" x="259" y="134" text-anchor="middle">decision, result</text>
+
+  <!-- pgmandate and the receiver -->
+  <line class="edge" x1="534" y1="88" x2="656" y2="88" marker-end="url(#arrow)"/>
+  <line class="edge" x1="656" y1="114" x2="534" y2="114" marker-end="url(#arrow)"/>
+  <rect class="pill" x="542" y="62" width="106" height="20" rx="10"/>
+  <text class="label" x="595" y="76" text-anchor="middle">signed delivery</text>
+  <rect class="pill" x="566" y="120" width="58" height="20" rx="10"/>
+  <text class="label" x="595" y="134" text-anchor="middle">result</text>
+
+  <!-- The receiver writes -->
+  <line class="edge" x1="822" y1="100" x2="876" y2="100" marker-end="url(#arrow)"/>
+  <rect class="pill" x="824" y="74" width="50" height="20" rx="10"/>
+  <text class="label" x="849" y="88" text-anchor="middle">write</text>
+
+  <!-- The person decides -->
+  <line class="edge" x1="430" y1="221" x2="430" y2="174" marker-end="url(#arrow)"/>
+  <rect class="pill" x="440" y="186" width="176" height="20" rx="10"/>
+  <text class="label" x="528" y="200" text-anchor="middle">decides, grants mandates</text>
+</svg>

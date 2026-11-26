@@ -2,6 +2,44 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
+## 2026-11-26: the README as a front door, and the demo shows expiry
+
+- **The README is the front page, not the manual.** Three reviews (a visitor with three minutes, a technical writer, a skeptical security engineer) found the content honest but the page a spec: the product defined three ways, terms used before they were explained and repeated, the visitor's first question answered late, the receiver's cost never shown, and the trust boundary vague. It now runs:
+  1. what it is, in one plain paragraph, with a diagram;
+  2. two films of the UI;
+  3. how it works, each term defined once;
+  4. why Postgres;
+  5. what it protects against and what not;
+  6. who it is for and what it asks;
+  7. try it;
+  8. connect an agent;
+  9. a receiver in a few lines;
+  10. why not an API key.
+
+  The reference moves, word for word, into [agents.md](agents.md), [receivers.md](receivers.md) and [running.md](running.md). The rules list moves into the threat model, the glossary's other names into the scope's terms, and the comparison into [landscape.md](landscape.md).
+- **Why Postgres is said plainly,** in two parts:
+  - **Why a database:** one transaction for the decision, the budget, the delivery and the log; the rules held on every path that writes; and the record kept in a database the team already runs.
+  - **Why Postgres among databases:** row level security, which MySQL and SQLite lack; triggers that can refuse, which Spanner lacks; a scope that lasts one transaction; the payload rule evaluated in `jsonb`; River's queue in the same transaction; and it runs everywhere.
+
+  It is a server with schemas of its own, not an extension.
+- **Diagrams are drawn SVG, not Mermaid.** GitHub's Mermaid clipped labels and placed nodes badly. The SVGs keep their text on light fills, so one file reads in both of GitHub's themes.
+- **Three short films.**
+  - **Two of the UI.** `web/scripts/record-ui.mjs` drives the real UI in Playwright (`make demo-ui-gifs`): an approval in the inbox, carried out by the receiver; and a mandate granted, then the agent's next proposal carried out under it, the agent proposing over the agent API with its own token. A caption on screen says what happens, held about 0.4 seconds a word before anything moves.
+  - **One of the terminal.** `docs/film/terminal.tape` (VHS in tmux, `make demo-terminal-gif`) puts an agent proposing over MCP below and the receiver above. A ticket allowed under a mandate arrives as a signed webhook; a refund waits, and nothing arrives. `propose` and `receiver` gained `-brief` for it: a few readable lines instead of the JSON. A recording of the whole demo was tried first, and dropped: a protocol's transcript is not something a person follows in a film.
+
+  On the README each film is a still of its outcome that links to the film, so the page does not move by itself. Playwright is a dev dependency of the web app.
+- **The demo shows expiry end to end,** with real time. A fourth action, `customers.call_back`, lets a proposal wait one minute, the shortest an action may set. Nobody decides it. When the minute is up:
+  - the agent reads it as expired;
+  - an approval is refused;
+  - the sweep records it;
+  - nothing is delivered.
+
+  The demo waits for the database to say the deadline has passed, and stops with an error, deciding nothing, if the database's clock lags by more than two minutes. Its test moves the deadline in the database instead of waiting. Waits read as "7 days", and the demo logs only warnings beside its own output.
+- **The published image is the way to run it.** The README names `ghcr.io/andreas-lindfalk/pgmandate`. Running it for real (`deploy/compose.server.yaml`) runs the image of the release `MANDATE_VERSION` names, and builds the clone only with `--build`.
+- **The Docker quickstart delivers somewhere.** The action points at a receiver started inside the container. After a webhook is defined, the UI now shows the tenant beside the audience and the keys a receiver needs. A ready-made command was tried and dropped: neither setup could run it as copied, and an https connector needs more than the reference receiver. The dev server now proxies the published keys too. CI's smoke test proves the delivery comes back done with the receiver's result.
+- **Each example has a README:** what it shows, how to try it, where to start reading, and what is only for a demonstration. The detail stays in the Go doc comments.
+- **The status says 0.1.0,** for the tag that follows this change: from it, a database is upgraded rather than reset.
+
 ## 2026-11-25: what stays flexible, as tests, and one clock for mandates
 
 - **An embedded host's own River** runs in a test beside pgmandate's queue, in one binary and one database, migrated and run by a role of the host's own that is no superuser: each queue runs its own jobs, neither table holds the other's, and neither role reaches the other's queue.

@@ -46,7 +46,7 @@ This is the critical path, so it starts at once.
    - Publish an image with the UI built in, plus a quickstart that needs only Docker.
    - Dev login stays limited to a server that listens only on the machine itself. A container listens on every address, so the quickstart needs another way in: the server prints a single-use sign-in link for the first owner. The link works only while the tenant has no owner, expires quickly, and is stored hashed, since container logs are an admin path.
    - Seeing the UI then needs neither Go, Node nor an OpenID provider.
-2. **The README as a front door.** It opens with what the scope says, and has a drawn diagram and a recorded demo of the whole loop. The long reference sections move into `docs/`.
+2. **The README as a front door.** Built. It opens with what the scope says, and has a drawn diagram and a recorded demo of the whole loop. The long reference sections move into `docs/`.
 3. **Database setup that works without a superuser.** Built. On managed Postgres (RDS, Cloud SQL, Azure, Supabase, Neon) the admin role is not a superuser, and setting a role's attributes fails. Setup therefore:
    - checks the application role's attributes and refuses to go on if they are wrong, including when the role owns pgmandate's tables, or has SUPERUSER, BYPASSRLS or CREATEROLE, or can switch through membership to a role that does, such as a managed service's admin role (`rds_superuser`, `cloudsqlsuperuser`). Each of these gets past row level security or the append-only guard
    - can skip creating the role when a DBA created it beforehand
@@ -55,7 +55,7 @@ This is the critical path, so it starts at once.
 
 ### Safe to pilot
 
-5. **Proposal expiry.**
+5. **Proposal expiry.** Built (build step 1 of [design-0.1.md](design-0.1.md)), and the demo shows it end to end.
    - An action sets how long a proposal for it may wait, and how long a decision may take to be carried out. Both are fixed on the proposal when it is made.
    - When the waiting time is up, the system decides the proposal as expired under a database rule, the agent is told, and nothing is delivered.
    - After that deadline, the database refuses every change to the proposal except expiry: no approval, no withdrawal, and no execution under a mandate.
@@ -100,7 +100,7 @@ This is the critical path, so it starts at once.
    - MCP becomes one way to call it, and JSON over HTTP comes with it. The clients in phase 2 are generated from it.
    - The call limit, the waiting and the guidance texts live there once.
    - What only the service holds today moves with it, with tests: an agent reads only its own proposals, and the agent service refuses a person's session.
-10. **The job queue kept apart.** pgmandate's River jobs live in a schema of their own, with their own migrations and queue names. The application role gets rights there and nowhere in a host's `public` schema. What a host must know about sharing one River version in one binary is written down.
+10. **The job queue kept apart.** Built. pgmandate's River jobs live in a schema of their own, with their own migrations and queue names. The application role gets rights there and nowhere in a host's `public` schema. What a host must know about sharing one River version in one binary is written down.
 11. **What stays flexible, as tests.** Built: the first in the setup tests, the other two in `flexibility_test.go`. The assumptions under *What stays flexible* in the scope become CI that runs:
     - setup as a non-superuser owner
     - an embedded host that runs its own River

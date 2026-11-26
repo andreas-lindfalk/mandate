@@ -1,4 +1,4 @@
-.PHONY: up down reset gen web web-dev test lint run migrate demo tidy check
+.PHONY: up down reset gen web web-dev test lint run migrate demo demo-terminal-gif demo-ui-gifs tidy check
 
 COMPOSE := docker compose -f deploy/compose.yaml
 
@@ -35,8 +35,14 @@ run: web ## Build the web app and serve the UI, the API and MCP on 127.0.0.1:858
 migrate:
 	go run ./cmd/pgmandate migrate
 
-demo: ## Play the five-minute demo against the local Postgres
+demo: ## Play the demo against the local Postgres (a little over a minute)
 	go run ./cmd/pgmandate demo
+
+demo-terminal-gif: ## Record the terminal film into docs/terminal.gif (needs make up, vhs and tmux; see docs/film/terminal.tape)
+	vhs docs/film/terminal.tape
+
+demo-ui-gifs: ## Record the UI films into docs/ui-*.gif: after make demo, with make run and the demo's receiver running, MANDATE_AGENT_TOKEN=<the token it printed> make demo-ui-gifs (see web/scripts/record-ui.mjs)
+	cd web && node scripts/record-ui.mjs
 
 tidy:
 	go mod tidy

@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -70,6 +71,50 @@ func TestTheServerAnswersOnlyToThisMachineWhenDevLoginIsOn(t *testing.T) {
 	require.False(t, loopback(":8585"))
 }
 
+// A database whose clock is behind this machine's has not passed the
+// deadline when the demo's own wait ends. The demo waits for it, and stops
+// rather than decide the proposal while it can still be approved.
+func TestTheDemoWaitsForTheDatabasesDeadline(t *testing.T) {
+	ctx := context.Background()
+	pg, err := testkit.StartPostgres(ctx)
+	require.NoError(t, err)
+	defer pg.Close()
+
+	var out bytes.Buffer
+	behind := func(context.Context, uuid.UUID, time.Time) error { return nil }
+	err = runDemo(ctx, pg.AppUrl, "127.0.0.1:0", testfix.Signer, &out, demoOptions{waitUntil: behind, clockSlack: time.Second})
+	require.ErrorContains(t, err, "is the database's clock behind?")
+	require.Contains(t, out.String(), "11. Nobody decided the call-back")
+	require.NotContains(t, out.String(), "HOLE")
+	require.NotContains(t, out.String(), "Alice approves it", "nothing is decided before the database says the deadline has passed")
+}
+
+func TestTheDemoWaitsForTheDeadline(t *testing.T) {
+	start := time.Now()
+	require.NoError(t, sleepUntil(context.Background(), uuid.New(), start.Add(-time.Second)), "a deadline that has passed is not waited for")
+	require.NoError(t, sleepUntil(context.Background(), uuid.New(), start.Add(200*time.Millisecond)))
+	require.GreaterOrEqual(t, time.Since(start), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, sleepUntil(ctx, uuid.New(), time.Now().Add(time.Hour)), context.Canceled, "an interrupted demo stops waiting")
+}
+
+func TestWaitsReadAsAPersonSaysThem(t *testing.T) {
+	require.Equal(t, "7 days", waitText(7*24*time.Hour))
+	require.Equal(t, "1 day", waitText(24*time.Hour))
+	require.Equal(t, "1 minute", waitText(time.Minute))
+	require.Equal(t, "90 minutes", waitText(90*time.Minute))
+	require.Equal(t, "1m30s", waitText(90*time.Second))
+}
+
+func TestTheDemoLogsOnlyWarnings(t *testing.T) {
+	before := slog.Default()
+	defer slog.SetDefault(before)
+	quietLogs()
+	require.False(t, slog.Default().Enabled(context.Background(), slog.LevelInfo), "the server's info lines stay out of the demo's story")
+	require.True(t, slog.Default().Enabled(context.Background(), slog.LevelWarn))
+}
+
 func bytesOf(path string, t *testing.T) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -85,8 +130,36 @@ func TestDemoAndCommandLine(t *testing.T) {
 	require.NoError(t, err)
 	defer pg.Close()
 
+	// The call-back's minute is not waited for: its deadline is moved, as
+	// the owner, past the rules.
+	moved := 0
+	moveDeadline := func(ctx context.Context, id uuid.UUID, deadline time.Time) error {
+		moved++
+		conn, err := pgx.Connect(ctx, pg.OwnerUrl)
+		if err != nil {
+			return err
+		}
+		defer conn.Close(ctx) //nolint:errcheck
+		// Both times by the database's clock: the call-back may wait one
+		// minute, and the demo waits for the deadline it was told.
+		var waits float64
+		var expiresAt time.Time
+		if err := conn.QueryRow(ctx, `SELECT extract(epoch FROM expires_at - created_at)::float8, expires_at FROM mandate.proposals WHERE id = $1`, id).Scan(&waits, &expiresAt); err != nil {
+			return err
+		}
+		require.InDelta(t, 60, waits, 1, "the call-back waits one minute")
+		require.True(t, expiresAt.Equal(deadline), "the demo waits for the proposal's own deadline")
+		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `UPDATE mandate.proposals SET expires_at = now() - interval '1 second' WHERE id = $1`, id)
+			return err
+		})
+	}
 	var out bytes.Buffer
-	require.NoError(t, Demo(ctx, pg.AppUrl, "127.0.0.1:0", testfix.Signer, &out))
+	require.NoError(t, runDemo(ctx, pg.AppUrl, "127.0.0.1:0", testfix.Signer, &out, demoOptions{waitUntil: moveDeadline, clockSlack: time.Minute}))
+	require.Equal(t, 1, moved, "one proposal is left to expire")
 	text := out.String()
 	t.Log(text)
 	require.NotContains(t, text, "HOLE")
@@ -103,12 +176,18 @@ func TestDemoAndCommandLine(t *testing.T) {
 	require.Equal(t, 3, strings.Count(text, "signature, audience and tenant checked; decision executed"), "three executions and")
 	require.Equal(t, 1, strings.Count(text, "signature, audience and tenant checked; decision approved"), "one approval are delivered")
 	require.Contains(t, text, "after 2 attempt(s)", "the failed delivery was retried")
-	require.Equal(t, 5, strings.Count(text, "refused: "), "five statements the database refuses")
+	require.Equal(t, 6, strings.Count(text, "refused: "), "five statements the database refuses, and an approval after the deadline")
+	require.Contains(t, text, "customers.call_back medium  waits 1 minute")
+	require.Contains(t, text, "the agent reads it (get_proposal): expired")
+	require.Contains(t, text, "→ expired: nobody decided it before ")
+	require.Regexp(t, `Alice approves it after its deadline → refused: \S`, text)
+	require.Contains(t, text, "customers.call_back → expired, delivered: false", "the sweep records it, and nothing is delivered")
 	require.Contains(t, text, "trial-bot, dry_run")
 	require.Contains(t, text, "dryRun true, would_allow", "a mandate would allow the dry run")
 	require.Contains(t, text, "dryRun true, pending")
 	require.Contains(t, text, "the helpdesk got 0 new deliveries, and the trial mandate has 0 of 3 executions used", "nothing of a dry run is delivered or spent")
 	require.Contains(t, text, "tickets.close → dismissed")
+	require.Regexp(t, `it waits for a person until \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ, by the database's clock`, text)
 	require.Contains(t, text, "created live (a new agent starts in dry run")
 	require.Contains(t, text, "verified: ")
 	require.Contains(t, text, `"outcome":"executed"`)
@@ -206,6 +285,14 @@ func TestDemoAndCommandLine(t *testing.T) {
 	out.Reset()
 	require.NoError(t, run(ctx, "propose", proposeArgs, &out))
 	require.Contains(t, out.String(), `"repeat": true`, "the same run and key again is a repeat")
+	out.Reset()
+	require.NoError(t, run(ctx, "propose", append(slices.Clone(proposeArgs), "-brief"), &out))
+	require.Regexp(t, `^proposal `+shellId[:8]+`  tickets\.create, low risk: \w+ \(a repeat: the first proposal, as it stands now\)\n→ \S`, out.String(), "-brief tells what happened in a few lines")
+	require.NotContains(t, out.String(), `"repeat"`, "and leaves out the answer")
+	require.NotContains(t, out.String(), "send the same -run")
+	out.Reset()
+	require.Error(t, run(ctx, "propose", []string{"-brief", "-token", agentToken, "-url", mcpServer.URL + "/mcp", "-action", "nothing.defined", "-title", "x", "-rationale", "r", "-run", "brief-1"}, &out))
+	require.Contains(t, out.String(), "run brief-1, key brief-1:1: send the same -run and -key to retry", "a refused call still says how to retry it")
 	require.Error(t, run(ctx, "propose", []string{"-token", "mnd_nope", "-url", mcpServer.URL + "/mcp", "-action", "tickets.create", "-title", "x", "-rationale", "r"}, &out))
 	require.Error(t, run(ctx, "propose", []string{"-action", "tickets.create"}, &out), "a token is needed")
 	out.Reset()
@@ -254,6 +341,24 @@ func TestDemoAndCommandLine(t *testing.T) {
 	require.NoError(t, run(ctx, "notify", []string{"remove", "-tenant", tenantId, "-as", "cli@test.example"}, &out))
 	require.Contains(t, out.String(), "notifications are off")
 	require.Error(t, run(ctx, "notify", []string{"remove", "-tenant", tenantId, "-as", "cli@test.example"}, &out), "nothing left to remove")
+}
+
+func TestBriefOutputsSayWhatHappened(t *testing.T) {
+	var payload webhook.Payload
+	require.NoError(t, json.Unmarshal([]byte(`{"proposal":{"action":"tickets.create","title":"Printer jams"},"decision":{"status":"executed"}}`), &payload))
+	line := summarizeDelivery(webhook.Received{Payload: payload, At: time.Date(2026, 11, 25, 9, 30, 0, 0, time.UTC)})
+	require.Equal(t, "09:30:00  tickets.create \"Printer jams\", executed: signature checked, done\n", line)
+
+	answer := `{"created":true,"proposal":{"proposalId":"3f2a91c0-0000-4000-8000-000000000000","action":"tickets.create","risk":"low","status":"executed",` +
+		`"outcome":"allowed under a mandate, without a person","result":{"reference":"REF-3f2a91c0"}}}`
+	require.Equal(t, "proposal 3f2a91c0  tickets.create, low risk: executed\n→ allowed under a mandate, without a person\n  the receiver answered: {\"reference\":\"REF-3f2a91c0\"}\n", summarizeAnswer([]byte(answer)))
+	waiting := `{"proposal":{"proposalId":"9b1c0000-0000-4000-8000-000000000000","action":"refunds.issue","risk":"high","status":"pending","outcome":"waits for a person"}}`
+	require.Equal(t, "proposal 9b1c0000  refunds.issue, high risk: pending\n→ waits for a person\n", summarizeAnswer([]byte(waiting)), "no result, no line for it")
+	require.Equal(t, "not json\n", summarizeAnswer([]byte("not json")), "anything else is shown as it came")
+	refused := `{"repeat":true,"proposal":{"proposalId":"5e5e0000-0000-4000-8000-000000000000","action":"refunds.issue","risk":"medium","status":"approved",` +
+		`"outcome":"approved; not carried out","refusal":{"reason":"the order was delivered longer ago than claimed"}}}`
+	require.Equal(t, "proposal 5e5e0000  refunds.issue, medium risk: approved (a repeat: the first proposal, as it stands now)\n→ approved; not carried out\n"+
+		"  refused: {\"reason\":\"the order was delivered longer ago than claimed\"}\n", summarizeAnswer([]byte(refused)), "a refusal and a repeat are said")
 }
 
 func TestDescribeDeliveryShowsTheIdsAndTheBody(t *testing.T) {
