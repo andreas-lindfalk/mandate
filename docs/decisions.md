@@ -27,7 +27,7 @@ Newest first. A decision that changes the rules also changes `AGENTS.md`. A deci
   - **Two of the UI.** `web/scripts/record-ui.mjs` drives the real UI in Playwright (`make demo-ui-gifs`): an approval in the inbox, carried out by the receiver; and a mandate granted, then the agent's next proposal carried out under it, the agent proposing over the agent API with its own token. A caption on screen says what happens, held about 0.4 seconds a word before anything moves.
   - **One of the terminal.** `docs/film/terminal.tape` (VHS in tmux, `make demo-terminal-gif`) puts an agent proposing over MCP below and the receiver above. A ticket allowed under a mandate arrives as a signed webhook; a refund waits, and nothing arrives. `propose` and `receiver` gained `-brief` for it: a few readable lines instead of the JSON. A recording of the whole demo was tried first, and dropped: a protocol's transcript is not something a person follows in a film.
 
-  On the README each film is a still of its outcome that links to the film, so the page does not move by itself. Playwright is a dev dependency of the web app.
+  On the README the films play in place. Stills linking to the films were tried first, and dropped: a film behind a click is a film few watch. Playwright is a dev dependency of the web app.
 - **The demo shows expiry end to end,** with real time. A fourth action, `customers.call_back`, lets a proposal wait one minute, the shortest an action may set. Nobody decides it. When the minute is up:
   - the agent reads it as expired;
   - an approval is refused;

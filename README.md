@@ -12,21 +12,15 @@ Think of pull requests for agent actions. A proposal is the pull request, a mand
 
 **A person decides.** A refund is high risk, so it waits in the inbox. Alice reads what pgmandate checked and, set apart, what the agent claims; she approves it with a note, and the receiver next to the helpdesk carries it out. Watch the end: the receiver's answer is kept with the decision.
 
-[![The end of the film: the approved refund, carried out by the receiver, with its answer and Alice's note.](docs/img/ui-inbox.png)](docs/ui-inbox.gif)
-
-[▶ Play the film](docs/ui-inbox.gif) (a minute, captioned)
+![The inbox: a waiting refund is opened and approved with a note, and the receiver carries it out; its answer is kept with the decision.](docs/ui-inbox.gif)
 
 **A mandate decides.** A ticket close waits, since no mandate covers it. Alice grants one: closes, up to medium risk, twenty a month, citing the section of her company's AI policy that allows it, and ticks that she is accountable for it. Watch the end: the agent's next close is carried out at once, and the decision names the mandate that allowed it.
 
-[![The end of the film: the agent's next close, allowed under the new mandate, with the mandate, policy and budget that allowed it.](docs/img/ui-mandate.png)](docs/ui-mandate.gif)
-
-[▶ Play the film](docs/ui-mandate.gif) (a minute and a half, captioned)
+![A mandate is granted for ticket closes; the agent's next close is carried out without a person, and the inbox shows the mandate, policy and budget that allowed it.](docs/ui-mandate.gif)
 
 **An agent, over MCP, and a webhook.** Below, an agent with no credential proposes over MCP. Above, the receiver next to the helpdesk, which holds the credential. The ticket is allowed under a mandate, so it arrives above as a signed webhook, and the receiver's answer comes back to the agent. The refund is high risk, so it waits for a person, and nothing arrives:
 
-[![The end of the film: the ticket carried out and received as a signed webhook; the refund waiting for a person, with nothing received.](docs/img/terminal.png)](docs/terminal.gif)
-
-[▶ Play the film](docs/terminal.gif) (45 seconds)
+![Below, the agent proposes over MCP; above, the receiver gets the ticket as a signed webhook. The refund waits for a person, and nothing arrives.](docs/terminal.gif)
 
 > **Status: early (0.1.0, Apache-2.0).** It runs, and it is tested against a real Postgres, including the rules with the service bypassed. It has no production users and no external security review. From 0.1.0 a database is upgraded, never reset; before 1.0 the APIs may still change, and a contract whose meaning changes gets a new version. Read [the threat model](docs/threat-model.md) before relying on it.
 
