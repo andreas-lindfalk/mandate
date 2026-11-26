@@ -2,11 +2,13 @@
 
 **Agents propose. A person, or a standing permission a person granted, decides. The server checks the rules, and Postgres checks them again.**
 
-pgmandate sits between your AI agents and the systems they change. An agent holds no credentials to those systems: it can only *propose* an action, such as a refund. A person approves it in an inbox, or a *mandate* that a person granted earlier allows it at once, within a budget, a risk limit and an end date. Only then is the action sent, signed, to a small *receiver* next to your system, which holds the credential and does the write. Every step is a row in pgmandate's Postgres, which checks the rules again. Your own systems can be on any database and in any language.
+pgmandate sits between your AI agents and the systems they change. An agent holds no credentials: it can only *propose* an action, such as a refund. A person approves it in an inbox, or a *mandate* a person granted earlier allows it, within a budget, a risk limit and an end date. Only then does a small *receiver* next to your system, which holds the credential, do the write.
 
 Think of pull requests for agent actions. A proposal is the pull request, a mandate is the branch rule that allows auto-merge, and the log is the history.
 
 ![An agent with no credentials proposes to pgmandate, on Postgres. A person decides, or grants mandates that decide. A decided proposal goes, signed, to a receiver that holds the credential and writes to your system. The result goes back to the agent.](docs/img/overview.svg)
+
+Every step is a row in pgmandate's own Postgres. Your systems can run on any database, in any language.
 
 ## See it
 
