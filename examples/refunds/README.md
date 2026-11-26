@@ -10,7 +10,7 @@ A mandate's condition such as `payload.amountCents <= 5000 && payload.daysSinceD
 go test ./examples/refunds/
 ```
 
-The tests sign deliveries themselves, as pgmandate does, and need no server. To use it with one, define the action with `refunds.Schema`, mount `Store.Receiver` at its URL, and give it the action's audience and the server's keys.
+The tests sign deliveries themselves, as pgmandate does, and need no server. To use it with one, define the action with `refunds.Schema`, mount `Store.Receiver` at its URL, and give it the server's keys, the action's audience and the tenant id: `action define` prints the audience, and the UI shows all three.
 
 ## Reading it
 

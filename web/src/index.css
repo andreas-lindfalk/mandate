@@ -70,6 +70,12 @@
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
   }
+  /* Accent is under 3:1 on espresso (WCAG 1.4.11): the sidebar, the mobile
+     header, the menu drawer and the tenant list ring focus in sand. */
+  [class~="bg-espresso"] :focus-visible,
+  [class~="bg-espresso-2"] :focus-visible {
+    outline-color: var(--color-sand);
+  }
   input[type="checkbox"] {
     accent-color: var(--color-accent);
     width: 16px;

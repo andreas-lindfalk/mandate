@@ -105,7 +105,8 @@ message ProposeRequest {
   // The payload, a JSON object as JSON text, shaped like the action's
   // schema.
   string payload_json = 3;
-  // The agent's own id for this chain of work.
+  // The agent's own id for this chain of work: 1 to 100 letters, digits
+  // and . _ : -; empty for none.
   string run_id = 4;
   // Required: the name of this one request, 1 to 200 printable ASCII
   // characters without spaces, used once per agent. The same key again
@@ -121,9 +122,18 @@ message ProposeRequest {
   Provenance provenance = 8;
 }
 
+// One thing the agent looked at, so the person can check it rather than
+// trust the agent. Spaces around each field are trimmed before the
+// lengths are counted.
 message Evidence {
+  // Required: where the agent looked, such as the tool, system or table,
+  // 1 to 100 characters.
   string source = 1;
+  // An id, a query or an address that finds it again, up to 500
+  // characters; empty for none. Never a credential, a token or a query
+  // naming a person.
   string ref = 2;
+  // Required: what it showed, 1 to 1000 characters.
   string summary = 3;
 }
 
@@ -166,6 +176,8 @@ message ListProposalsRequest {
   // pending, approved, rejected, executed, withdrawn, expired, would_allow or
   // dismissed; empty for all.
   string status = 1;
+  // Only the proposals made under this run id, in the form propose takes;
+  // empty for all.
   string run_id = 2;
   // 1 to 100; 20 when not given.
   int32 limit = 3;
@@ -202,18 +214,26 @@ message Proposal {
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp expires_at = 9;
   string run_id = 10;
-  // A person edited the payload when approving it.
+  // A person edited the title or the payload when approving it.
   bool edited = 11;
   string decision_note = 12;
   // What allowed it without a person, for an executed proposal.
   ExecutionBasis execution_basis = 13;
-  // Why a waiting proposal waits for a person, as a code.
+  // Why a waiting proposal waits for a person, as a code: what the last
+  // execution attempt recorded, or what rules out executing it. One of
+  // no_mandate, risk_above_mandate, budget_spent, condition_not_met,
+  // flagged, action_not_executable, action_changed, payload_invalid,
+  // agent_revoked, action_failed, execution_failed or action_removed, or
+  // refused_ followed by the database's error code, as in
+  // refused_permission_denied. Codes may be added: handle one you do not
+  // know as "waits for a person".
   string skipped = 14;
   // What happened, and what to do next, in words for a model.
   string outcome = 15;
   string next = 16;
   // For a proposal no mandate's condition allowed: what in the payload
-  // stood in the way.
+  // stood in the way. get_proposal and propose fill it; list_proposals
+  // leaves it out, so read such a proposal with get_proposal.
   repeated string unmet = 17;
   Delivery delivery = 18;
   // What the system that carries it out answered: its result when done,

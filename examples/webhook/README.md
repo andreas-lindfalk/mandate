@@ -17,7 +17,7 @@ It fetches the keys it trusts from the running server's `/.well-known/pgmandate-
 1. The package comment in [webhook.go](webhook.go): the five things a receiver does, in order.
 2. `ServeHTTP`: the same five, in code. Verify the signature over the raw body; check the kind, audience and tenant; claim the delivery id; refuse what comes after `notAfter`; call `Handle` and answer.
 3. `Handle` and the errors `ErrRefused` and `ErrUnknown`: how your code says *done*, *refused* or *unknown*. Anything else is answered 500 and retried, so `Handle` must have done nothing then, or be safe to run twice.
-4. [webhook_test.go](webhook_test.go): a panic, final outcomes, a copy still in progress, the envelope checked first, and a rotated key.
+4. [webhook_test.go](webhook_test.go): a panic, final outcomes, a copy still in progress, the envelope checked first, a rotated key, and a dropped key revoked.
 
 ## Before you copy it
 

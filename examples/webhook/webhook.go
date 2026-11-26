@@ -4,7 +4,10 @@
 // this order:
 //
 //  1. verify the signature over the raw body, with a key it trusts,
-//     fetching the published set again on a key id it does not know;
+//     fetching the published set again when what it holds is five minutes
+//     old, so that a key dropped from the set stops verifying, and on a
+//     key id it does not know; while keys that old cannot be fetched again,
+//     answer 503, which is retried, rather than verify with them;
 //  2. check the body's kind, audience and tenant are its own, and answer
 //     one that is not without an outcome, so that it is retried: an action
 //     just moved here may not have been configured yet;
@@ -37,6 +40,14 @@ import (
 
 // maxBody bounds a delivery's body.
 const maxBody = 1 << 20
+
+// keysMaxAge is how long a fetched key set is used before it is fetched
+// again, the max-age the server publishes it with. A key dropped from the
+// published set stops verifying here within it.
+const keysMaxAge = 5 * time.Minute
+
+// fetchTimeout bounds one fetch of the key set.
+const fetchTimeout = 10 * time.Second
 
 // Payload is the body of a delivery, as docs/delivery-v2.schema.json
 // describes it. Fields this receiver does not know are ignored.
@@ -109,11 +120,19 @@ type Receiver struct {
 	inProgress map[uuid.UUID]bool
 	failures   int
 	now        func() time.Time
-	// refreshed is when Refresh last ran.
+	// keysAt is when the keys were last set; refreshed is when Refresh
+	// last ran; fetching is the fetch under way, if one is.
+	keysAt    time.Time
 	refreshed time.Time
+	fetching  *fetch
 	// Refresh, when set, fetches the published key set again, as
-	// sign.Fetch does. It is called on a key id the receiver does not know,
-	// at most once a minute, and what it returns replaces the keys.
+	// sign.Fetch does. It is called when the keys are five minutes old and
+	// on a key id the receiver does not know, at most once a minute, and
+	// what it returns replaces the keys. It gets a context of its own,
+	// bounded to ten seconds, never the request's, so that a client that
+	// closes its connection cannot cut it short. A fetch that fails keeps
+	// the keys, but keys five minutes old verify nothing: until a fetch
+	// succeeds, deliveries are answered 503 and retried.
 	Refresh func(context.Context) (sign.KeySet, error)
 	// OnReceive, when set, is called for each new delivery, after it was
 	// verified and claimed.
@@ -133,6 +152,14 @@ type trust struct {
 	tenantId string
 }
 
+// fetch is one fetch of the key set; done is closed when it has ended,
+// and keys and ok are set by then.
+type fetch struct {
+	done chan struct{}
+	keys sign.KeySet
+	ok   bool
+}
+
 // answer is what a delivery was answered, kept to answer it the same way
 // again.
 type answer struct {
@@ -143,7 +170,7 @@ type answer struct {
 // NewReceiver makes a receiver that trusts deliveries signed by the keys.
 // It accepts nothing until Trust names an audience.
 func NewReceiver(keys sign.KeySet) *Receiver {
-	return &Receiver{keys: keys, now: time.Now, answers: map[uuid.UUID]answer{}, inProgress: map[uuid.UUID]bool{}}
+	return &Receiver{keys: keys, keysAt: time.Now(), now: time.Now, answers: map[uuid.UUID]answer{}, inProgress: map[uuid.UUID]bool{}}
 }
 
 // SetKeys replaces the keys it trusts, as a receiver does when it fetches
@@ -152,6 +179,7 @@ func (r *Receiver) SetKeys(keys sign.KeySet) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.keys = keys
+	r.keysAt = r.now()
 }
 
 // Trust accepts deliveries for one audience of one tenant, as the action
@@ -187,6 +215,18 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		http.Error(w, "unreadable body", http.StatusBadRequest)
 		return
+	}
+	// Keys held for as long as the published set may be cached are
+	// fetched again, so that a key dropped from it is no longer trusted.
+	// Until that fetch succeeds nothing is verified with them: they may
+	// hold a dropped key. The delivery is answered without an outcome, and
+	// retried.
+	if r.stale() {
+		r.refresh(req.Context())
+		if r.stale() {
+			http.Error(w, "keys unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	r.mu.Lock()
 	keys, trusted := r.keys, r.trusted
@@ -301,22 +341,53 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	write(w, reply)
 }
 
+// stale reports whether the keys are fetched keys as old as the published
+// set may be cached.
+func (r *Receiver) stale() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Refresh != nil && !r.now().Before(r.keysAt.Add(keysMaxAge))
+}
+
 // refresh fetches the key set again, at most once a minute, and keeps it.
+// A fetch already under way is waited for, not started again, so that no
+// request verifies with the keys it is replacing. The fetch runs with a
+// context detached from the request's, bounded by fetchTimeout.
 func (r *Receiver) refresh(ctx context.Context) (sign.KeySet, bool) {
 	r.mu.Lock()
-	fetch := r.Refresh
-	if fetch == nil || r.now().Sub(r.refreshed) < time.Minute {
+	if f := r.fetching; f != nil {
+		r.mu.Unlock()
+		select {
+		case <-f.done:
+			return f.keys, f.ok
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+	refresh := r.Refresh
+	if refresh == nil || r.now().Sub(r.refreshed) < time.Minute {
 		r.mu.Unlock()
 		return nil, false
 	}
-	r.refreshed = r.now()
+	f := &fetch{done: make(chan struct{})}
+	r.fetching, r.refreshed = f, r.now()
 	r.mu.Unlock()
-	keys, err := fetch(ctx)
-	if err != nil || len(keys) == 0 {
-		return nil, false
+	defer func() {
+		// Also on a panic in Refresh, so that no one waits for ever.
+		r.mu.Lock()
+		if f.ok {
+			r.keys, r.keysAt = f.keys, r.now()
+		}
+		r.fetching = nil
+		r.mu.Unlock()
+		close(f.done)
+	}()
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+	defer cancel()
+	if keys, err := refresh(fetchCtx); err == nil && len(keys) > 0 {
+		f.keys, f.ok = keys, true
 	}
-	r.SetKeys(keys)
-	return keys, true
+	return f.keys, f.ok
 }
 
 // release lets go of a claim on a delivery that was not carried out.

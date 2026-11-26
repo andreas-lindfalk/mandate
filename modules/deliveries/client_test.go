@@ -2,6 +2,7 @@ package deliveries
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 	"github.com/stretchr/testify/require"
+
+	"github.com/andreas-lindfalk/pgmandate/pkg/events"
 )
 
 // A connector may not live on this machine or a private network unless the
@@ -56,6 +62,28 @@ func TestBlockedAddresses(t *testing.T) {
 func TestDescribeNeverLeaksTheAddress(t *testing.T) {
 	require.Equal(t, "the receiver answered 503 without an outcome", describe(nil, 503))
 	require.Equal(t, "the receiver could not be reached", describe(errors.New(`Post "http://user:secret@10.0.0.5:6379/x": dial tcp 10.0.0.5:6379: connect: connection refused`), 0))
+}
+
+// When the attempt cannot be recorded, the job's error still says what
+// went wrong in words, never in the client's text, which names the address
+// and any token in its query.
+func TestAFailedRecordNeverLeaksTheAddress(t *testing.T) {
+	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	address := closed.URL + "/hooks?token=s3cr3t"
+	closed.Close()
+	pool, err := pgxpool.New(context.Background(), "postgres://127.0.0.1:1/none")
+	require.NoError(t, err)
+	pool.Close()
+	s := &Service{pool: pool, client: newClient(true), allowPrivate: true}
+
+	r := s.post(context.Background(), address, uuid.New(), []byte(`{}`), 1, "v2 kid=x sig=y", time.Second)
+	require.ErrorContains(t, r.err, "s3cr3t", "the client's own error names the address")
+	err = s.closed(context.Background(), Delivery{Id: uuid.New()}, r, false, nil)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "the receiver could not be reached")
+	require.ErrorContains(t, err, "closed pool", "the database's error goes on")
+	require.NotContains(t, err.Error(), "s3cr3t")
+	require.NotContains(t, err.Error(), closed.URL)
 }
 
 func TestPlainHttpToAPublicAddressIsRefusedUnsent(t *testing.T) {
@@ -110,11 +138,98 @@ func TestOnlyAnExplicitAnswerIsFinal(t *testing.T) {
 		"a redirect":          {307, ``, ""},
 		"something else":      {200, `{"outcome":"maybe"}`, ""},
 	} {
-		outcome, _ := explicitAnswer(c.status, []byte(c.body))
+		outcome, _, _ := explicitAnswer(c.status, []byte(c.body))
 		require.Equal(t, c.outcome, outcome, name)
 	}
-	_, kept := explicitAnswer(200, []byte(`{"outcome":"done","result":{"id":"R-1"}}`))
+	_, _, kept := explicitAnswer(200, []byte(`{"outcome":"done","result":{"id":"R-1"}}`))
 	require.JSONEq(t, `{"id":"R-1"}`, string(kept))
-	_, kept = explicitAnswer(422, []byte(`{"outcome":"refused","refusal":{"reason":"x"}}`))
+	_, _, kept = explicitAnswer(422, []byte(`{"outcome":"refused","refusal":{"reason":"x"}}`))
 	require.JSONEq(t, `{"reason":"x"}`, string(kept))
+}
+
+// The chain's resultSha256 is the digest of what the receiver answered,
+// whether or not it could be stored, and says when it was not: it never
+// digests the empty object an unknown answer is stored as instead.
+func TestTheResultDigestIsOfTheReceiversAnswer(t *testing.T) {
+	digestOf := func(raw string) string {
+		digest, err := events.Digest(json.RawMessage(raw))
+		require.NoError(t, err)
+		return digest
+	}
+	huge := `1e2000`
+	for name, c := range map[string]struct {
+		status   int
+		body     string
+		answered string
+		kept     bool
+	}{
+		"a done result kept":             {200, `{"outcome":"done","result":{"id":"R-1", "n": 2}}`, `{"id":"R-1","n":2}`, true},
+		"a refusal kept":                 {422, `{"outcome":"refused","refusal":{"reason":"x"}}`, `{"reason":"x"}`, true},
+		"an unknown answer kept":         {200, `{"outcome":"unknown","note":"timeout"}`, `{"outcome":"unknown","note":"timeout"}`, true},
+		"a done result too big to keep":  {200, `{"outcome":"done","result":{"n":` + huge + `}}`, `{"n":` + huge + `}`, false},
+		"a done result that is a string": {200, `{"outcome":"done","result":"R-1"}`, `"R-1"`, false},
+		"an unknown answer too big":      {200, `{"outcome":"unknown","n":` + huge + `}`, `{"outcome":"unknown","n":` + huge + `}`, false},
+	} {
+		outcome, answered, kept := explicitAnswer(c.status, []byte(c.body))
+		require.NotEmpty(t, outcome, name)
+		fields := map[string]any{}
+		addDigests(fields, attemptResult{outcome: outcome, answered: answered, kept: kept}, nil)
+		require.Equal(t, digestOf(c.answered), fields["resultSha256"], name)
+		require.NotEqual(t, digestOf(`{}`), fields["resultSha256"], name)
+		if c.kept {
+			require.NotContains(t, fields, "resultKept", name)
+			require.Equal(t, digestOf(string(kept)), fields["resultSha256"], "%s: the same digest as what is stored", name)
+		} else {
+			require.Equal(t, false, fields["resultKept"], name)
+		}
+	}
+	_, answered, _ := explicitAnswer(200, []byte(`{"outcome":"done"}`))
+	fields := map[string]any{}
+	addDigests(fields, attemptResult{answered: answered}, nil)
+	require.NotContains(t, fields, "resultSha256", "no result, no digest")
+}
+
+// A retry backs off as River does, but never past the last moment an
+// attempt may open, so a delivery gets every try its deadline allows.
+func TestNextRetryStopsAtTheLastMomentAnAttemptMayOpen(t *testing.T) {
+	w := &worker{}
+	// River backs off by the number of recorded errors: five give 6^4
+	// seconds, about 22 minutes, with up to 10% jitter either way.
+	job := func(notAfter time.Time) *river.Job[DeliverArgs] {
+		return &river.Job[DeliverArgs]{
+			JobRow: &rivertype.JobRow{Attempt: 6, Errors: make([]rivertype.AttemptError, 5)},
+			Args:   DeliverArgs{NotAfter: notAfter},
+		}
+	}
+	backoffMin, backoffMax := 1166*time.Second, 1426*time.Second
+
+	// A deadline before the backoff still gets one real try: strictly
+	// before the last moment an attempt may open, with room for queue
+	// latency, and still ahead.
+	soon := time.Now().Add(time.Minute)
+	before := time.Now()
+	next := w.NextRetry(job(soon))
+	sendAgainBefore := Delivery{NotAfter: soon}.SendAgainBefore()
+	require.Equal(t, sendAgainBefore.Add(-RequestTimeout), next, "a deadline before the backoff leaves one real try")
+	require.True(t, next.Before(sendAgainBefore), "the final try opens before attempts are refused")
+	require.True(t, next.After(before), "the final try is still ahead")
+
+	// Once that try is behind, the retry lands on the last moment, where
+	// the delivery finishes, rather than looping at once.
+	near := time.Now().Add(RequestTimeout + RequestTimeout/2)
+	require.Equal(t, Delivery{NotAfter: near}.SendAgainBefore(), w.NextRetry(job(near)), "past the final try, the retry finishes the delivery")
+	gone := time.Now().Add(-time.Minute)
+	require.Equal(t, Delivery{NotAfter: gone}.SendAgainBefore(), w.NextRetry(job(gone)), "a passed deadline finishes the delivery")
+
+	later := time.Now().Add(24 * time.Hour)
+	before = time.Now()
+	next = w.NextRetry(job(later))
+	require.True(t, next.Before(later.Add(-RequestTimeout)), "a far deadline leaves the backoff alone")
+	require.False(t, next.Before(before.Add(backoffMin)), "the default backoff, not sooner")
+	require.False(t, next.After(time.Now().Add(backoffMax)), "the default backoff, not later")
+
+	before = time.Now()
+	next = w.NextRetry(job(time.Time{}))
+	require.False(t, next.Before(before.Add(backoffMin)), "no deadline, no cap")
+	require.False(t, next.After(time.Now().Add(backoffMax)), "no deadline, no cap")
 }

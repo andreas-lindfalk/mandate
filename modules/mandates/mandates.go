@@ -131,7 +131,7 @@ func (s *Service) Grant(ctx context.Context, input Input) (Mandate, error) {
 	case input.BudgetCount < 1 || input.BudgetCount > maxBudgetCount:
 		return Mandate{}, fault.New(fault.InvalidArgument, "the budget is 1 to 1,000,000,000 executions a month")
 	case input.PolicyRef == "" || utf8.RuneCountInString(input.PolicyRef) > 200:
-		return Mandate{}, fault.New(fault.InvalidArgument, "a mandate rests on a policy document: give its reference")
+		return Mandate{}, fault.New(fault.InvalidArgument, "a mandate rests on a policy document: give its reference, 1 to 200 characters")
 	case input.Days < 1 || input.Days > maxDays:
 		return Mandate{}, fault.New(fault.InvalidArgument, "a mandate holds for 1 to 366 days")
 	}
@@ -375,12 +375,15 @@ const (
 
 // Resolve finds, inside the caller's transaction, a live mandate for the
 // agent that covers the action at the risk, whose condition holds for the
-// payload, and that still has room in its budget. The live mandates are locked, so two executions under one mandate
-// count the budget one after the other. The most permissive mandate with
+// payload, and that still has room in its budget. The live mandates that
+// cover the action are locked, so two executions under one mandate count the
+// budget one after the other. The most permissive mandate with
 // room is chosen. The spend is what the database counts, so the basis
 // recorded here is exactly what the execution trigger will check.
 func (s *Service) Resolve(ctx context.Context, tx pgx.Tx, agentId uuid.UUID, action, risk string, payload json.RawMessage) (Resolution, error) {
-	rows, err := repo.New(tx).ListLiveForAgent(ctx, agentId)
+	// Only the mandates that cover the action are read, and so locked: an
+	// execution of another action, by this agent or another, never waits.
+	rows, err := repo.New(tx).ListLiveForAgent(ctx, repo.ListLiveForAgentParams{AgentId: agentId, Action: action})
 	if err != nil {
 		return Resolution{}, err
 	}

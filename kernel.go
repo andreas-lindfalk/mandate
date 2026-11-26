@@ -68,10 +68,16 @@ const (
 
 // Options tune a kernel.
 type Options struct {
-	// Queue runs executions as durable jobs. Nil means nothing is ever
-	// executed without a person; proposals still queue.
+	// Queue runs executions, deliveries, notifications and the sweep as
+	// durable jobs. Nil means nothing is executed without a person and no
+	// chat is notified; proposals still queue, and decisions on webhook
+	// actions are recorded but not sent. The host then calls
+	// Deliveries.Deliver for each delivery, and ExpireDue and FinishDue on
+	// a schedule.
 	Queue *jobs.Queue
-	// Now replaces the clock, for tests.
+	// Now replaces the clock that new agent tokens are stamped with (their
+	// creation and expiry), for tests. Every other time, deadlines, budgets
+	// and expiry checks included, is the database's.
 	Now func() time.Time
 	// AllowPrivateConnectors lets webhook connectors live on loopback and
 	// private addresses: for local development and for an on-premise
@@ -289,15 +295,21 @@ func (k *Kernel) merge(defined actions.Action, code Action, hasCode bool) (Actio
 // ListActions lists the actions an agent of the tenant in ctx may propose:
 // the tenant's definitions that can be carried out here, and the builtin
 // ones it has not defined. A builtin definition without code in this
-// binary is left out, since proposing it would only be refused.
+// binary is left out, since proposing it would only be refused, and so is
+// a builtin whose definition the tenant has removed: as in Lookup, a
+// removed definition hides the key.
 func (k *Kernel) ListActions(ctx context.Context) ([]Action, error) {
-	defined, err := k.Actions.List(ctx, false)
+	defined, err := k.Actions.List(ctx, true)
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
 	var result []Action
 	for _, d := range defined {
+		seen[d.Key] = true
+		if d.RemovedAt != nil {
+			continue
+		}
 		k.mu.RLock()
 		code, hasCode := k.builtin[d.Key]
 		k.mu.RUnlock()
@@ -305,7 +317,6 @@ func (k *Kernel) ListActions(ctx context.Context) ([]Action, error) {
 		if err != nil {
 			return nil, err
 		}
-		seen[d.Key] = true
 		if action.Applicable() {
 			result = append(result, action)
 		}
@@ -392,8 +403,11 @@ func (k *Kernel) ExecuteJob(ctx context.Context, job *river.Job[ExecuteArgs]) er
 		if errors.Is(err, proposals.ErrActionFailed) {
 			reason = SkipActionFailed
 		}
-		// Recorded even when the job's own context has run out.
-		scoped := actor.AsSystem(context.WithoutCancel(ctx), job.Args.TenantId)
+		// Recorded even when the job's own context has run out. The bound
+		// keeps a stuck database from holding the job.
+		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		scoped := actor.AsSystem(recordCtx, job.Args.TenantId)
 		if recordErr := k.Proposals.RecordSkip(scoped, job.Args.ProposalId, reason); recordErr != nil {
 			return errors.Join(err, recordErr)
 		}
@@ -409,28 +423,60 @@ func (k *Kernel) describeWaiting(ctx context.Context, proposalId uuid.UUID) (not
 	if fault.CodeOf(err) == fault.NotFound {
 		return notifications.Message{}, false, nil
 	}
-	// A dry run waits for nobody, so no chat is told.
-	if err != nil || p.Status != proposals.StatusPending || p.DryRun {
+	// A dry run waits for nobody, and neither does a proposal past its
+	// deadline that the sweep has not expired yet: nobody can decide it.
+	if err != nil || p.Status != proposals.StatusPending || p.PastDeadline || p.DryRun {
 		return notifications.Message{}, false, err
 	}
 	agent, err := k.Agents.Get(ctx, p.AgentId)
 	if err != nil {
 		return notifications.Message{}, false, err
 	}
-	reason, found, err := k.Proposals.SkipReason(ctx, proposalId)
+	reasons, err := k.WaitReasons(ctx, []Proposal{p})
 	if err != nil {
 		return notifications.Message{}, false, err
 	}
-	if !found {
-		action, ok, err := k.Lookup(ctx, p.Action)
-		if err != nil {
-			return notifications.Message{}, false, err
-		}
-		if ok {
-			reason = proposals.WhyNotCandidate(action, p)
+	return notifications.Message{ProposalId: p.Id, Action: p.Action, Risk: p.Risk, Agent: agent.Name, Reason: reasons[p.Id]}, true, nil
+}
+
+// WaitReasons implements agentapi.Host: why each pending proposal in list
+// waits for a person. That is what the last attempt to execute it recorded,
+// or, for one with nothing recorded, what rules it out: a removed action, or
+// what keeps it from being a candidate (the empty string when nothing does).
+// A proposal that is not pending has no entry. The recorded reasons come in
+// one read, and each action is looked up once.
+func (k *Kernel) WaitReasons(ctx context.Context, list []Proposal) (map[uuid.UUID]string, error) {
+	ids := make([]uuid.UUID, 0, len(list))
+	for _, p := range list {
+		if p.Status == proposals.StatusPending {
+			ids = append(ids, p.Id)
 		}
 	}
-	return notifications.Message{ProposalId: p.Id, Action: p.Action, Risk: p.Risk, Agent: agent.Name, Reason: reason}, true, nil
+	reasons, err := k.Proposals.SkipReasons(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	type lookup struct {
+		action Action
+		found  bool
+	}
+	actionsByKey := map[string]lookup{}
+	for _, p := range list {
+		if _, recorded := reasons[p.Id]; recorded || p.Status != proposals.StatusPending {
+			continue
+		}
+		known, cached := actionsByKey[p.Action]
+		if !cached {
+			action, found, err := k.Lookup(ctx, p.Action)
+			if err != nil {
+				return nil, err
+			}
+			known = lookup{action, found}
+			actionsByKey[p.Action] = known
+		}
+		reasons[p.Id] = proposals.WaitReason(known.action, known.found, p)
+	}
+	return reasons, nil
 }
 
 // enqueueExecution queues the execution in the transaction that stores the
@@ -497,7 +543,9 @@ func (w *sweepTenantWorker) Work(ctx context.Context, job *river.Job[SweepTenant
 
 // ExpireDue expires, in every tenant, the waiting proposals past their
 // deadline, and returns how many. The sweep does this every minute; a host
-// that runs the kernel without a queue calls it, and FinishDue, itself.
+// that runs the kernel without a queue calls it, and FinishDue, itself. A
+// tenant that fails does not keep the others from being swept; every
+// tenant's failure is returned, joined, with its tenant id.
 func (k *Kernel) ExpireDue(ctx context.Context) (int, error) {
 	return k.forDueTenants(ctx, k.Proposals.ExpireDue)
 }
@@ -514,15 +562,24 @@ func (k *Kernel) forDueTenants(ctx context.Context, do func(context.Context) (in
 	if err != nil {
 		return 0, err
 	}
+	return forEachTenant(ctx, tenantIds, do)
+}
+
+// forEachTenant runs do for every tenant, as the system scoped to it, and
+// returns the total and every tenant's failure. A tenant that fails does not
+// keep the ones after it from being swept, as one job per tenant does not
+// on the queue.
+func forEachTenant(ctx context.Context, tenantIds []uuid.UUID, do func(context.Context) (int, error)) (int, error) {
 	total := 0
+	var errs []error
 	for _, tenantId := range tenantIds {
 		n, err := do(actor.AsSystem(ctx, tenantId))
 		total += n
 		if err != nil {
-			return total, err
+			errs = append(errs, fmt.Errorf("tenant %s: %w", tenantId, err))
 		}
 	}
-	return total, nil
+	return total, errors.Join(errs...)
 }
 
 // tenantsWithDueWork lists the tenants the sweep must visit. The database

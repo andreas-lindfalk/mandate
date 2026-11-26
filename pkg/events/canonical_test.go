@@ -89,3 +89,38 @@ func TestPlainLengthBoundsTheCanonicalForm(t *testing.T) {
 	require.Equal(t, -1, PlainLength("1e-999999999"))
 	require.Greater(t, PlainLength("1e-16383"), 16000, "a short number can be long spelled out")
 }
+
+// An address is named by the digest of its text as written, not of a
+// canonical form: the bytes decide, so a changed letter is a moved address.
+func TestUrlDigestIsTheHashOfTheAddressAsWritten(t *testing.T) {
+	require.Equal(t, "8e5586241a575e93de4b292ebc2b09b8f0474c041a566f163144145dda091c2d", UrlDigest("https://connector.example/hooks"))
+	require.NotEqual(t, UrlDigest("https://connector.example/hooks"), UrlDigest("https://connector.example/hooks/"))
+	require.NotEqual(t, UrlDigest("https://connector.example/hooks"), UrlDigest("https://CONNECTOR.example/hooks"))
+}
+
+// The three number functions read a number through one grammar: sign,
+// digits on either side of the point, and an exponent bounded where no
+// storable number can reach, so the sums over it cannot overflow.
+func TestSplitNumberHoldsTheGrammarAndTheExponentBound(t *testing.T) {
+	type parts struct {
+		sign, whole, fraction string
+		exponent              int
+	}
+	for in, want := range map[string]parts{
+		"0":              {"", "0", "", 0},
+		"-12.50":         {"-", "12", "50", 0},
+		"1.5E+3":         {"", "1", "5", 3},
+		"-7e-2":          {"-", "7", "", -2},
+		"1e131072":       {"", "1", "", MaxIntegerDigits},
+		"1e-147455":      {"", "1", "", -(MaxIntegerDigits + MaxDecimalDigits)},
+		"-0.000000e0010": {"-", "0", "000000", 10},
+	} {
+		sign, whole, fraction, exponent, ok := splitNumber(in)
+		require.True(t, ok, in)
+		require.Equal(t, want, parts{sign, whole, fraction, exponent}, in)
+	}
+	for _, in := range []string{"1e131073", "1e-147456", "1e99999999999999999999", "1e", "1e1.5"} {
+		_, _, _, _, ok := splitNumber(in)
+		require.False(t, ok, in)
+	}
+}

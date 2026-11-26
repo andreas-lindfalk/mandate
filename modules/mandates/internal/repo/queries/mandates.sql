@@ -18,11 +18,13 @@ ORDER BY created_at DESC, id;
 UPDATE mandate.mandates SET revoked_at = now() WHERE id = @id AND revoked_at IS NULL;
 
 -- name: ListLiveForAgent :many
--- Mandates that hold now, by the database's clock, for the agent, locked so
--- that two executions under the same mandate count the budget one after the
--- other.
+-- Mandates that hold now, by the database's clock, for the agent and cover
+-- the action, locked so that two executions under the same mandate count the
+-- budget one after the other. Only covering mandates are locked, so an
+-- execution never waits on one for another action.
 SELECT * FROM mandate.mandates
 WHERE (agent_id IS NULL OR agent_id = @agent_id::uuid)
+    AND mandate.covers(actions, @action::text)
     AND revoked_at IS NULL AND valid_from <= now() AND valid_until > now()
 ORDER BY max_risk DESC, created_at, id
 FOR UPDATE;

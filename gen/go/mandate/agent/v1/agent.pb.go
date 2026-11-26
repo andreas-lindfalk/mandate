@@ -428,7 +428,8 @@ type ProposeRequest struct {
 	// The payload, a JSON object as JSON text, shaped like the action's
 	// schema.
 	PayloadJson string `protobuf:"bytes,3,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
-	// The agent's own id for this chain of work.
+	// The agent's own id for this chain of work: 1 to 100 letters, digits
+	// and . _ : -; empty for none.
 	RunId string `protobuf:"bytes,4,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	// Required: the name of this one request, 1 to 200 printable ASCII
 	// characters without spaces, used once per agent. The same key again
@@ -532,11 +533,20 @@ func (x *ProposeRequest) GetProvenance() *Provenance {
 	return nil
 }
 
+// One thing the agent looked at, so the person can check it rather than
+// trust the agent. Spaces around each field are trimmed before the
+// lengths are counted.
 type Evidence struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Source        string                 `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
-	Ref           string                 `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
-	Summary       string                 `protobuf:"bytes,3,opt,name=summary,proto3" json:"summary,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required: where the agent looked, such as the tool, system or table,
+	// 1 to 100 characters.
+	Source string `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	// An id, a query or an address that finds it again, up to 500
+	// characters; empty for none. Never a credential, a token or a query
+	// naming a person.
+	Ref string `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
+	// Required: what it showed, 1 to 1000 characters.
+	Summary       string `protobuf:"bytes,3,opt,name=summary,proto3" json:"summary,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -848,7 +858,9 @@ type ListProposalsRequest struct {
 	// pending, approved, rejected, executed, withdrawn, expired, would_allow or
 	// dismissed; empty for all.
 	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
-	RunId  string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Only the proposals made under this run id, in the form propose takes;
+	// empty for all.
+	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	// 1 to 100; 20 when not given.
 	Limit         int32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1065,18 +1077,26 @@ type Proposal struct {
 	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	RunId     string                 `protobuf:"bytes,10,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	// A person edited the payload when approving it.
+	// A person edited the title or the payload when approving it.
 	Edited       bool   `protobuf:"varint,11,opt,name=edited,proto3" json:"edited,omitempty"`
 	DecisionNote string `protobuf:"bytes,12,opt,name=decision_note,json=decisionNote,proto3" json:"decision_note,omitempty"`
 	// What allowed it without a person, for an executed proposal.
 	ExecutionBasis *ExecutionBasis `protobuf:"bytes,13,opt,name=execution_basis,json=executionBasis,proto3" json:"execution_basis,omitempty"`
-	// Why a waiting proposal waits for a person, as a code.
+	// Why a waiting proposal waits for a person, as a code: what the last
+	// execution attempt recorded, or what rules out executing it. One of
+	// no_mandate, risk_above_mandate, budget_spent, condition_not_met,
+	// flagged, action_not_executable, action_changed, payload_invalid,
+	// agent_revoked, action_failed, execution_failed or action_removed, or
+	// refused_ followed by the database's error code, as in
+	// refused_permission_denied. Codes may be added: handle one you do not
+	// know as "waits for a person".
 	Skipped string `protobuf:"bytes,14,opt,name=skipped,proto3" json:"skipped,omitempty"`
 	// What happened, and what to do next, in words for a model.
 	Outcome string `protobuf:"bytes,15,opt,name=outcome,proto3" json:"outcome,omitempty"`
 	Next    string `protobuf:"bytes,16,opt,name=next,proto3" json:"next,omitempty"`
 	// For a proposal no mandate's condition allowed: what in the payload
-	// stood in the way.
+	// stood in the way. get_proposal and propose fill it; list_proposals
+	// leaves it out, so read such a proposal with get_proposal.
 	Unmet    []string  `protobuf:"bytes,17,rep,name=unmet,proto3" json:"unmet,omitempty"`
 	Delivery *Delivery `protobuf:"bytes,18,opt,name=delivery,proto3" json:"delivery,omitempty"`
 	// What the system that carries it out answered: its result when done,

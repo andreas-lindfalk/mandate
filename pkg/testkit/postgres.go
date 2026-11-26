@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -118,4 +119,20 @@ func (p *Postgres) fail(err error) error {
 func (p *Postgres) PurgeTenant(ctx context.Context, tenantId any) error {
 	_, err := p.Owner.Exec(ctx, `SELECT mandate.purge_tenant($1)`, tenantId)
 	return err
+}
+
+// Tamper runs a statement as the superuser with the triggers off, the way
+// someone with access to the database could change rows the schema keeps
+// append-only, so a test can show that verification notices.
+func (p *Postgres) Tamper(ctx context.Context, statement string, args ...any) error {
+	return pgx.BeginFunc(ctx, p.Owner, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, statement, args...)
+		if err == nil && tag.RowsAffected() == 0 {
+			err = fmt.Errorf("tamper: no row changed by %q", statement)
+		}
+		return err
+	})
 }

@@ -177,6 +177,47 @@ func (s *ExpirySuite) Test_TheSweepStaysInItsTenant() {
 	s.Require().Equal(proposals.StatusExpired, s.status(b, pb.Id))
 }
 
+// A tenant whose expiry keeps failing does not keep the kernel's sweep from
+// the other tenants: they are still swept, and the failure is returned.
+func (s *ExpirySuite) Test_OneTenantsFailureDoesNotStopTheSweep() {
+	ctx := context.Background()
+	failing := s.W.NewTenant(s.T(), "Acme")
+	healthy := s.W.NewTenant(s.T(), "Bolt")
+	pf := s.propose(failing.Agent, "test.manual")
+	ph := s.propose(healthy.Agent, "test.manual")
+	s.pastDeadline(pf.Id)
+	s.pastDeadline(ph.Id)
+
+	// The database refuses every change to the failing tenant's proposals.
+	_, err := s.W.Pg.Owner.Exec(ctx, `
+		CREATE FUNCTION mandate.test_refuse_tenant() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.tenant_id = '`+failing.Id.String()+`' THEN
+				RAISE EXCEPTION 'refused for the test';
+			END IF;
+			RETURN NEW;
+		END $$;
+		CREATE TRIGGER test_refuse_tenant BEFORE UPDATE ON mandate.proposals
+			FOR EACH ROW EXECUTE FUNCTION mandate.test_refuse_tenant();`)
+	s.Require().NoError(err)
+	defer func() {
+		_, err := s.W.Pg.Owner.Exec(ctx, `DROP TRIGGER test_refuse_tenant ON mandate.proposals; DROP FUNCTION mandate.test_refuse_tenant();`)
+		s.Require().NoError(err)
+	}()
+
+	total, err := s.W.Kernel.ExpireDue(ctx)
+	s.Require().ErrorContains(err, "tenant "+failing.Id.String()+": ")
+	s.Require().NotContains(err.Error(), healthy.Id.String(), "only the failing tenant is reported")
+	s.Require().Equal(1, total, "the other tenant is swept whatever the order")
+	stored := func(id uuid.UUID) string {
+		var status string
+		s.Require().NoError(s.W.Pg.Owner.QueryRow(ctx, `SELECT status FROM mandate.proposals WHERE id = $1`, id).Scan(&status))
+		return status
+	}
+	s.Require().Equal(proposals.StatusExpired, stored(ph.Id))
+	s.Require().Equal(proposals.StatusPending, stored(pf.Id), "the refused expiry is not written")
+}
+
 func (s *ExpirySuite) Test_ExpiredProposalsAreNotDecisions() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	expired := s.propose(t.Agent, "test.manual")

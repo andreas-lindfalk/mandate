@@ -24,7 +24,8 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
 )
 
-// CookieName is the session cookie the OIDC callback sets and the API
+// CookieName is the HttpOnly session cookie set when a person signs in (the
+// OIDC callback, a setup or sign-in link, or dev login), which the API
 // accepts next to a bearer token.
 const CookieName = "mandate_session"
 
@@ -114,12 +115,12 @@ func (s *Service) DevLogin(ctx context.Context, email, name string) (string, err
 
 // Authenticate returns the person behind a session token.
 func (s *Service) Authenticate(ctx context.Context, token string) (Session, error) {
-	hash, err := hashToken(token)
-	if err != nil {
-		return Session{}, err
+	hash, ok := tokenHash(token)
+	if !ok {
+		return Session{}, fault.New(fault.Unauthenticated, "invalid session token")
 	}
 	var session Session
-	err = db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		q := repo.New(tx)
 		row, err := q.GetSession(ctx, hash)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -129,14 +130,27 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Session, erro
 			return err
 		}
 		session = Session{Email: row.Email, Name: row.Name, Issuer: deref(row.Issuer), Subject: deref(row.Subject), PersonId: row.PersonId}
+		// A session with neither an identity nor a pinned person can only
+		// come from dev login, and opens nothing where dev login is off:
+		// the same database may be served by an instance that runs it.
+		if session.Issuer == "" && session.PersonId == nil && !s.config.DevLogin {
+			return fault.New(fault.Unauthenticated, "invalid or expired session")
+		}
+		// A provider's session opens nothing once that provider is no
+		// longer the configured one, as when it is removed or replaced.
+		// The issuer is the one go-oidc verified against the configured
+		// issuer, so the two compare exactly.
+		if session.Issuer != "" && (s.config.Oidc == nil || session.Issuer != s.config.Oidc.Issuer) {
+			return fault.New(fault.Unauthenticated, "invalid or expired session")
+		}
 		return q.TouchSession(ctx, hash)
 	})
 	return session, err
 }
 
 func (s *Service) Logout(ctx context.Context, token string) error {
-	hash, err := hashToken(token)
-	if err != nil {
+	hash, ok := tokenHash(token)
+	if !ok {
 		return nil
 	}
 	return db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
@@ -382,10 +396,12 @@ func newToken() (string, []byte, error) {
 	return token, hash[:], nil
 }
 
-func hashToken(token string) ([]byte, error) {
+// tokenHash is the stored hash of a session or link token that newToken
+// made, or false for a text that cannot be one.
+func tokenHash(token string) ([]byte, bool) {
 	if len(token) < 32 || len(token) > 64 {
-		return nil, fault.New(fault.Unauthenticated, "invalid session token")
+		return nil, false
 	}
 	hash := sha256.Sum256([]byte(token))
-	return hash[:], nil
+	return hash[:], true
 }

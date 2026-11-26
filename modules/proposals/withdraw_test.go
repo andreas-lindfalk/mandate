@@ -83,6 +83,20 @@ func (s *WithdrawSuite) Test_TheDatabaseLetsOnlyTheAgentWithdraw() {
 	s.refused(t.Agent, `UPDATE mandate.proposals SET status = 'withdrawn', payload = '{"more":1}' WHERE id = $1`, p.Id)
 	s.refused(t.Agent, `UPDATE mandate.proposals SET status = 'withdrawn', risk = 'high' WHERE id = $1`, p.Id)
 	s.refused(t.Agent, `UPDATE mandate.proposals SET status = 'approved' WHERE id = $1`, p.Id)
+
+	// Row level security separates tenants, not agents: another agent in
+	// the same tenant reaches the row, and only the trigger stops it.
+	other, err := s.W.Kernel.Agents.Create(t.Owner, "other", "", "live")
+	s.Require().NoError(err)
+	_, secret, err := s.W.Kernel.Agents.IssueToken(t.Owner, other.Id, 30)
+	s.Require().NoError(err)
+	grant, err := s.W.Kernel.Agents.Authenticate(context.Background(), secret)
+	s.Require().NoError(err)
+	s.refused(grant.Context(context.Background()), `UPDATE mandate.proposals SET status = 'withdrawn' WHERE id = $1`, p.Id)
+	still, err := s.W.Kernel.Proposals.Get(t.Owner, p.Id)
+	s.Require().NoError(err)
+	s.Require().Equal(proposals.StatusPending, still.Status)
+
 	s.Require().NoError(s.exec(t.Agent, `UPDATE mandate.proposals SET status = 'withdrawn', decision_note = 'gone' WHERE id = $1`, p.Id))
 	s.refused(t.Agent, `UPDATE mandate.proposals SET status = 'pending' WHERE id = $1`, p.Id)
 }

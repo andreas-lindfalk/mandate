@@ -57,7 +57,7 @@ It protects against mistakes: a bug in the service, an agent proposing outside i
 
 - **A compromised server.** The database trusts the scope each transaction declares (tenant, actor, the proposal being executed). Whoever can run their own SQL as the server's role can declare any scope.
 - **Whoever holds the signing key.** It can make any receiver act. It is kept out of the database, in your secret store.
-- **The database owner,** who can change the rules and rebuild the log. Keep the log's latest hash somewhere else, and run the server without the owner's credentials.
+- **The database owner,** who can change the rules and rebuild the log. Keep the log's latest hash somewhere else, and run the server without the owner's credentials, as [docs/running.md](docs/running.md#running-it) describes.
 - **An agent that still has its credentials,** or one whose claims nobody checks. A condition decides on what the agent wrote; only the receiver can check it against the truth.
 
 [docs/threat-model.md](docs/threat-model.md) lists what holds, where, and the known gaps.
@@ -137,7 +137,7 @@ if err != nil {
 	log.Fatal(err)
 }
 receiver := webhook.NewReceiver(keys)
-receiver.Refresh = func(ctx context.Context) (sign.KeySet, error) { return sign.Fetch(ctx, http.DefaultClient, keysUrl) } // a new key, after a rotation
+receiver.Refresh = func(ctx context.Context) (sign.KeySet, error) { return sign.Fetch(ctx, http.DefaultClient, keysUrl) } // after a rotation, and every five minutes so a dropped key is revoked
 receiver.Trust(audience, tenantId) // what defining the action printed, never taken from the request
 receiver.Handle = func(d webhook.Received) (any, error) {
 	var refund Refund

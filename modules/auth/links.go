@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"time"
 
@@ -113,7 +112,7 @@ func (s *Service) NewPersonLink(ctx context.Context, personId uuid.UUID) (string
 // signs the owner in, in one transaction that also uses the link. The
 // session is pinned to the owner.
 func (s *Service) SetUp(ctx context.Context, token, organisation, name, email string) (string, error) {
-	hash, ok := linkHash(token)
+	hash, ok := tokenHash(token)
 	if !ok {
 		return "", errLink
 	}
@@ -150,7 +149,7 @@ func (s *Service) SetUp(ctx context.Context, token, organisation, name, email st
 
 // RedeemLink uses a person's link and signs them in, pinned to them.
 func (s *Service) RedeemLink(ctx context.Context, token string) (string, error) {
-	hash, ok := linkHash(token)
+	hash, ok := tokenHash(token)
 	if !ok {
 		return "", errLink
 	}
@@ -213,12 +212,4 @@ func (s *Service) claim(ctx context.Context, q *repo.Queries, hash []byte, purpo
 		return link, errLink
 	}
 	return link, nil
-}
-
-func linkHash(token string) ([]byte, bool) {
-	if len(token) < 32 || len(token) > 64 {
-		return nil, false
-	}
-	hash := sha256.Sum256([]byte(token))
-	return hash[:], true
 }

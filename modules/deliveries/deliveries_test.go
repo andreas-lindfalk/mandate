@@ -1,6 +1,7 @@
 package deliveries_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +31,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 	"github.com/andreas-lindfalk/pgmandate/pkg/actor"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
+	"github.com/andreas-lindfalk/pgmandate/pkg/events"
 	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
 	"github.com/andreas-lindfalk/pgmandate/pkg/jobs"
 	"github.com/andreas-lindfalk/pgmandate/sign"
@@ -182,6 +186,32 @@ func (s *DeliveriesSuite) Test_AnApprovalIsDone() {
 	// Once done, nothing more is sent.
 	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, false))
 	s.Require().Len(h.receiver.Received(), 1)
+}
+
+// An approver's edit is what the receiver gets: the edited title and
+// payload, not the agent's, with the decision marked edited and its note.
+func (s *DeliveriesSuite) Test_AnEditedApprovalDeliversTheEdit() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	h := s.defineWebhook(t, false)
+	p := s.propose(t, "Printer jams")
+
+	approved, err := s.W.Kernel.Proposals.Approve(t.Reviewer, p.Id, proposals.Decision{
+		Title: "Printer jams on floor 3", Payload: json.RawMessage(`{"subject":"Printer jams on 3"}`), Note: "checked",
+	})
+	s.Require().NoError(err)
+	s.Require().True(approved.Edited)
+	delivery := s.delivery(t, p.Id)
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, false))
+
+	received := h.receiver.Received()
+	s.Require().Len(received, 1)
+	s.Require().JSONEq(`{"subject":"Printer jams on 3"}`, string(received[0].Payload.Proposal.Payload), "the payload as approved, not as proposed")
+	s.Require().Equal("Printer jams on floor 3", received[0].Payload.Proposal.Title)
+	s.Require().True(received[0].Payload.Decision.Edited)
+	s.Require().Equal("checked", received[0].Payload.Decision.Note)
+	s.Require().Equal(deliveries.StatusDone, s.delivery(t, p.Id).Status)
+	sum := sha256.Sum256(received[0].Body)
+	s.Require().Equal(hex.EncodeToString(sum[:]), s.eventPayload(t, p.Id, "delivery.done")["bodySha256"], "the log names the edited body sent")
 }
 
 // recorder records the raw body and headers of each delivery, and answers
@@ -350,7 +380,7 @@ func (s *DeliveriesSuite) Test_WithoutAnAnswerItEndsUnknownOrNotSent() {
 	recorded := &recorder{answer: func() (int, string) { return http.StatusNotFound, `<html>a proxy</html>` }}
 	server := httptest.NewServer(recorded)
 	defer server.Close()
-	s.defineAt(t, server.URL)
+	first := s.defineAt(t, server.URL)
 	d := s.approved(t, "Printer jams")
 	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false), "a 404 without an outcome is retried, never read as refused")
 	s.Require().Equal(deliveries.StatusPending, s.delivery(t, d.ProposalId).Status)
@@ -359,9 +389,14 @@ func (s *DeliveriesSuite) Test_WithoutAnAnswerItEndsUnknownOrNotSent() {
 	s.Require().Equal(deliveries.StatusUnknown, after.Status, "it reached something that may have acted")
 	s.Require().Equal(2, after.AttemptsStarted)
 	s.Require().Contains(s.eventTypes(t.Owner, d.ProposalId), "delivery.unknown")
+	unknown := s.eventPayload(t, d.ProposalId, "delivery.unknown")
+	firstSum := sha256.Sum256([]byte(server.URL))
+	s.Require().Equal(hex.EncodeToString(firstSum[:]), unknown["connectorUrlSha256"], "the log names where the possibly sent attempts went")
+	s.Require().Equal(first.ConnectorAudience, unknown["audience"])
 
 	// Nothing listening: proven never sent, on every attempt.
-	s.defineAt(t, closedUrl())
+	closed := closedUrl()
+	second := s.defineAt(t, closed)
 	never := s.approved(t, "Toner")
 	s.Require().Error(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, never.Id, false))
 	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, never.Id, true))
@@ -370,6 +405,63 @@ func (s *DeliveriesSuite) Test_WithoutAnAnswerItEndsUnknownOrNotSent() {
 	s.Require().Equal(2, after.AttemptsStarted)
 	s.Require().Equal(2, after.AttemptsUnsent)
 	s.Require().Contains(s.eventTypes(t.Owner, never.ProposalId), "delivery.not_sent")
+	notSent := s.eventPayload(t, never.ProposalId, "delivery.not_sent")
+	closedSum := sha256.Sum256([]byte(closed))
+	s.Require().Equal(hex.EncodeToString(closedSum[:]), notSent["connectorUrlSha256"])
+	s.Require().Equal(second.ConnectorAudience, notSent["audience"])
+}
+
+// A receiver the server may not call, plain http on a public address or
+// an address inside its own network, ends the delivery not sent on the
+// first attempt: no later attempt could be allowed either.
+func (s *DeliveriesSuite) Test_ABlockedReceiverEndsAtOnce() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	strict := deliveries.New(s.W.Pg.App, nil, s.W.Kernel.Proposals, deliveries.Options{AllowPrivate: false, Signer: testfix.Signer})
+	for _, c := range []struct{ url, reason string }{
+		{"http://connector.example/hooks", "use https"},
+		{"https://127.0.0.1:1/hooks", "private or local"},
+	} {
+		s.defineAt(t, c.url)
+		d := s.approved(t, "Printer jams "+c.url)
+		s.Require().NoError(strict.Deliver(context.Background(), t.Id, d.Id, false), "%s: not retried", c.url)
+		after := s.delivery(t, d.ProposalId)
+		s.Require().Equal(deliveries.StatusNotSent, after.Status, c.url)
+		s.Require().Equal(1, after.AttemptsStarted, c.url)
+		s.Require().Equal(1, after.AttemptsUnsent, c.url)
+		s.Require().Contains(after.LastError, c.reason, c.url)
+		s.Require().Contains(s.eventTypes(t.Owner, d.ProposalId), "delivery.not_sent", c.url)
+	}
+}
+
+// A body that cannot be built is our failure, not the receiver's: the job's
+// error and the delivery's last error both say so, and nothing is sent.
+func (s *DeliveriesSuite) Test_ABodyThatCannotBeBuiltIsNotBlamedOnTheReceiver() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	h := s.defineWebhook(t, false)
+	d := s.approved(t, "Printer jams")
+	// A decided proposal that has lost its decision time has no body the
+	// contract describes.
+	_, err := s.W.Pg.Owner.Exec(context.Background(), `
+		BEGIN;
+		SET LOCAL session_replication_role = replica;
+		UPDATE mandate.proposals SET decided_at = NULL WHERE id = '`+d.ProposalId.String()+`';
+		COMMIT;`)
+	s.Require().NoError(err)
+
+	err = s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false)
+	s.Require().Error(err, "retried")
+	s.Require().Contains(err.Error(), "the delivery's body could not be built")
+	s.Require().NotContains(err.Error(), "the receiver could not be reached")
+	after := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusPending, after.Status)
+	s.Require().Equal("the delivery's body could not be built", after.LastError)
+	s.Require().Equal(1, after.AttemptsUnsent)
+
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, true), "the last attempt finishes it")
+	after = s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusNotSent, after.Status)
+	s.Require().Equal("the delivery's body could not be built", after.LastError)
+	s.Require().Empty(h.receiver.Received())
 }
 
 // A refusal is final: nothing was done, and it is never sent again.
@@ -387,6 +479,76 @@ func (s *DeliveriesSuite) Test_ARefusalIsFinal() {
 	_, err := s.W.Kernel.Deliveries.SendAgain(t.Owner, d.ProposalId)
 	s.code(err, fault.Conflict)
 	s.refused(t.Owner, `UPDATE mandate.deliveries SET status = 'pending' WHERE id = $1`, d.Id)
+}
+
+// A receiver's final answer is kept even when its result is more than the
+// database stores as written: a NUL character is replaced, and a number
+// Postgres numeric cannot hold, or one too long to spell out, drops the
+// result, never the answer.
+func (s *DeliveriesSuite) Test_AnAnswerTheDatabaseCannotStoreAsWrittenIsStillFinal() {
+	for name, c := range map[string]struct {
+		status int
+		answer string
+		want   string
+		result string
+	}{
+		"done with a nul":                                      {http.StatusOK, `{"outcome":"done","result":{"note":"a\u0000b"}}`, deliveries.StatusDone, `{"note":"a\ufffdb"}`},
+		"done with a nul in a key":                             {http.StatusOK, `{"outcome":"done","result":{"a\u0000":[1e2]}}`, deliveries.StatusDone, `{"a\ufffd":[100]}`},
+		"done with a huge number":                              {http.StatusOK, `{"outcome":"done","result":{"n":1e999999}}`, deliveries.StatusDone, ``},
+		"done with a tiny number":                              {http.StatusOK, `{"outcome":"done","result":{"n":[1e-999999]}}`, deliveries.StatusDone, ``},
+		"refused with a nul":                                   {http.StatusUnprocessableEntity, `{"outcome":"refused","refusal":{"reason":"no\u0000"}}`, deliveries.StatusRefused, `{"reason":"no\ufffd"}`},
+		"refused with a huge number":                           {http.StatusUnprocessableEntity, `{"outcome":"refused","refusal":{"n":1e999999}}`, deliveries.StatusRefused, ``},
+		"unknown with a nul":                                   {http.StatusOK, `{"outcome":"unknown","reason":"\u0000"}`, deliveries.StatusUnknown, `{"outcome":"unknown","reason":"\ufffd"}`},
+		"unknown with a huge number":                           {http.StatusOK, `{"outcome":"unknown","n":1e999999}`, deliveries.StatusUnknown, `{}`},
+		"unknown with a tiny number":                           {http.StatusOK, `{"outcome":"unknown","n":1e-999999}`, deliveries.StatusUnknown, `{}`},
+		"done with a long number":                              {http.StatusOK, `{"outcome":"done","result":{"n":1e1000}}`, deliveries.StatusDone, ``},
+		"done with too many numbers":                           {http.StatusOK, `{"outcome":"done","result":{"n":[` + strings.Repeat(`1e900,`, 80) + `1]}}`, deliveries.StatusDone, ``},
+		"done too long for the column":                         {http.StatusOK, `{"outcome":"done","result":{"n":[` + strings.Repeat(`1e900,`, 20) + `1]}}`, deliveries.StatusDone, ``},
+		"done with numbers and a note too long for the column": {http.StatusOK, `{"outcome":"done","result":{"note":"` + strings.Repeat(`a`, 200) + `","n":[` + strings.Repeat(`1e900,`, 18) + `1]}}`, deliveries.StatusDone, ``},
+		"done with text jsonb writes shorter":                  {http.StatusOK, `{"outcome":"done","result":{"html":"` + strings.Repeat(`<&>`, 1000) + `"}}`, deliveries.StatusDone, `{"html":"` + strings.Repeat(`<&>`, 1000) + `"}`},
+		"done that just fits the column":                       {http.StatusOK, `{"outcome":"done","result":{"n":[` + strings.Repeat(`1e900,`, 18) + `1]}}`, deliveries.StatusDone, `{"n":[` + strings.Repeat(`1`+strings.Repeat(`0`, 900)+`,`, 18) + `1]}`},
+		"done with a number that fits":                         {http.StatusOK, `{"outcome":"done","result":{"n":[1e2,0.5]}}`, deliveries.StatusDone, `{"n":[100,0.5]}`},
+	} {
+		t := s.W.NewTenant(s.T(), "Acme "+name)
+		answer := c
+		recorded := &recorder{answer: func() (int, string) { return answer.status, answer.answer }}
+		server := httptest.NewServer(recorded)
+		defer server.Close()
+		s.defineAt(t, server.URL)
+		d := s.approved(t, "Printer jams")
+		s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false), name)
+		after := s.delivery(t, d.ProposalId)
+		s.Require().Equal(c.want, after.Status, name)
+		s.Require().Equal(1, after.AttemptsStarted, name+": final on the first attempt")
+		s.Require().Nil(after.AttemptOpenAt, name)
+		bodies, _ := recorded.all()
+		s.Require().Len(bodies, 1, name)
+		outcome := s.eventPayload(t, d.ProposalId, "delivery."+c.want)
+		// The chain digests what the receiver answered, stored or not.
+		var parts struct{ Result, Refusal json.RawMessage }
+		s.Require().NoError(json.Unmarshal([]byte(c.answer), &parts), name)
+		answered := map[string]json.RawMessage{deliveries.StatusDone: parts.Result, deliveries.StatusRefused: parts.Refusal, deliveries.StatusUnknown: json.RawMessage(c.answer)}[c.want]
+		answeredDigest, err := events.Digest(answered)
+		s.Require().NoError(err, name)
+		s.Require().Equal(answeredDigest, outcome["resultSha256"], name+": the chain names what the receiver answered")
+		if c.result == "" || c.result == `{}` {
+			if c.result == "" {
+				s.Require().Nil(after.Result, name)
+			}
+			s.Require().Equal(false, outcome["resultKept"], name+": the chain says the answer is not stored")
+			continue
+		}
+		s.Require().NotContains(outcome, "resultKept", name)
+		// Compared canonically: the numbers may be longer than float64 holds.
+		want, err := events.Canonical(json.RawMessage(c.result))
+		s.Require().NoError(err, name)
+		stored, err := events.Canonical(after.Result)
+		s.Require().NoError(err, name)
+		s.Require().Equal(string(want), string(stored), name)
+		digest, err := events.Digest(after.Result)
+		s.Require().NoError(err)
+		s.Require().Equal(digest, outcome["resultSha256"], name+": what is stored has the same digest")
+	}
 }
 
 // A delivery never sent may be sent again by a person, the same delivery,
@@ -407,6 +569,10 @@ func (s *DeliveriesSuite) Test_ANeverSentDeliveryIsSentAgainBeforeItsDeadline() 
 	s.Require().Equal(deliveries.StatusPending, again.Status)
 	s.Require().Equal(d.Id, again.Id, "the same delivery")
 	s.Require().Equal(h.audience, again.Audience, "to the action's address and audience as they are now")
+	retried := s.eventPayload(t, d.ProposalId, "delivery.retried")
+	movedSum := sha256.Sum256([]byte(h.server.URL + "/hooks"))
+	s.Require().Equal(hex.EncodeToString(movedSum[:]), retried["connectorUrlSha256"], "the log names the new address, which the approver never saw")
+	s.Require().Equal(h.audience, retried["audience"])
 	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false))
 	s.Require().Equal(deliveries.StatusDone, s.delivery(t, d.ProposalId).Status)
 
@@ -427,7 +593,7 @@ func (s *DeliveriesSuite) Test_AnUnknownDeliveryIsSettledOnlyWhenTheWorkCannotHa
 	recorded := &recorder{answer: func() (int, string) { return http.StatusOK, `{"outcome":"unknown","reason":"the bank did not answer"}` }}
 	server := httptest.NewServer(recorded)
 	defer server.Close()
-	s.defineAt(t, server.URL)
+	defined := s.defineAt(t, server.URL)
 	d := s.approved(t, "Refund")
 	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, d.Id, false))
 	unknown := s.delivery(t, d.ProposalId)
@@ -451,6 +617,11 @@ func (s *DeliveriesSuite) Test_AnUnknownDeliveryIsSettledOnlyWhenTheWorkCannotHa
 	s.Require().Equal(&t.ReviewerId, settled.SettledBy)
 	types := s.eventTypes(t.Owner, d.ProposalId)
 	s.Require().Equal("delivery.settled", types[len(types)-1])
+	settledEvent := s.eventPayload(t, d.ProposalId, "delivery.settled")
+	sum := sha256.Sum256([]byte(server.URL))
+	s.Require().Equal(hex.EncodeToString(sum[:]), settledEvent["connectorUrlSha256"], "the log names where the settled delivery went")
+	s.Require().Equal(defined.ConnectorAudience, settledEvent["audience"])
+	s.Require().Equal(deliveries.StatusSettledNotDone, settledEvent["outcome"])
 	_, err = s.W.Kernel.Deliveries.Settle(t.Owner, d.ProposalId, true)
 	s.code(err, fault.Conflict)
 	s.refused(t.Owner, `UPDATE mandate.deliveries SET status = 'settled_done' WHERE id = $1`, d.Id)
@@ -530,13 +701,54 @@ func (s *DeliveriesSuite) Test_AJobClosesAStaleAttemptItself() {
 	s.Require().Equal(1, after.AttemptsStarted)
 }
 
+// The kernel's sweep visits a tenant whose only due work is an attempt left
+// open by a crash, closes it, and, past the last moment an attempt may
+// open, finishes the delivery unknown, since that attempt was possibly sent.
+// Each case is a tenant of its own, so nothing else lists it for the sweep.
+func (s *DeliveriesSuite) Test_TheKernelSweepClosesAnAttemptLeftOpenByACrash() {
+	// Near the deadline: closed and finished unknown.
+	t := s.W.NewTenant(s.T(), "Acme")
+	h := s.defineWebhook(t, false)
+	d := s.approved(t, "Printer jams")
+	s.openAttempt(t, d.Id)
+	s.backdate(d.Id, `attempt_open_at = now() - interval '1 minute', not_after = now() + interval '5 seconds'`)
+	_, err := s.W.Kernel.FinishDue(context.Background())
+	s.Require().NoError(err)
+	after := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusUnknown, after.Status, "the crashed attempt may have reached the receiver")
+	s.Require().Nil(after.AttemptOpenAt)
+	s.Require().Equal(1, after.AttemptsStarted, "no attempt opens too late")
+	s.Require().Zero(after.AttemptsUnsent)
+	s.Require().Empty(h.receiver.Received(), "the sweep sends nothing")
+	unknown := s.eventPayload(t, d.ProposalId, "delivery.unknown")
+	sum := sha256.Sum256([]byte(h.server.URL + "/hooks"))
+	s.Require().Equal(hex.EncodeToString(sum[:]), unknown["connectorUrlSha256"], "the log names where the possibly sent attempt went")
+	s.Require().Equal(h.audience, unknown["audience"])
+
+	// Far from the deadline: closed, and the delivery waits for its job.
+	far := s.W.NewTenant(s.T(), "Bolt")
+	s.defineWebhook(far, false)
+	waiting := s.approved(far, "Toner")
+	s.openAttempt(far, waiting.Id)
+	s.backdate(waiting.Id, `attempt_open_at = now() - interval '1 minute'`)
+	_, err = s.W.Kernel.FinishDue(context.Background())
+	s.Require().NoError(err)
+	after = s.delivery(far, waiting.ProposalId)
+	s.Require().Equal(deliveries.StatusPending, after.Status, "the deadline is not near")
+	s.Require().Nil(after.AttemptOpenAt, "the sweep closed the attempt")
+	s.Require().Equal(1, after.AttemptsStarted)
+	s.Require().Zero(after.AttemptsUnsent, "still counted as possibly sent")
+}
+
 // A receiver that answers after its attempt was closed does not change the
 // delivery: the answer is recorded as a conflict for a person.
 func (s *DeliveriesSuite) Test_ALateAnswerIsAConflict() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	h := s.defineWebhook(t, false)
 	started, release := make(chan struct{}), make(chan struct{})
-	h.receiver.Handle = func(webhook.Received) (any, error) {
+	var body []byte
+	h.receiver.Handle = func(r webhook.Received) (any, error) {
+		body = r.Body
 		close(started)
 		<-release
 		return map[string]any{"done": true}, nil
@@ -561,7 +773,58 @@ func (s *DeliveriesSuite) Test_ALateAnswerIsAConflict() {
 	after := s.delivery(t, d.ProposalId)
 	s.Require().Equal(deliveries.StatusPending, after.Status, "the late answer changes nothing")
 	s.Require().Contains(s.eventTypes(t.Owner, d.ProposalId), "delivery.conflict")
+	conflict := s.eventPayload(t, d.ProposalId, "delivery.conflict")
+	s.Require().Equal(deliveries.StatusDone, conflict["answered"])
+	urlSum := sha256.Sum256([]byte(h.server.URL + "/hooks"))
+	s.Require().Equal(hex.EncodeToString(urlSum[:]), conflict["connectorUrlSha256"], "the log names where the answered attempt went")
+	s.Require().Equal(h.audience, conflict["audience"])
+	s.Require().NotEmpty(body)
+	bodySum := sha256.Sum256(body)
+	s.Require().Equal(hex.EncodeToString(bodySum[:]), conflict["bodySha256"], "the log names the exact body the receiver answered")
+	s.Require().NotEmpty(conflict["resultSha256"])
 }
+
+// An answer that came is recorded even when the job's context ends right
+// after it, as River's per-job timeout or a shutdown would end it: the
+// receiver said done, so nothing is sent again and no person settles it.
+func (s *DeliveriesSuite) Test_AnAnswerIsRecordedAfterTheJobsContextEnds() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	h := s.defineWebhook(t, false)
+	d := s.approved(t, "Printer jams")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := deliveries.New(s.W.Pg.App, nil, s.W.Kernel.Proposals, deliveries.Options{AllowPrivate: true, Signer: testfix.Signer})
+	deliveries.WrapTransport(service, func(inner http.RoundTripper) http.RoundTripper {
+		return roundTrip(func(req *http.Request) (*http.Response, error) {
+			resp, err := inner.RoundTrip(req)
+			if err != nil {
+				return nil, err
+			}
+			// The whole answer is in hand before the context ends.
+			answer, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				return nil, err
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(answer))
+			cancel()
+			return resp, nil
+		})
+	})
+
+	s.Require().NoError(service.Deliver(ctx, t.Id, d.Id, false))
+	s.Require().ErrorIs(ctx.Err(), context.Canceled, "the job's context ended before the answer was recorded")
+	s.Require().Len(h.receiver.Received(), 1)
+	after := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusDone, after.Status)
+	s.Require().Nil(after.AttemptOpenAt)
+	s.Require().Equal(1, after.AttemptsStarted)
+	s.Require().Contains(s.eventTypes(t.Owner, d.ProposalId), "delivery.done")
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 // The sweep finishes deliveries past the last moment an attempt may open,
 // and never one with an attempt open.
@@ -593,6 +856,34 @@ func (s *DeliveriesSuite) Test_TheSweepFinishesWhatIsDue() {
 	s.Require().NoError(err)
 	s.Require().Equal(1, total)
 	s.Require().Equal(deliveries.StatusNotSent, s.delivery(other, theirs.ProposalId).Status)
+}
+
+// The sweep seeks what is due in the deadline index rather than reading
+// every waiting delivery of every tenant: the deadline is compared with the
+// indexed column as it is, so it is an index condition and not a filter.
+func (s *DeliveriesSuite) Test_TheSweepSeeksWhatIsDueInTheIndex() {
+	source, err := os.ReadFile("internal/repo/deliveries.sql.go")
+	s.Require().NoError(err)
+	query := regexp.MustCompile("(?s)const listDueToFinish = `(.*?)`").FindSubmatch(source)
+	s.Require().NotNil(query, "the generated ListDueToFinish")
+	t := s.W.NewTenant(s.T(), "Acme")
+	var plan []string
+	s.Require().NoError(db.InTx(t.System, s.W.Pg.App, func(tx pgx.Tx) error {
+		// A test's table is so small that reading it all would be cheapest;
+		// the plan in question is the one for a large table.
+		if _, err := tx.Exec(t.System, `SET LOCAL enable_seqscan = off`); err != nil {
+			return err
+		}
+		rows, err := tx.Query(t.System, "EXPLAIN "+string(query[1]), int32(1))
+		if err != nil {
+			return err
+		}
+		plan, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return err
+	}))
+	text := strings.Join(plan, "\n")
+	s.Require().Contains(text, "deliveries_due_idx", text)
+	s.Require().Regexp(`Index Cond: \(not_after <= `, text)
 }
 
 // A waiting delivery moves with its action, to the new address and
@@ -658,6 +949,40 @@ func (s *DeliveriesSuite) Test_TheDatabaseHoldsTheTransitions() {
 		VALUES (gen_random_uuid(), $1, $2, 'tickets.create', 'https://x.example', 'pgm:x', now())`, t.Id, p.Id)
 }
 
+// An attempt opens only by counting it, which the guard refuses too late:
+// the system setting attempt_open_at itself, past the last moment an
+// attempt may open, is refused, so no answer can be recorded as final.
+func (s *DeliveriesSuite) Test_AnAttemptOpensOnlyByCountingIt() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	s.defineWebhook(t, false)
+	d := s.approved(t, "Printer jams")
+	s.refused(t.System, `UPDATE mandate.deliveries SET attempt_open_at = now() WHERE id = $1`, d.Id)
+	s.backdate(d.Id, `not_after = now() + interval '10 seconds'`)
+	s.refused(t.System, `UPDATE mandate.deliveries SET attempt_open_at = now() WHERE id = $1`, d.Id)
+	s.refused(t.System, `UPDATE mandate.deliveries SET attempt_open_at = now() + interval '1 year' WHERE id = $1`, d.Id)
+
+	// RecordAnswer's own statement then finds no attempt to answer.
+	var answered int64
+	s.Require().NoError(db.InTx(t.System, s.W.Pg.App, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(t.System, `UPDATE mandate.deliveries
+			SET status = 'done', result = '{"done":true}', attempt_open_at = NULL, last_status = 200, last_error = NULL
+			WHERE id = $1 AND status = 'pending' AND attempt_open_at IS NOT NULL`, d.Id)
+		answered = tag.RowsAffected()
+		return err
+	}))
+	s.Require().Zero(answered)
+	after := s.delivery(t, d.ProposalId)
+	s.Require().Equal(deliveries.StatusPending, after.Status)
+	s.Require().Nil(after.AttemptOpenAt)
+	s.Require().Zero(after.AttemptsStarted)
+
+	// An attempt opened by counting it keeps its time: it is not moved on
+	// to escape the stale sweep.
+	open := s.approved(t, "Keyboard")
+	s.openAttempt(t, open.Id)
+	s.refused(t.System, `UPDATE mandate.deliveries SET attempt_open_at = now() + interval '1 year' WHERE id = $1`, open.Id)
+}
+
 // Sending again is never dropped as a duplicate of the job that gave up.
 func (s *DeliveriesSuite) Test_SendingAgainIsNeverDroppedAsADuplicate() {
 	t := s.W.NewTenant(s.T(), "Acme")
@@ -708,4 +1033,85 @@ func (s *DeliveriesSuite) Test_ADryRunIsNeverDelivered() {
 	})
 	s.Require().Error(err)
 	s.Require().Equal(fault.Name(fault.PermissionDenied), fault.Name(fault.CodeOf(fault.FromDb(err))), "the table refuses a delivery for a dry run")
+}
+
+// Another tenant sees none of a tenant's deliveries: not the receiver's
+// address, audience or result, and it can neither change, settle, send
+// again, deliver nor finish one.
+func (s *DeliveriesSuite) Test_AnotherTenantSeesNoDeliveries() {
+	a := s.W.NewTenant(s.T(), "Acme")
+	b := s.W.NewTenant(s.T(), "Bolt")
+	h := s.defineWebhook(a, false)
+	s.defineWebhook(b, false)
+	ours := s.approved(a, "Printer jams")
+
+	_, found, err := s.W.Kernel.Deliveries.Get(b.Owner, ours.ProposalId)
+	s.Require().NoError(err)
+	s.Require().False(found)
+	byProposal, err := s.W.Kernel.Deliveries.ByProposals(b.Owner, []uuid.UUID{ours.ProposalId})
+	s.Require().NoError(err)
+	s.Require().Empty(byProposal)
+	var visible int
+	s.Require().NoError(db.InTx(b.Owner, s.W.Pg.App, func(tx pgx.Tx) error {
+		return tx.QueryRow(b.Owner, `SELECT count(*) FROM mandate.deliveries WHERE id = $1 OR proposal_id = $2`, ours.Id, ours.ProposalId).Scan(&visible)
+	}))
+	s.Require().Zero(visible)
+
+	var affected int64
+	s.Require().NoError(db.InTx(b.System, s.W.Pg.App, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(b.System, `UPDATE mandate.deliveries SET attempts_started = attempts_started + 1 WHERE id = $1`, ours.Id)
+		affected = tag.RowsAffected()
+		return err
+	}))
+	s.Require().Zero(affected)
+
+	// A job naming another tenant sends nothing.
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), b.Id, ours.Id, false))
+	s.Require().Empty(h.receiver.Received())
+	s.Require().Zero(s.delivery(a, ours.ProposalId).AttemptsStarted)
+
+	// Sent and left unknown, so that A could settle it, and another one
+	// never sent, so that A could send it again.
+	recorded := &recorder{answer: func() (int, string) { return http.StatusOK, `{"outcome":"unknown","reason":"no answer"}` }}
+	server := httptest.NewServer(recorded)
+	defer server.Close()
+	s.defineAt(a, server.URL)
+	unknown := s.approved(a, "Refund")
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), a.Id, unknown.Id, false))
+	s.Require().Equal(deliveries.StatusUnknown, s.delivery(a, unknown.ProposalId).Status)
+	s.backdate(unknown.Id, `not_after = now() - interval '5 minutes 20 seconds'`)
+	s.defineAt(a, closedUrl())
+	notSent := s.approved(a, "Toner")
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), a.Id, notSent.Id, true))
+	s.Require().Equal(deliveries.StatusNotSent, s.delivery(a, notSent.ProposalId).Status)
+
+	_, err = s.W.Kernel.Deliveries.Settle(b.Reviewer, unknown.ProposalId, true)
+	s.code(err, fault.NotFound)
+	_, err = s.W.Kernel.Deliveries.SendAgain(b.Reviewer, notSent.ProposalId)
+	s.code(err, fault.NotFound)
+
+	// The other tenant's sweep neither finishes a due delivery nor closes
+	// a stale attempt.
+	s.openAttempt(a, ours.Id)
+	s.backdate(ours.Id, `attempt_open_at = now() - interval '1 minute'`)
+	due := s.approved(a, "Due")
+	s.backdate(due.Id, `not_after = now() + interval '5 seconds'`)
+	finished, err := s.W.Kernel.Deliveries.FinishDue(b.System)
+	s.Require().NoError(err)
+	s.Require().Zero(finished)
+
+	after := s.delivery(a, ours.ProposalId)
+	s.Require().Equal(deliveries.StatusPending, after.Status)
+	s.Require().Equal(1, after.AttemptsStarted, "only A's own attempt counted")
+	s.Require().NotNil(after.AttemptOpenAt, "B's sweep did not close it")
+	s.Require().Equal(deliveries.StatusPending, s.delivery(a, due.ProposalId).Status)
+	s.Require().Equal(deliveries.StatusUnknown, s.delivery(a, unknown.ProposalId).Status)
+	s.Require().Equal(deliveries.StatusNotSent, s.delivery(a, notSent.ProposalId).Status)
+
+	// A's own sweep does both, so they were due.
+	finished, err = s.W.Kernel.Deliveries.FinishDue(a.System)
+	s.Require().NoError(err)
+	s.Require().Equal(1, finished)
+	s.Require().Nil(s.delivery(a, ours.ProposalId).AttemptOpenAt)
+	s.Require().Equal(deliveries.StatusNotSent, s.delivery(a, due.ProposalId).Status)
 }

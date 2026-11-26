@@ -20,6 +20,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/gen/go/mandate/agent/v1/agentv1connect"
 	"github.com/andreas-lindfalk/pgmandate/internal/testfix"
 	"github.com/andreas-lindfalk/pgmandate/mcp"
+	"github.com/andreas-lindfalk/pgmandate/modules/actions"
 	"github.com/andreas-lindfalk/pgmandate/modules/agentapi"
 	"github.com/andreas-lindfalk/pgmandate/modules/auth"
 	"github.com/andreas-lindfalk/pgmandate/modules/mandates"
@@ -280,6 +281,75 @@ func (s *AgentApiSuite) Test_AnAgentSeesOnlyItsOwn() {
 	s.Require().Len(listed.GetProposals(), 1)
 }
 
+// A limit past the contract's 100 gives 100, not the default 20: an agent
+// that asks for more is not handed fewer and left to take them as all.
+func (s *AgentApiSuite) Test_AListLimitPastTheMostGivesTheMost() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	_, err := s.W.Kernel.Agents.SetLimits(t.Owner, t.AgentId, 200, 200)
+	s.Require().NoError(err)
+	for range 101 {
+		_, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Action: "test.manual", Title: "T", Payload: json.RawMessage(`{}`), IdempotencyKey: uuid.NewString(), Rationale: "Why."})
+		s.Require().NoError(err)
+	}
+	client := s.client(t.Token)
+	for limit, want := range map[int32]int{0: 20, 1: 1, 100: 100, 101: 100, 500: 100} {
+		listed, err := client.ListProposals(context.Background(), &agentv1.ListProposalsRequest{Limit: limit})
+		s.Require().NoError(err)
+		s.Require().Equal(want, len(listed.GetProposals()), "limit %d", limit)
+	}
+	var listed struct {
+		Proposals []json.RawMessage `json:"proposals"`
+	}
+	s.Require().NoError(json.Unmarshal([]byte(s.mcpCall(t.Token, "list_proposals", map[string]any{"limit": 1000})), &listed))
+	s.Require().Equal(100, len(listed.Proposals), "over MCP too")
+}
+
+// A list says why each waiting proposal waits, as a read of the one
+// proposal does: a reason an execution recorded, and one that only the
+// action shows, for a run that resumes from list_proposals.
+func (s *AgentApiSuite) Test_AListSaysWhyAProposalWaits() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	_, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"test.low"}, MaxRisk: mandates.RiskLow, BudgetCount: 10, PolicyRef: "P", Days: 30, Condition: `payload.amount <= 500`})
+	s.Require().NoError(err)
+	_, err = s.W.Kernel.Actions.Define(t.Owner, actions.Input{
+		Key: "notes.add", Risk: mandates.RiskLow, MayExecute: true, Connector: actions.ConnectorWebhook, Url: "https://connector.example/hooks",
+		Schema: json.RawMessage(`{"type":"object"}`),
+	})
+	s.Require().NoError(err)
+	propose := func(action, payload string) uuid.UUID {
+		p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Action: action, Title: "T", Payload: json.RawMessage(payload), IdempotencyKey: uuid.NewString(), Rationale: "Why."})
+		s.Require().NoError(err)
+		return p.Id
+	}
+	unmet := propose("test.low", `{}`)
+	s.Require().NoError(s.W.Kernel.ExecuteProposal(context.Background(), t.Id, unmet))
+	removed := propose("notes.add", `{}`)
+	s.Require().NoError(s.W.Kernel.Actions.Remove(t.Owner, "notes.add"))
+	// Two of one action, so that a looked-up action serves both.
+	manual := []uuid.UUID{propose("test.manual", `{}`), propose("test.manual", `{}`)}
+	want := map[uuid.UUID]string{unmet: mandates.SkipConditionUnmet, removed: proposals.SkipActionRemoved, manual[0]: proposals.SkipNotExecutable, manual[1]: proposals.SkipNotExecutable}
+
+	client := s.client(t.Token)
+	listed, err := client.ListProposals(context.Background(), &agentv1.ListProposalsRequest{})
+	s.Require().NoError(err)
+	s.Require().Len(listed.GetProposals(), len(want))
+	for _, inList := range listed.GetProposals() {
+		id := uuid.MustParse(inList.GetProposalId())
+		read, err := client.GetProposal(context.Background(), &agentv1.GetProposalRequest{ProposalId: id.String()})
+		s.Require().NoError(err)
+		one := read.GetProposal()
+		s.Require().Equal(want[id], one.GetSkipped(), inList.GetAction())
+		s.Require().Equal(one.GetSkipped(), inList.GetSkipped(), inList.GetAction())
+		s.Require().Equal(one.GetOutcome(), inList.GetOutcome(), inList.GetAction())
+		s.Require().Equal(one.GetNext(), inList.GetNext(), inList.GetAction())
+		s.Require().NotEqual("waits for a person", inList.GetOutcome(), "the outcome says why")
+		if id == unmet {
+			s.Require().NotEmpty(one.GetUnmet(), "a read says what stands in the way")
+			s.Require().Empty(inList.GetUnmet(), "a list leaves that to get_proposal")
+		}
+	}
+}
+
 // Each failure has the contract's code, and a rate limit says how long to
 // wait.
 func (s *AgentApiSuite) Test_ErrorsHaveTheContractsCodes() {
@@ -291,6 +361,25 @@ func (s *AgentApiSuite) Test_ErrorsHaveTheContractsCodes() {
 	}
 	_, err := c.Propose(ctx, &agentv1.ProposeRequest{Action: "Not A Key", Title: "T", PayloadJson: `{}`, IdempotencyKey: "k", Rationale: "Why."})
 	s.Require().Equal(connect.CodeInvalidArgument, connect.CodeOf(err))
+	// A refused value is never echoed, but the refusal says what a valid
+	// one looks like, so the agent can correct itself.
+	s.Require().Contains(err.Error(), "invalid action key (9 characters): lowercase words of letters, digits and _")
+	s.Require().Contains(err.Error(), "such as tickets.create")
+	// A well-formed key longer than an action key may be is refused by the
+	// contract, with the same form, not later as a bare invalid key.
+	_, err = c.Propose(ctx, &agentv1.ProposeRequest{Action: "test." + strings.Repeat("a", 145), Title: "T", PayloadJson: `{}`, IdempotencyKey: "k", Rationale: "Why."})
+	s.Require().Equal(connect.CodeInvalidArgument, connect.CodeOf(err))
+	s.Require().Contains(err.Error(), "invalid action key (150 characters): lowercase words of letters, digits and _")
+	s.Require().Contains(err.Error(), "at most 100 characters in all")
+	_, err = c.Propose(ctx, &agentv1.ProposeRequest{Action: "test.manual", Title: "T", PayloadJson: `{}`, RunId: "run 7", IdempotencyKey: "k", Rationale: "Why."})
+	s.Require().Equal(connect.CodeInvalidArgument, connect.CodeOf(err))
+	s.Require().Contains(err.Error(), "invalid run id (5 characters): 1 to 100 letters, digits and . _ : -")
+	_, err = c.ListProposals(ctx, &agentv1.ListProposalsRequest{RunId: "run 7"})
+	s.Require().Equal(connect.CodeInvalidArgument, connect.CodeOf(err))
+	s.Require().Contains(err.Error(), "invalid run id (5 characters): 1 to 100 letters, digits and . _ : -")
+	_, err = c.GetProposal(ctx, &agentv1.GetProposalRequest{ProposalId: "p-1"})
+	s.Require().Equal(connect.CodeInvalidArgument, connect.CodeOf(err))
+	s.Require().Contains(err.Error(), "invalid proposal id (3 characters): a UUID")
 	for _, payload := range []string{``, `[1]`, `{"a":`, `"text"`} {
 		_, err = propose("k-"+payload, payload)
 		s.Require().Equal(connect.CodeInvalidArgument, connect.CodeOf(err), payload)
@@ -309,6 +398,7 @@ func (s *AgentApiSuite) Test_ErrorsHaveTheContractsCodes() {
 	s.Require().Equal(connect.CodeNotFound, connect.CodeOf(err))
 	_, err = c.ListProposals(ctx, &agentv1.ListProposalsRequest{Status: "lost"})
 	s.Require().Equal(connect.CodeInvalidArgument, connect.CodeOf(err))
+	s.Require().Contains(err.Error(), "invalid status (4 characters): one of pending, approved, rejected, executed, withdrawn, expired, would_allow or dismissed")
 
 	_, err = s.W.Kernel.Agents.SetLimits(t.Owner, t.AgentId, 1, 200)
 	s.Require().NoError(err)

@@ -6,11 +6,12 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/AppShell";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
-import { Badge, Card, EmptyState, ErrorState, Field, Input, Skeleton, Textarea } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState, ErrorState, Field, Input, Skeleton, StaleNote, Textarea } from "@/components/ui/primitives";
 import { Select } from "@/components/ui/select";
 import type { Mandate } from "@/gen/mandate/v1/mandates_pb";
 import { api } from "@/lib/api";
 import { errorText } from "@/lib/errors";
+import { singleClick, useFocusBack } from "@/lib/utils";
 import { durationLabel, executions, formatDate, riskLabel, riskTone, shortId } from "@/lib/format";
 import { useSession } from "@/lib/session";
 
@@ -67,7 +68,11 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
   const covered = defined.filter((a) => patterns.some((p) => covers(p, a.key)));
   const effective = covered.filter((a) => a.mayExecute && rank[a.risk] <= rank[maxRisk]);
   const agentName = agentId === "*" ? "Every agent of the tenant" : ((agents.data?.agents ?? []).find((a) => a.id === agentId)?.name ?? "");
-  const ready = !!agentId && patterns.length > 0 && !!policy.trim() && Number(budget) > 0 && accountable;
+  // The preview speaks for what is defined today, so it and the grant wait
+  // for both lists: an empty list while loading, or after a failed load,
+  // would read as "nothing is defined".
+  const loaded = !!actions.data && !!agents.data;
+  const ready = loaded && !!agentId && patterns.length > 0 && !!policy.trim() && Number(budget) > 0 && accountable;
 
   const grant = useMutation({
     mutationFn: () =>
@@ -122,11 +127,24 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
           <div className="grid gap-x-6 gap-y-4 md:grid-cols-2">
             <div className="flex flex-col gap-4">
           <Field label="Agent" htmlFor="agent">
-            <Select id="agent" value={agentId} onValueChange={setAgentId} options={agentOptions} placeholder="Choose an agent" />
+            {agents.data ? (
+              <Select id="agent" value={agentId} onValueChange={setAgentId} options={agentOptions} placeholder="Choose an agent" />
+            ) : agents.isError ? (
+              <ErrorState className="py-4" title="Could not load the agents" error={agents.error} onRetry={() => agents.refetch()} />
+            ) : (
+              <Skeleton className="h-9" />
+            )}
           </Field>
+          {agents.isError && agents.data ? <StaleNote error={agents.error} className="-mt-2" /> : null}
           <fieldset>
             <legend className="mb-1.5 text-[13px] font-medium">Actions</legend>
-            {defined.length === 0 ? (
+            {!actions.data ? (
+              actions.isError ? (
+                <ErrorState className="py-4" title="Could not load the actions" error={actions.error} onRetry={() => actions.refetch()} />
+              ) : (
+                <Skeleton className="h-20" />
+              )
+            ) : defined.length === 0 ? (
               <p className="text-[13px] text-muted">No actions are defined yet. Define one under Agents & actions first.</p>
             ) : (
               <ul className="flex flex-col gap-1.5">
@@ -150,6 +168,7 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
                 })}
               </ul>
             )}
+            {actions.isError && actions.data ? <StaleNote error={actions.error} className="mt-1.5" /> : null}
             <details className="mt-2">
               <summary className="cursor-pointer text-[12.5px] text-muted">Advanced: a pattern</summary>
               <Input
@@ -222,7 +241,8 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
               {conditionError}
             </p>
           ) : null}
-          {agentId && patterns.length > 0 ? (
+          {agentId && patterns.length > 0 && !loaded && !actions.isError && !agents.isError ? <Skeleton className="h-28" /> : null}
+          {agentId && patterns.length > 0 && loaded ? (
             <Card className="bg-warning-soft p-4 text-[13.5px] text-warning-ink">
               <p>
                 <span className="font-medium">{agentName}</span> will have{" "}
@@ -265,8 +285,21 @@ function GrantDialog({ onDone }: { onDone: () => void }) {
   );
 }
 
-function MandateRow({ mandate, agentName, canRevoke, onChanged }: { mandate: Mandate; agentName: string; canRevoke: boolean; onChanged: () => void }) {
+function MandateRow({
+  mandate,
+  agentName,
+  agentRevoked,
+  canRevoke,
+  onChanged,
+}: {
+  mandate: Mandate;
+  agentName: string;
+  agentRevoked: boolean;
+  canRevoke: boolean;
+  onChanged: () => void;
+}) {
   const [confirming, setConfirming] = React.useState(false);
+  const revokeTrigger = useFocusBack(confirming);
   const revoke = useMutation({
     mutationFn: () => api.mandates.revokeMandate({ id: mandate.id }),
     onSuccess: () => {
@@ -281,7 +314,9 @@ function MandateRow({ mandate, agentName, canRevoke, onChanged }: { mandate: Man
   // The clock is read once per mount: a mandate that expires while the page is open shows on the next refresh.
   const [now] = React.useState(() => new Date());
   const expired = !!mandate.validUntil && timestampDate(mandate.validUntil) < now;
-  const ended = !!mandate.revokedAt || expired;
+  // A revoked agent can no longer propose, so its mandates can no longer
+  // apply, though the server still lists them as not revoked and not expired.
+  const ended = !!mandate.revokedAt || expired || agentRevoked;
   return (
     <li className="border-t border-border px-5 py-4 first:border-t-0">
       <div className="flex flex-wrap items-center gap-2">
@@ -289,20 +324,27 @@ function MandateRow({ mandate, agentName, canRevoke, onChanged }: { mandate: Man
         <span className="font-mono text-[12px] text-accent">{mandate.actions.join(", ")}</span>
         <Badge tone={mandate.maxRisk === "medium" ? "warning" : "success"}>up to {riskLabel[mandate.maxRisk]?.toLowerCase()} risk</Badge>
         {mandate.department ? <Badge tone="neutral">{mandate.department}</Badge> : null}
-        {mandate.revokedAt ? <Badge tone="neutral">revoked</Badge> : expired ? <Badge tone="neutral">expired</Badge> : null}
+        {mandate.revokedAt ? (
+          <Badge tone="neutral">revoked</Badge>
+        ) : expired ? (
+          <Badge tone="neutral">expired</Badge>
+        ) : agentRevoked ? (
+          <Badge tone="neutral">agent revoked</Badge>
+        ) : null}
         {canRevoke && !ended ? (
           <div className="ml-auto flex gap-2">
             {confirming ? (
               <>
-                <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
-                  Cancel
-                </Button>
-                <Button variant="danger" size="sm" onClick={() => revoke.mutate()} loading={revoke.isPending}>
+                {/* Cancel takes the trigger's place, so the click that armed this never lands on the danger button. */}
+                <Button variant="danger" size="sm" onClick={singleClick(() => revoke.mutate())} loading={revoke.isPending}>
                   Revoke now
+                </Button>
+                <Button variant="ghost" size="sm" autoFocus onClick={() => setConfirming(false)}>
+                  Cancel
                 </Button>
               </>
             ) : (
-              <Button variant="secondary" size="sm" onClick={() => setConfirming(true)}>
+              <Button variant="secondary" size="sm" ref={revokeTrigger()} onClick={() => setConfirming(true)}>
                 Revoke
               </Button>
             )}
@@ -337,6 +379,7 @@ export function MandatesPage() {
   const mandates = useQuery({ queryKey: ["mandates", includeEnded], queryFn: () => api.mandates.listMandates({ includeEnded }) });
   const agents = useQuery({ queryKey: ["agents"], queryFn: () => api.agents.listAgents({}) });
   const names = new Map((agents.data?.agents ?? []).map((a) => [a.id, a.name]));
+  const revokedAgents = new Set((agents.data?.agents ?? []).filter((a) => !!a.revokedAt).map((a) => a.id));
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["mandates"] });
     queryClient.invalidateQueries({ queryKey: ["chain"] });
@@ -363,9 +406,10 @@ export function MandatesPage() {
           policy reference, until a date. Everything outside a mandate waits in the inbox, and the database checks each use of a mandate
           against what is written here.{session.isOwner ? "" : " You are a reviewer here; owners grant and revoke mandates."}
         </p>
+        {mandates.isError && mandates.data ? <StaleNote error={mandates.error} className="mb-2" /> : null}
         {mandates.isPending ? (
           <Skeleton className="h-32" />
-        ) : mandates.isError ? (
+        ) : !mandates.data ? (
           <ErrorState error={mandates.error} onRetry={() => mandates.refetch()} />
         ) : list.length === 0 ? (
           <EmptyState icon={<ScrollText />} title="No mandates">
@@ -375,7 +419,14 @@ export function MandatesPage() {
           <Card>
             <ul>
               {list.map((m) => (
-                <MandateRow key={m.id} mandate={m} agentName={m.agentId ? (names.get(m.agentId) ?? shortId(m.agentId)) : "Every agent"} canRevoke={session.isOwner} onChanged={refresh} />
+                <MandateRow
+                  key={m.id}
+                  mandate={m}
+                  agentName={m.agentId ? (names.get(m.agentId) ?? shortId(m.agentId)) : "Every agent"}
+                  agentRevoked={!!m.agentId && revokedAgents.has(m.agentId)}
+                  canRevoke={session.isOwner}
+                  onChanged={refresh}
+                />
               ))}
             </ul>
           </Card>

@@ -98,11 +98,11 @@ func (q *Queries) NotifierOf(ctx context.Context) ([]NotifierOfRow, error) {
 }
 
 const removeLiveNotifier = `-- name: RemoveLiveNotifier :execrows
-UPDATE mandate.notifiers SET removed_at = now() WHERE removed_at IS NULL
+UPDATE mandate.notifiers SET removed_at = now() WHERE id = $1 AND removed_at IS NULL
 `
 
-func (q *Queries) RemoveLiveNotifier(ctx context.Context) (int64, error) {
-	result, err := q.db.Exec(ctx, removeLiveNotifier)
+func (q *Queries) RemoveLiveNotifier(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, removeLiveNotifier, id)
 	if err != nil {
 		return 0, err
 	}

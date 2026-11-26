@@ -2,7 +2,7 @@ import { ArrowRight } from "lucide-react";
 import * as React from "react";
 import { Navigate, useNavigate } from "react-router";
 import { Button } from "@/components/ui/button";
-import { Field, Input } from "@/components/ui/primitives";
+import { ErrorState, Field, Input } from "@/components/ui/primitives";
 import { Wordmark } from "@/components/layout/AppShell";
 import { useSession } from "@/lib/session";
 
@@ -58,7 +58,10 @@ export function LoginPage() {
           </div>
           <p className="label-mono text-accent">Sign in</p>
           <h2 className="mt-2 font-serif text-3xl font-medium">Sign in to pgmandate</h2>
-          {session.oidc ? (
+          {session.error ? (
+            <ErrorState className="mt-7" title="Could not reach pgmandate" error={session.error} onRetry={session.retry} />
+          ) : null}
+          {!session.error && session.oidc ? (
             <div className="mt-7">
               <Button asChild size="lg" className="w-full">
                 <a href="/auth/oidc/start">
@@ -67,7 +70,7 @@ export function LoginPage() {
               </Button>
             </div>
           ) : null}
-          {session.devLogin ? (
+          {!session.error && session.devLogin ? (
             <form
               className="mt-7 flex flex-col gap-4 border-t border-border pt-6"
               onSubmit={(event) => {
@@ -87,7 +90,7 @@ export function LoginPage() {
               </Button>
             </form>
           ) : null}
-          {session.setupPending ? (
+          {session.error ? null : session.setupPending ? (
             <div className="mt-7 rounded-[var(--radius-card)] border border-accent/40 p-4 text-sm">
               <p className="font-medium">pgmandate is not set up yet.</p>
               <p className="mt-1 text-muted">
@@ -102,7 +105,7 @@ export function LoginPage() {
             </p>
           ) : null}
           {error ? (
-            <p role="alert" className="mt-4 text-sm text-danger">
+            <p role="alert" className="mt-4 text-sm text-danger-ink">
               {error}
             </p>
           ) : null}

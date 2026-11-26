@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"time"
 
 	mandatev1 "github.com/andreas-lindfalk/pgmandate/gen/go/mandate/v1"
@@ -25,17 +26,22 @@ func toAction(e actions.Action) *mandatev1.Action {
 }
 
 // ListActions lists the tenant's definitions and, after them, the builtin
-// actions of an embedded host the tenant has not defined.
+// actions of an embedded host the tenant has not defined. A removed
+// definition hides its builtin, as it does for proposing, even when the
+// request leaves removed definitions out.
 func (h *actionHandler) ListActions(ctx context.Context, req *mandatev1.ListActionsRequest) (*mandatev1.ListActionsResponse, error) {
-	defined, err := h.kernel.Actions.List(ctx, req.GetIncludeRemoved())
+	defined, err := h.kernel.Actions.List(ctx, true)
 	if err != nil {
 		return nil, fault.ToConnect(err)
 	}
 	resp := &mandatev1.ListActionsResponse{}
 	seen := map[string]bool{}
 	for _, e := range defined {
-		resp.Actions = append(resp.Actions, toAction(e))
 		seen[e.Key] = true
+		if e.RemovedAt != nil && !req.GetIncludeRemoved() {
+			continue
+		}
+		resp.Actions = append(resp.Actions, toAction(e))
 	}
 	for _, code := range h.kernel.Builtin() {
 		if seen[code.Key] {
@@ -53,7 +59,7 @@ func (h *actionHandler) ListActions(ctx context.Context, req *mandatev1.ListActi
 func (h *actionHandler) DefineAction(ctx context.Context, req *mandatev1.DefineActionRequest) (*mandatev1.DefineActionResponse, error) {
 	input := actions.Input{
 		Key: req.GetKey(), Description: req.GetDescription(), Risk: req.GetRisk(), MayExecute: req.GetMayExecute(),
-		WaitLimit: time.Duration(req.GetWaitSeconds()) * time.Second, DeliverWithin: time.Duration(req.GetDeliverSeconds()) * time.Second,
+		WaitLimit: seconds(req.GetWaitSeconds()), DeliverWithin: seconds(req.GetDeliverSeconds()),
 		Connector: req.GetConnector(), Url: req.GetConnectorUrl(), Department: req.GetDepartment(),
 	}
 	if req.GetSchemaJson() != "" {
@@ -64,6 +70,22 @@ func (h *actionHandler) DefineAction(ctx context.Context, req *mandatev1.DefineA
 		return nil, fault.ToConnect(err)
 	}
 	return &mandatev1.DefineActionResponse{Action: toAction(e)}, nil
+}
+
+// seconds converts a request's seconds to a duration that saturates
+// instead of wrapping around: a count too large for a Duration would
+// otherwise wrap to any value, 0 (the default) among them, and pass
+// Define's range check. Saturated, it is out of range, and Define refuses
+// it with its own message.
+func seconds(n int64) time.Duration {
+	const most = int64(math.MaxInt64 / time.Second)
+	switch {
+	case n > most:
+		return math.MaxInt64
+	case n < -most:
+		return math.MinInt64
+	}
+	return time.Duration(n) * time.Second
 }
 
 func (h *actionHandler) RemoveAction(ctx context.Context, req *mandatev1.RemoveActionRequest) (*mandatev1.RemoveActionResponse, error) {

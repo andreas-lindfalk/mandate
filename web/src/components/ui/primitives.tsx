@@ -101,14 +101,8 @@ export function Skeleton({ className }: { className?: string }) {
   return <div className={cn("animate-pulse rounded-md bg-sunken", className)} aria-hidden />;
 }
 
-export function SectionLabel({ number, children }: { number?: string; children: React.ReactNode }) {
-  return (
-    <div className="label-mono flex items-center gap-2 text-accent">
-      {number ? <span className="text-foreground">{number}</span> : null}
-      {number ? <span className="h-px w-6 bg-accent/60" aria-hidden /> : null}
-      <span>{children}</span>
-    </div>
-  );
+export function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <div className="label-mono text-accent">{children}</div>;
 }
 
 export function EmptyState({ icon, title, children }: { icon: React.ReactNode; title: string; children?: React.ReactNode }) {
@@ -150,5 +144,17 @@ export function ErrorState({
         </Button>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * A refetch failed while data from an earlier load is still at hand: the
+ * data stays on screen and this says it may be out of date.
+ */
+export function StaleNote({ error, className }: { error: unknown; className?: string }) {
+  return (
+    <p role="status" title={errorText(error)} className={cn("flex items-center gap-1.5 text-[12px] text-warning-ink", className)}>
+      <CircleAlert className="size-3.5 shrink-0" aria-hidden /> Could not refresh; showing what was loaded.
+    </p>
   );
 }

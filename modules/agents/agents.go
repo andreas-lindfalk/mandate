@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -28,10 +29,11 @@ const (
 	// TokenPrefix marks agent tokens, so they are recognizable in config
 	// files and by secret scanners.
 	TokenPrefix = "mnd_"
-	secretBytes = 32
-	maxDays     = 365
-	maxName     = 80
-	hintChars   = 4
+	// MaxTokenDays is the longest a token may be valid, in days.
+	MaxTokenDays = 365
+	secretBytes  = 32
+	maxName      = 80
+	hintChars    = 4
 )
 
 type Agent struct {
@@ -188,8 +190,8 @@ func (s *Service) Revoke(ctx context.Context, id uuid.UUID) error {
 	return fault.FromDb(err)
 }
 
-// SetLimits sets how many proposals a live agent may make per minute and
-// per hour. Only an owner may.
+// SetLimits sets how many proposals an agent that is not revoked may make
+// per minute and per hour. Only an owner may.
 func (s *Service) SetLimits(ctx context.Context, id uuid.UUID, perMinute, perHour int) (Agent, error) {
 	switch {
 	case perMinute < 1 || perMinute > 10_000:
@@ -208,7 +210,7 @@ func (s *Service) SetLimits(ctx context.Context, id uuid.UUID, perMinute, perHou
 			return err
 		}
 		if changed == 0 {
-			return fault.New(fault.NotFound, "no live agent with that id")
+			return fault.New(fault.NotFound, "no agent that is not revoked with that id")
 		}
 		row, err := q.GetAgent(ctx, id)
 		if err != nil {
@@ -268,8 +270,8 @@ func (s *Service) IssueToken(ctx context.Context, agentId uuid.UUID, days int) (
 	if !ok {
 		return Token{}, "", fault.New(fault.InvalidArgument, "no tenant in scope")
 	}
-	if days < 1 || days > maxDays {
-		return Token{}, "", fault.New(fault.InvalidArgument, "a token is valid for 1 to 365 days")
+	if days < 1 || days > MaxTokenDays {
+		return Token{}, "", fault.New(fault.InvalidArgument, fmt.Sprintf("a token is valid for 1 to %d days", MaxTokenDays))
 	}
 	raw := make([]byte, secretBytes)
 	if _, err := rand.Read(raw); err != nil {
@@ -344,8 +346,14 @@ func (s *Service) RevokeToken(ctx context.Context, id uuid.UUID) error {
 		if token.RevokedAt != nil {
 			return fault.New(fault.Conflict, "the token is already revoked")
 		}
-		if err := q.RevokeToken(ctx, id); err != nil {
+		// A revocation that committed after the read above leaves nothing
+		// to change, and is the same conflict.
+		changed, err := q.RevokeToken(ctx, id)
+		if err != nil {
 			return err
+		}
+		if changed == 0 {
+			return fault.New(fault.Conflict, "the token is already revoked")
 		}
 		_, err = events.Append(ctx, tx, events.Event{Type: "agent.token_revoked", SubjectId: token.AgentId, Payload: map[string]any{"tokenId": id}})
 		return err

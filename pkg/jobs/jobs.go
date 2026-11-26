@@ -24,6 +24,16 @@ import (
 // host that runs River in its own schema never shares a queue with it.
 const Schema = "mandate_river"
 
+// jobTimeout is the longest a job runs before River cancels it. A worker
+// that sets its own timeout keeps it below rescueStuckJobsAfter.
+const jobTimeout = 5 * time.Minute
+
+// rescueStuckJobsAfter is how long a job may stay running before River
+// takes its process for dead and runs it again. Every job is cancelled at
+// its timeout, so a job still running a minute past the longest timeout
+// has no process left to finish it.
+const rescueStuckJobsAfter = jobTimeout + time.Minute
+
 type Queue struct {
 	pool     *pgxpool.Pool
 	workers  *river.Workers
@@ -63,8 +73,12 @@ func (q *Queue) Init(maxWorkers int) error {
 		PeriodicJobs: q.periodic,
 		Schema:       Schema,
 		MaxAttempts:  3,
-		JobTimeout:   5 * time.Minute,
-		Logger:       slog.Default(),
+		JobTimeout:   jobTimeout,
+		// Unset, River waits JobTimeout + 1h before it runs a job again
+		// whose process died while running it. Every job here is unique
+		// while running, so nothing else can be queued in its place.
+		RescueStuckJobsAfter: rescueStuckJobsAfter,
+		Logger:               slog.Default(),
 		// The app role does not own River's tables, so it cannot reindex
 		// them. Index maintenance is the owner's job, outside the app.
 		ReindexerIndexNames: []string{},

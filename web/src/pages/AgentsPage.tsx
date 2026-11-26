@@ -6,15 +6,15 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/AppShell";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
-import { Badge, Card, EmptyState, ErrorState, Field, Input, SectionLabel, Skeleton, Textarea } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState, ErrorState, Field, Input, SectionLabel, Skeleton, StaleNote, Textarea } from "@/components/ui/primitives";
 import { Select } from "@/components/ui/select";
 import type { Action } from "@/gen/mandate/v1/actions_pb";
 import type { Agent, Token } from "@/gen/mandate/v1/agents_pb";
 import { api } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { errorText } from "@/lib/errors";
-import { cn } from "@/lib/utils";
-import { durationLabel, formatDateTime, formatRelative, riskLabel, riskTone } from "@/lib/format";
+import { cn, singleClick, useFocusBack } from "@/lib/utils";
+import { durationLabel, formatDateTime, formatRelative, prettyJson, riskLabel, riskTone } from "@/lib/format";
 import { useSession } from "@/lib/session";
 
 function CopyButton({ text, label }: { text: string; label: string }) {
@@ -56,12 +56,22 @@ function NewToken({ secret, onDone }: { secret: string; onDone: () => void }) {
   const url = `${window.location.origin}/mcp`;
   const claudeCode = `claude mcp add --transport http pgmandate ${url} \\\n  --header "Authorization: Bearer ${secret}"`;
   const json = JSON.stringify({ mcpServers: { pgmandate: { type: "http", url, headers: { Authorization: `Bearer ${secret}` } } } }, null, 2);
+  // The card shows at the top of the section, often far from the card the
+  // token was issued from: focus moves to it, which also scrolls it into
+  // view and has a screen reader read it, so nobody issues a second one.
+  const heading = React.useRef<HTMLHeadingElement>(null);
+  React.useEffect(() => {
+    heading.current?.focus({ preventScroll: true });
+    heading.current?.scrollIntoView({ block: "start" });
+  }, [secret]);
   return (
     <Card className="border-accent/60 p-6">
       <div className="flex items-start gap-3">
         <KeyRound className="mt-0.5 size-5 shrink-0 text-accent" aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="font-serif text-[20px]">The token is ready</p>
+          <h2 ref={heading} tabIndex={-1} className="font-serif text-[20px] outline-none">
+            The token is ready
+          </h2>
           <p className="mt-1 text-[14px] text-muted">Copy it now. It is shown this once; pgmandate keeps only its hash.</p>
         </div>
       </div>
@@ -77,14 +87,19 @@ function NewToken({ secret, onDone }: { secret: string; onDone: () => void }) {
   );
 }
 
-function tokenState(token: Token): { label: string; tone: "success" | "neutral" | "warning" } {
+// Revoking an agent leaves its tokens' own revoked_at alone: the agent row is
+// what stops them. A token of a revoked agent is therefore never Active,
+// whatever the token says by itself.
+function tokenState(token: Token, agent: Agent): { label: string; tone: "success" | "neutral" | "warning" } {
   if (token.revokedAt) return { label: "Revoked", tone: "neutral" };
+  if (agent.revokedAt) return { label: "Ended with the agent", tone: "neutral" };
   if (token.expiresAt && timestampDate(token.expiresAt) < new Date()) return { label: "Expired", tone: "warning" };
   return { label: "Active", tone: "success" };
 }
 
-function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean; onToken: (secret: string) => void }) {
+function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean; onToken: (secret: string, focusBack: () => void) => void }) {
   const queryClient = useQueryClient();
+  const issueButton = React.useRef<HTMLButtonElement>(null);
   const tokens = useQuery({ queryKey: ["tokens", agent.id], queryFn: () => api.agents.listTokens({ agentId: agent.id }) });
   const [days, setDays] = React.useState("90");
   const issue = useMutation({
@@ -92,14 +107,17 @@ function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean
     gcTime: 0,
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ["tokens", agent.id] });
-      onToken(response.secret);
+      onToken(response.secret, () => issueButton.current?.focus());
     },
     onError: (error) => toast.error("Could not issue a token", { description: errorText(error) }),
   });
+  const [revoking, setRevoking] = React.useState<string | null>(null);
+  const tokenTrigger = useFocusBack(revoking);
   const revokeToken = useMutation({
     mutationFn: (id: string) => api.agents.revokeToken({ id }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tokens", agent.id] }),
     onError: (error) => toast.error("Could not revoke", { description: errorText(error) }),
+    onSettled: () => setRevoking(null),
   });
   const revokeAgent = useMutation({
     mutationFn: () => api.agents.revokeAgent({ id: agent.id }),
@@ -110,8 +128,9 @@ function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean
     onError: (error) => toast.error("Could not revoke", { description: errorText(error) }),
   });
   const [confirming, setConfirming] = React.useState(false);
-  const [revoking, setRevoking] = React.useState<string | null>(null);
+  const revokeTrigger = useFocusBack(confirming);
   const [editingLimits, setEditingLimits] = React.useState(false);
+  const limitsTrigger = useFocusBack(editingLimits);
   const [perMinute, setPerMinute] = React.useState(String(agent.maxPerMinute));
   const [perHour, setPerHour] = React.useState(String(agent.maxPerHour));
   const minute = Number(perMinute);
@@ -176,7 +195,7 @@ function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean
           }}
         >
           <Field label="Proposals a minute" htmlFor={`per-minute-${agent.id}`} className="w-40">
-            <Input id={`per-minute-${agent.id}`} type="number" min={1} max={10000} value={perMinute} onChange={(e) => setPerMinute(e.target.value)} />
+            <Input id={`per-minute-${agent.id}`} autoFocus type="number" min={1} max={10000} value={perMinute} onChange={(e) => setPerMinute(e.target.value)} />
           </Field>
           <Field label="Proposals an hour" htmlFor={`per-hour-${agent.id}`} className="w-40">
             <Input id={`per-hour-${agent.id}`} type="number" min={1} max={100000} value={perHour} onChange={(e) => setPerHour(e.target.value)} />
@@ -201,6 +220,7 @@ function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean
               variant="ghost"
               size="sm"
               className="ml-1"
+              ref={limitsTrigger()}
               onClick={() => {
                 setPerMinute(String(agent.maxPerMinute));
                 setPerHour(String(agent.maxPerHour));
@@ -212,31 +232,50 @@ function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean
           ) : null}
         </p>
       )}
-      <ul className="mt-3 flex flex-col gap-1 text-[13px]">
-        {(tokens.data?.tokens ?? []).map((token) => {
-          const state = tokenState(token);
-          return (
-            <li key={token.id} className="flex flex-wrap items-center gap-2">
-              <span className="font-mono">…{token.hint}</span>
-              <Badge tone={state.tone}>{state.label}</Badge>
-              <span className="text-muted">
-                {state.label === "Active" ? `until ${formatDateTime(token.expiresAt)}` : ""} ·{" "}
-                {token.lastUsedAt ? `used ${formatRelative(token.lastUsedAt)}` : "never used"}
-              </span>
-              {isOwner && state.label === "Active" ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="ml-auto"
-                  onClick={() => (revoking === token.id ? revokeToken.mutate(token.id) : setRevoking(token.id))}
-                >
-                  {revoking === token.id ? "Revoke now, cutting the agent off" : "Revoke token"}
-                </Button>
-              ) : null}
-            </li>
-          );
-        })}
-      </ul>
+      {tokens.isPending ? (
+        <Skeleton className="mt-3 h-6" />
+      ) : !tokens.data ? (
+        <ErrorState className="mt-3 py-4" title="Could not load the tokens" error={tokens.error} onRetry={() => tokens.refetch()} />
+      ) : (
+        <ul className="mt-3 flex flex-col gap-1 text-[13px]">
+          {tokens.data.tokens.map((token) => {
+            const state = tokenState(token, agent);
+            return (
+              <li key={token.id} className="flex flex-wrap items-center gap-2">
+                <span className="font-mono">…{token.hint}</span>
+                <Badge tone={state.tone}>{state.label}</Badge>
+                <span className="text-muted">
+                  {state.label === "Active" ? `until ${formatDateTime(token.expiresAt)}` : ""} ·{" "}
+                  {token.lastUsedAt ? `used ${formatRelative(token.lastUsedAt)}` : "never used"}
+                </span>
+                {isOwner && state.label === "Active" ? (
+                  revoking === token.id ? (
+                    // Cancel takes the trigger's place, so the click that armed this never lands on the danger button.
+                    <div className="ml-auto flex gap-2">
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={singleClick(() => revokeToken.mutate(token.id))}
+                        loading={revokeToken.isPending && revokeToken.variables === token.id}
+                      >
+                        Revoke now, cutting the agent off
+                      </Button>
+                      <Button variant="ghost" size="sm" autoFocus onClick={() => setRevoking(null)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button variant="ghost" size="sm" className="ml-auto" ref={tokenTrigger(token.id)} onClick={() => setRevoking(token.id)}>
+                      Revoke token
+                    </Button>
+                  )
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {tokens.isError && tokens.data ? <StaleNote error={tokens.error} className="mt-1.5" /> : null}
       {isOwner && live ? (
         <div className="mt-4 flex flex-wrap items-end gap-2 border-t border-border pt-4">
           <Field label="Token valid for" htmlFor={`days-${agent.id}`} className="w-40">
@@ -251,21 +290,22 @@ function AgentCard({ agent, isOwner, onToken }: { agent: Agent; isOwner: boolean
               ]}
             />
           </Field>
-          <Button variant="secondary" onClick={() => issue.mutate()} loading={issue.isPending}>
+          <Button variant="secondary" ref={issueButton} onClick={() => issue.mutate()} loading={issue.isPending}>
             <KeyRound /> Issue a token
           </Button>
           <div className="ml-auto flex gap-2">
             {confirming ? (
               <>
-                <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
-                  Cancel
-                </Button>
-                <Button variant="danger" size="sm" onClick={() => revokeAgent.mutate()} loading={revokeAgent.isPending}>
+                {/* Cancel takes the trigger's place, so the click that armed this never lands on the danger button. */}
+                <Button variant="danger" size="sm" onClick={singleClick(() => revokeAgent.mutate())} loading={revokeAgent.isPending}>
                   Revoke the agent
+                </Button>
+                <Button variant="ghost" size="sm" autoFocus onClick={() => setConfirming(false)}>
+                  Cancel
                 </Button>
               </>
             ) : (
-              <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
+              <Button variant="ghost" size="sm" ref={revokeTrigger()} onClick={() => setConfirming(true)}>
                 Revoke agent
               </Button>
             )}
@@ -358,7 +398,7 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
     setMayExecute(existing?.mayExecute ?? false);
     setConnector(existing?.connector ?? "webhook");
     setUrl(existing?.connectorUrl ?? "");
-    setSchema(existing?.schemaJson ? JSON.stringify(JSON.parse(existing.schemaJson), null, 2) : "");
+    setSchema(existing?.schemaJson ? prettyJson(existing.schemaJson) : "");
     setDepartment(existing?.department ?? "");
     setSchemaTouched(false);
   };
@@ -376,14 +416,20 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
     }
   })();
   const highWebhook = connector === "webhook" && risk === "high";
+  // A time of 0 seconds, as an empty field would give, reads to the server as
+  // "not given" and is replaced by its default, so a save waits for both times.
+  const seconds = (value: string, unit: number) => (value.trim() === "" ? NaN : Math.round(Number(value) * unit));
+  const waitSeconds = seconds(waitHours, 3600);
+  const deliverSeconds = seconds(deliverMinutes, 60);
+  const timesProblem = !(Number.isSafeInteger(waitSeconds) && waitSeconds > 0) || !(Number.isSafeInteger(deliverSeconds) && deliverSeconds > 0) ? "Give how long it waits and how soon it is carried out." : "";
   const define = useMutation({
     mutationFn: () =>
       api.actions.defineAction({
         key: key.trim(),
         description,
         risk,
-        waitSeconds: BigInt(Math.round((Number(waitHours) || 0) * 3600)),
-        deliverSeconds: BigInt(Math.round((Number(deliverMinutes) || 0) * 60)),
+        waitSeconds: BigInt(waitSeconds),
+        deliverSeconds: BigInt(deliverSeconds),
         mayExecute: mayExecute && !highWebhook,
         connector,
         connectorUrl: connector === "webhook" ? url.trim() : "",
@@ -421,7 +467,7 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
             e.preventDefault();
             // A save shows what is wrong with the schema instead of sending it.
             setSchemaTouched(true);
-            if (schemaError) return;
+            if (schemaError || timesProblem) return;
             define.mutate();
           }}
         >
@@ -447,12 +493,17 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
                   />
                 </Field>
                 <Field label="Waits up to, hours" htmlFor="action-wait" hint="Then the proposal expires. 1 minute to 720 hours.">
-                  <Input id="action-wait" type="number" min={1 / 60} max={720} step="any" value={waitHours} onChange={(e) => setWaitHours(e.target.value)} />
+                  <Input id="action-wait" type="number" required min={1 / 60} max={720} step="any" value={waitHours} onChange={(e) => setWaitHours(e.target.value)} />
                 </Field>
                 <Field label="Carried out within, minutes" htmlFor="action-deliver" hint="After a decision. 2 to 10080.">
-                  <Input id="action-deliver" type="number" min={2} max={10080} step="any" value={deliverMinutes} onChange={(e) => setDeliverMinutes(e.target.value)} />
+                  <Input id="action-deliver" type="number" required min={2} max={10080} step="any" value={deliverMinutes} onChange={(e) => setDeliverMinutes(e.target.value)} />
                 </Field>
               </div>
+              {timesProblem ? (
+                <p id="action-times-problem" className="-mt-2 text-[12px] text-danger-ink">
+                  {timesProblem}
+                </p>
+              ) : null}
               <label className={cn("flex items-start gap-2 text-[13.5px]", highWebhook && "text-muted")}>
                 <input
                   type="checkbox"
@@ -520,7 +571,12 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
             <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" loading={define.isPending} disabled={!key.trim() || (schemaTouched && !!schemaError)}>
+            <Button
+              type="submit"
+              loading={define.isPending}
+              disabled={!key.trim() || !!timesProblem || (schemaTouched && !!schemaError)}
+              aria-describedby={timesProblem ? "action-times-problem" : undefined}
+            >
               Save
             </Button>
           </div>
@@ -532,6 +588,7 @@ function DefineActionDialog({ existing, allowBuiltin, onDone }: { existing?: Act
 
 function ActionRow({ action, isOwner, allowBuiltin, onChanged }: { action: Action; isOwner: boolean; allowBuiltin: boolean; onChanged: (defined?: Action, before?: Action) => void }) {
   const [confirming, setConfirming] = React.useState(false);
+  const removeTrigger = useFocusBack(confirming);
   const queryClient = useQueryClient();
   const remove = useMutation({
     mutationFn: () => api.actions.removeAction({ key: action.key }),
@@ -555,15 +612,16 @@ function ActionRow({ action, isOwner, allowBuiltin, onChanged }: { action: Actio
             <DefineActionDialog existing={action} allowBuiltin={allowBuiltin} onDone={onChanged} />
             {action.builtinOnly ? null : confirming ? (
               <>
-                <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
-                  Cancel
-                </Button>
-                <Button variant="danger" size="sm" onClick={() => remove.mutate()} loading={remove.isPending}>
+                {/* Cancel takes the trigger's place, so the click that armed this never lands on the danger button. */}
+                <Button variant="danger" size="sm" onClick={singleClick(() => remove.mutate())} loading={remove.isPending}>
                   Remove now
+                </Button>
+                <Button variant="ghost" size="sm" autoFocus onClick={() => setConfirming(false)}>
+                  Cancel
                 </Button>
               </>
             ) : (
-              <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
+              <Button variant="ghost" size="sm" ref={removeTrigger()} onClick={() => setConfirming(true)}>
                 Remove
               </Button>
             )}
@@ -586,11 +644,20 @@ function ActionRow({ action, isOwner, allowBuiltin, onChanged }: { action: Actio
 }
 
 export function AgentsPage() {
+  // Keyed on the tenant, so a token shown once, or a receiver's details,
+  // never stay on screen for the next tenant.
+  const tenantId = useSession().tenant?.tenantId;
+  return <TenantAgentsPage key={tenantId} />;
+}
+
+function TenantAgentsPage() {
   const session = useSession();
   const queryClient = useQueryClient();
   const agents = useQuery({ queryKey: ["agents"], queryFn: () => api.agents.listAgents({}) });
   const actions = useQuery({ queryKey: ["actions"], queryFn: () => api.actions.listActions({}) });
   const [secret, setSecret] = React.useState<string | null>(null);
+  // Where focus goes once the token card is closed: the Issue button it came from.
+  const tokenFocusBack = React.useRef<() => void>(undefined);
   // A webhook defined, or moved to a new audience: its receiver must be told.
   const [receiverFor, setReceiverFor] = React.useState<Action | null>(null);
   // The built-in connector is offered only where this server has built-in actions.
@@ -615,22 +682,44 @@ export function AgentsPage() {
           <p className="text-[14px] text-muted">
             An agent connects over MCP with its token and proposes in its own name. Any MCP client works: Claude Code, an SDK, a cron job.
           </p>
-          {secret ? <NewToken secret={secret} onDone={() => setSecret(null)} /> : null}
+          {secret ? (
+            <NewToken
+              secret={secret}
+              onDone={() => {
+                tokenFocusBack.current?.();
+                setSecret(null);
+              }}
+            />
+          ) : null}
           {session.isOwner ? (
             <NewAgent onCreated={() => queryClient.invalidateQueries({ queryKey: ["agents"] })} />
           ) : (
             <p className="text-[13.5px] text-muted">You are a reviewer here. Owners register agents and define actions.</p>
           )}
+          {/* A failed refetch keeps the data it had, so a card's open edit
+              or armed revoke survives; only a first load that fails shows
+              the error. */}
+          {agents.isError && agents.data ? <StaleNote error={agents.error} /> : null}
           {agents.isPending ? (
             <Skeleton className="h-24" />
-          ) : agents.isError ? (
+          ) : !agents.data ? (
             <ErrorState error={agents.error} onRetry={() => agents.refetch()} />
           ) : agents.data.agents.length === 0 ? (
             <EmptyState icon={<Bot />} title="No agents yet">
               {session.isOwner ? "Register one above; it gets a token to connect with." : "An owner registers them."}
             </EmptyState>
           ) : (
-            agents.data.agents.map((agent) => <AgentCard key={agent.id} agent={agent} isOwner={session.isOwner} onToken={setSecret} />)
+            agents.data.agents.map((agent) => (
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                isOwner={session.isOwner}
+                onToken={(issued, focusBack) => {
+                  tokenFocusBack.current = focusBack;
+                  setSecret(issued);
+                }}
+              />
+            ))
           )}
         </section>
         <section className="flex flex-col gap-4">
@@ -661,9 +750,10 @@ export function AgentsPage() {
               </div>
             </Card>
           ) : null}
+          {actions.isError && actions.data ? <StaleNote error={actions.error} /> : null}
           {actions.isPending ? (
             <Skeleton className="h-24" />
-          ) : actions.isError ? (
+          ) : !actions.data ? (
             <ErrorState error={actions.error} onRetry={() => actions.refetch()} />
           ) : actions.data.actions.length === 0 ? (
             <EmptyState icon={<Webhook />} title="No actions yet">

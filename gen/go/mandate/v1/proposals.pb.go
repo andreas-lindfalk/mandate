@@ -526,7 +526,13 @@ type Proposal struct {
 	DecisionNote   string                 `protobuf:"bytes,15,opt,name=decision_note,json=decisionNote,proto3" json:"decision_note,omitempty"`
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	ExecutionBasis *ExecutionBasis        `protobuf:"bytes,17,opt,name=execution_basis,json=executionBasis,proto3" json:"execution_basis,omitempty"`
-	// Why the last execution attempt left it for a person, if it did.
+	// Why it waits for a person, as a code: what the last execution attempt
+	// recorded, or what rules out executing it. One of no_mandate,
+	// risk_above_mandate, budget_spent, condition_not_met, flagged,
+	// action_not_executable, action_changed, payload_invalid, agent_revoked,
+	// action_failed, execution_failed or action_removed, or refused_ followed
+	// by the database's error code, as in refused_permission_denied. Codes
+	// may be added: handle one you do not know as "waits for a person".
 	SkipReason string    `protobuf:"bytes,18,opt,name=skip_reason,json=skipReason,proto3" json:"skip_reason,omitempty"`
 	Delivery   *Delivery `protobuf:"bytes,19,opt,name=delivery,proto3" json:"delivery,omitempty"`
 	// The payload as the agent proposed it. It differs from payload_json
@@ -897,9 +903,12 @@ func (x *Provenance) GetAgentVersion() string {
 }
 
 type ListProposalsRequest struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Status string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
-	Limit  int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// One of pending, approved, rejected, executed, withdrawn, expired,
+	// would_allow or dismissed; empty for all. Any other value is refused
+	// with invalid_argument.
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	Limit  int32  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
 	// Oldest first, as a queue is worked; newest first otherwise.
 	OldestFirst bool `protobuf:"varint,3,opt,name=oldest_first,json=oldestFirst,proto3" json:"oldest_first,omitempty"`
 	// Only dry runs (true) or only live proposals (false); both when unset.

@@ -129,16 +129,23 @@ func (q *Queries) InsertMandate(ctx context.Context, arg InsertMandateParams) er
 const listLiveForAgent = `-- name: ListLiveForAgent :many
 SELECT id, tenant_id, agent_id, actions, max_risk, budget_count, policy_ref, department, granted_by, valid_from, valid_until, revoked_at, revoked_by, condition, condition_plan, created_at FROM mandate.mandates
 WHERE (agent_id IS NULL OR agent_id = $1::uuid)
+    AND mandate.covers(actions, $2::text)
     AND revoked_at IS NULL AND valid_from <= now() AND valid_until > now()
 ORDER BY max_risk DESC, created_at, id
 FOR UPDATE
 `
 
-// Mandates that hold now, by the database's clock, for the agent, locked so
-// that two executions under the same mandate count the budget one after the
-// other.
-func (q *Queries) ListLiveForAgent(ctx context.Context, agentID uuid.UUID) ([]MandateMandate, error) {
-	rows, err := q.db.Query(ctx, listLiveForAgent, agentID)
+type ListLiveForAgentParams struct {
+	AgentId uuid.UUID
+	Action  string
+}
+
+// Mandates that hold now, by the database's clock, for the agent and cover
+// the action, locked so that two executions under the same mandate count the
+// budget one after the other. Only covering mandates are locked, so an
+// execution never waits on one for another action.
+func (q *Queries) ListLiveForAgent(ctx context.Context, arg ListLiveForAgentParams) ([]MandateMandate, error) {
+	rows, err := q.db.Query(ctx, listLiveForAgent, arg.AgentId, arg.Action)
 	if err != nil {
 		return nil, err
 	}

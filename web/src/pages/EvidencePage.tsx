@@ -4,11 +4,11 @@ import * as React from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/AppShell";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, EmptyState, ErrorState, Field, Input, Skeleton } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState, ErrorState, Field, Input, Skeleton, StaleNote } from "@/components/ui/primitives";
 import { api } from "@/lib/api";
 import { errorText } from "@/lib/errors";
 import { Link } from "react-router";
-import { actorLabel, eventLabel, formatDateTime, prettyJson } from "@/lib/format";
+import { actorLabel, eventLabel, formatDateTime, prettyJson, proposalEvents } from "@/lib/format";
 import { useSession } from "@/lib/session";
 
 function download(name: string, text: string) {
@@ -17,9 +17,15 @@ function download(name: string, text: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
+  document.body.append(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  // WebKit can drop the download if the URL is revoked before it has started.
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
+
+/** The most events the table loads. ListEvents has no total, so a full page is how the table knows it may have cut the list short. */
+const eventLimit = 200;
 
 export function EvidencePage() {
   const session = useSession();
@@ -28,17 +34,19 @@ export function EvidencePage() {
   const chain = useQuery({ queryKey: ["chain"], queryFn: () => api.evidence.verifyChain({}) });
   const events = useQuery({
     queryKey: ["events", applied],
-    queryFn: () => api.evidence.listEvents({ subjectId: applied, limit: 200 }),
+    queryFn: () => api.evidence.listEvents({ subjectId: applied, limit: eventLimit }),
     refetchInterval: 15_000,
   });
   const [busy, setBusy] = React.useState<string | null>(null);
+  // One name for the chain file, so the verify-export command below names the file the export saves.
+  const prefix = (session.tenant?.tenantName ?? "pgmandate").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+  const chainFile = `${prefix}-chain.jsonl`;
   async function exportIt(kind: "chain" | "decisions") {
     setBusy(kind);
     try {
-      const prefix = (session.tenant?.tenantName ?? "pgmandate").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
       if (kind === "chain") {
         const response = await api.evidence.exportChain({});
-        download(`${prefix}-chain.jsonl`, response.jsonl);
+        download(chainFile, response.jsonl);
       } else {
         const response = await api.evidence.exportDecisions({});
         download(`${prefix}-decisions.jsonl`, response.jsonl);
@@ -73,13 +81,13 @@ export function EvidencePage() {
           <div className="flex-1 text-[14px]">
             {chain.isPending ? (
               "Checking the audit trail…"
-            ) : chain.isError ? (
+            ) : !chain.data ? (
               "Could not check the audit trail right now."
             ) : chain.data.ok ? (
               <>
                 <span className="font-medium">Audit trail verified.</span> {Number(chain.data.events)} events, each linked to the one before it by a
                 hash, so an edit or a removal would show. "Export the chain" gives every event with its hashes; it verifies without this server:{" "}
-                <code className="font-mono text-[12px]">pgmandate verify-export -tenant {session.tenant?.tenantId} -file chain.jsonl</code>. "Export
+                <code className="font-mono text-[12px]">pgmandate verify-export -tenant {session.tenant?.tenantId} -file {chainFile}</code>. "Export
                 decisions" gives each decided proposal with its outcome.
               </>
             ) : (
@@ -88,6 +96,8 @@ export function EvidencePage() {
               </>
             )}
           </div>
+          {/* A failed re-check keeps the last result, above all a broken one. */}
+          {chain.isError && chain.data ? <StaleNote error={chain.error} className="basis-full" /> : null}
         </Card>
         <form
           className="mb-4 flex flex-wrap items-end gap-2"
@@ -103,9 +113,12 @@ export function EvidencePage() {
             Filter
           </Button>
         </form>
+        {/* A failed poll keeps the events it had; only a first load that
+            fails shows the error. */}
+        {events.isError && events.data ? <StaleNote error={events.error} className="mb-2" /> : null}
         {events.isPending ? (
           <Skeleton className="h-40" />
-        ) : events.isError ? (
+        ) : !events.data ? (
           <ErrorState error={events.error} onRetry={() => events.refetch()} />
         ) : list.length === 0 ? (
           <EmptyState icon={<FileCheck />} title="No events" />
@@ -133,7 +146,7 @@ export function EvidencePage() {
                       {e.actorName ? ` ${e.actorName}` : ""}
                     </td>
                     <td className="px-2 py-2" title={e.type}>
-                      {e.type.startsWith("proposal.") || e.type.startsWith("delivery.") ? (
+                      {proposalEvents.has(e.type) ? (
                         <Link to={`/inbox/${e.subjectId}`} className="underline-offset-2 hover:underline">
                           {eventLabel[e.type] ?? e.type}
                         </Link>
@@ -168,6 +181,9 @@ export function EvidencePage() {
             </table>
           </Card>
         )}
+        {list.length >= eventLimit ? (
+          <p className="mt-2 text-[12px] text-muted">Showing the newest {eventLimit} events. Export the chain for all of them.</p>
+        ) : null}
       </div>
     </div>
   );

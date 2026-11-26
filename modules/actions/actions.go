@@ -6,8 +6,6 @@ package actions
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -128,9 +126,9 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, error) {
 		return Action{}, fault.New(fault.InvalidArgument, "the description can be at most 1000 characters")
 	case mandates.RiskRank(input.Risk) < 0:
 		return Action{}, fault.New(fault.InvalidArgument, "the risk is low, medium or high")
-	case input.WaitLimit != 0 && (input.WaitLimit < MinWaitLimit || input.WaitLimit > MaxWaitLimit || input.WaitLimit%time.Second != 0):
+	case input.WaitLimit < MinWaitLimit || input.WaitLimit > MaxWaitLimit || input.WaitLimit%time.Second != 0:
 		return Action{}, fault.New(fault.InvalidArgument, "a proposal may wait between 1 minute and 30 days, in whole seconds")
-	case input.DeliverWithin != 0 && (input.DeliverWithin < MinDeliverWithin || input.DeliverWithin > MaxDeliverWithin || input.DeliverWithin%time.Second != 0):
+	case input.DeliverWithin < MinDeliverWithin || input.DeliverWithin > MaxDeliverWithin || input.DeliverWithin%time.Second != 0:
 		return Action{}, fault.New(fault.InvalidArgument, "a decision may be delivered within 2 minutes to 7 days, in whole seconds")
 	case input.Connector != ConnectorWebhook && input.Connector != ConnectorBuiltin:
 		return Action{}, fault.New(fault.InvalidArgument, "the connector is webhook or builtin")
@@ -151,7 +149,9 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, error) {
 		return Action{}, fault.New(fault.InvalidArgument, "the department can be at most 100 characters")
 	}
 	if len(input.Schema) > 0 {
-		if _, err := Compile(input.Schema); err != nil {
+		if _, err := Compile(input.Schema); errors.Is(err, ErrExternalRef) {
+			return Action{}, fault.New(fault.InvalidArgument, "the schema is not valid: "+ErrExternalRef.Error())
+		} else if err != nil {
 			return Action{}, fault.Wrap(fault.InvalidArgument, "the schema is not valid: "+err.Error(), err)
 		}
 	}
@@ -216,8 +216,7 @@ func (s *Service) Define(ctx context.Context, input Input) (Action, error) {
 			"connector": input.Connector, "audience": result.ConnectorAudience, "department": department,
 		}
 		if input.Url != "" {
-			sum := sha256.Sum256([]byte(input.Url))
-			payload["connectorUrlSha256"] = hex.EncodeToString(sum[:])
+			payload["connectorUrlSha256"] = events.UrlDigest(input.Url)
 		}
 		if len(input.Schema) > 0 {
 			if payload["schemaSha256"], err = events.Digest(input.Schema); err != nil {
@@ -298,7 +297,29 @@ func (s *Service) List(ctx context.Context, includeRemoved bool) ([]Action, erro
 	return result, err
 }
 
-// Compile compiles a payload schema, asserting formats such as uuid.
+// ErrExternalRef is what Compile returns for a schema that refers to
+// anything but itself.
+var ErrExternalRef = errors.New("a schema may refer only to itself, such as #/$defs/name")
+
+// noLoader refuses every URL. The library's default loader reads files,
+// so a $ref in a schema an owner writes would open paths on the server,
+// and the schema would mean what those files say on that replica.
+// Meta-schemas named by $schema are embedded and never reach a loader.
+type noLoader struct{}
+
+// schemaId is the id a payload schema compiles under. It is not a file
+// URL, so errors do not name the server's directory, and it has a path,
+// so a relative ref resolves to another document that noLoader refuses
+// rather than (as under a URN) to the schema itself.
+const schemaId = "pgmandate:///action-schema.json"
+
+func (noLoader) Load(string) (any, error) {
+	return nil, ErrExternalRef
+}
+
+// Compile compiles a payload schema, asserting formats such as uuid. A
+// schema refers only to itself: any other $ref, or a $schema that is not
+// a known draft, is ErrExternalRef.
 func Compile(raw json.RawMessage) (*jsonschema.Schema, error) {
 	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 	if err != nil {
@@ -306,10 +327,18 @@ func Compile(raw json.RawMessage) (*jsonschema.Schema, error) {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.AssertFormat()
-	if err := compiler.AddResource("schema.json", doc); err != nil {
+	compiler.UseLoader(noLoader{})
+	// A relative id would resolve against the server's working directory,
+	// which errors would then name and relative refs would point into.
+	if err := compiler.AddResource(schemaId, doc); err != nil {
 		return nil, err
 	}
-	return compiler.Compile("schema.json")
+	compiled, err := compiler.Compile(schemaId)
+	// The library's error names the URL it could not load.
+	if loadErr := (*jsonschema.LoadURLError)(nil); errors.As(err, &loadErr) {
+		return nil, ErrExternalRef
+	}
+	return compiled, err
 }
 
 func validUrl(url string) bool {

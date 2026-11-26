@@ -75,3 +75,16 @@ UPDATE mandate.proposals SET status = 'expired' WHERE id = @id AND status = 'pen
 -- Whether a proposal's deadline has passed by the database's clock, the
 -- same now() the update trigger compares with.
 SELECT (now() >= expires_at)::boolean FROM mandate.proposals WHERE id = @id;
+
+-- name: LockAgent :one
+-- Whether the agent is live, its row locked until the transaction ends: a
+-- revocation, or a change of mode, waits for what runs on the agent's word
+-- now, and what starts after one waits for it and reads it.
+SELECT (revoked_at IS NULL)::boolean AS live FROM mandate.agents WHERE id = @id FOR SHARE;
+
+-- name: LockAction :exec
+-- The tenant's definition of the action, if it has one, locked until the
+-- transaction ends, so that a change to it or its removal waits for an
+-- execution already running. Read it after this: under read committed a
+-- statement sees what committed before it began.
+SELECT 1 FROM mandate.actions WHERE key = @key FOR SHARE;

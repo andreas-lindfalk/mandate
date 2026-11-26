@@ -33,6 +33,7 @@ import (
 	"github.com/andreas-lindfalk/pgmandate/modules/proposals"
 	"github.com/andreas-lindfalk/pgmandate/pkg/db"
 	"github.com/andreas-lindfalk/pgmandate/pkg/events"
+	"github.com/andreas-lindfalk/pgmandate/pkg/fault"
 )
 
 type ApiSuite struct {
@@ -40,6 +41,7 @@ type ApiSuite struct {
 	W         *testfix.World
 	provider  *fakeProvider
 	server    *httptest.Server
+	sessions  *auth.Service
 	auth      mandatev1connect.AuthServiceClient
 	persons   mandatev1connect.PersonServiceClient
 	agents    mandatev1connect.AgentServiceClient
@@ -63,6 +65,7 @@ func (s *ApiSuite) SetupSuite() {
 		DevLogin: true, SessionTtl: time.Hour, PublicUrl: "http://127.0.0.1",
 		Oidc: &auth.OidcConfig{Issuer: s.provider.server.URL, ClientId: "mandate-web", ClientSecret: "shh"},
 	})
+	s.sessions = authService
 	mux := http.NewServeMux()
 	api.New(w.Kernel, authService).Mount(mux)
 	s.server = httptest.NewServer(mux)
@@ -111,7 +114,12 @@ func (s *ApiSuite) code(err error, want connect.Code) {
 func (s *ApiSuite) Test_SignInAndTenants() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	ownerEmail := "owner-" + t.Id.String()[:8] + "@test.example"
-	token := s.login(ownerEmail)
+	loginCtx, loginInfo := connect.NewClientContext(context.Background())
+	resp, err := s.auth.DevLogin(loginCtx, &mandatev1.DevLoginRequest{Email: ownerEmail, Name: "Person"})
+	s.Require().NoError(err)
+	token := resp.GetToken()
+	s.Require().Contains(loginInfo.ResponseHeader().Get("Set-Cookie"), auth.CookieName+"="+token, "dev login signs the browser in by cookie")
+	s.Require().Contains(loginInfo.ResponseHeader().Get("Set-Cookie"), "HttpOnly")
 
 	me, err := s.auth.Me(as(token, ""), &mandatev1.MeRequest{})
 	s.Require().NoError(err)
@@ -160,6 +168,78 @@ func (s *ApiSuite) Test_SignInAndTenants() {
 	s.Require().NoError(err)
 	_, err = s.auth.Me(as(token, ""), &mandatev1.MeRequest{})
 	s.code(err, connect.CodeUnauthenticated)
+}
+
+// A session opens nothing once it has expired, by header or by cookie, and
+// clearing out expired sessions takes it and leaves a live one.
+func (s *ApiSuite) Test_AnExpiredSessionIsRefused() {
+	ctx := context.Background()
+	expiring := s.login("expiring@test.example")
+	live := s.login("live@test.example")
+	_, err := s.auth.Me(as(expiring, ""), &mandatev1.MeRequest{})
+	s.Require().NoError(err)
+
+	expiringHash := sha256.Sum256([]byte(expiring))
+	liveHash := sha256.Sum256([]byte(live))
+	tag, err := s.W.Pg.Owner.Exec(ctx, `UPDATE mandate.sessions SET expires_at = now() - interval '1 second' WHERE token_hash = $1`, expiringHash[:])
+	s.Require().NoError(err)
+	s.Require().Equal(int64(1), tag.RowsAffected())
+
+	_, err = s.auth.Me(as(expiring, ""), &mandatev1.MeRequest{})
+	s.code(err, connect.CodeUnauthenticated)
+	jar, err := cookiejar.New(nil)
+	s.Require().NoError(err)
+	serverUrl, err := url.Parse(s.server.URL)
+	s.Require().NoError(err)
+	jar.SetCookies(serverUrl, []*http.Cookie{{Name: auth.CookieName, Value: expiring}})
+	_, err = mandatev1connect.NewAuthServiceClient(&http.Client{Jar: jar}, s.server.URL).Me(ctx, &mandatev1.MeRequest{})
+	s.code(err, connect.CodeUnauthenticated)
+	_, err = s.auth.Me(as(live, ""), &mandatev1.MeRequest{})
+	s.Require().NoError(err, "a session that has not expired still opens")
+
+	deleted, err := s.sessions.DeleteExpired(ctx)
+	s.Require().NoError(err)
+	s.Require().GreaterOrEqual(deleted, int64(1))
+	count := func(hash [32]byte) int {
+		var n int
+		s.Require().NoError(s.W.Pg.Owner.QueryRow(ctx, `SELECT count(*) FROM mandate.sessions WHERE token_hash = $1`, hash[:]).Scan(&n))
+		return n
+	}
+	s.Require().Zero(count(expiringHash), "the expired session is gone")
+	s.Require().Equal(1, count(liveHash), "the live session stays")
+}
+
+// A removed definition hides the builtin of the same key: the list does
+// not offer it as builtin-only, and it shows only as the removed definition
+// when removed ones are asked for.
+func (s *ApiSuite) Test_ARemovedDefinitionHidesTheBuiltin() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	owner := as(s.login("owner-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
+	listed := func(includeRemoved bool) map[string]*mandatev1.Action {
+		resp, err := s.actions.ListActions(owner, &mandatev1.ListActionsRequest{IncludeRemoved: includeRemoved})
+		s.Require().NoError(err)
+		result := map[string]*mandatev1.Action{}
+		for _, a := range resp.GetActions() {
+			s.Require().NotContains(result, a.GetKey(), "one entry per key")
+			result[a.GetKey()] = a
+		}
+		return result
+	}
+	s.Require().True(listed(false)["test.low"].GetBuiltinOnly())
+
+	_, err := s.actions.DefineAction(owner, &mandatev1.DefineActionRequest{Key: "test.low", Description: "Defined here", Risk: "low", MayExecute: true, Connector: "builtin"})
+	s.Require().NoError(err)
+	s.Require().False(listed(false)["test.low"].GetBuiltinOnly())
+	_, err = s.actions.RemoveAction(owner, &mandatev1.RemoveActionRequest{Key: "test.low"})
+	s.Require().NoError(err)
+
+	current := listed(false)
+	s.Require().NotContains(current, "test.low", "a removed definition does not bring the builtin back")
+	s.Require().True(current["test.medium"].GetBuiltinOnly(), "other builtins stay")
+	all := listed(true)
+	s.Require().Contains(all, "test.low")
+	s.Require().False(all["test.low"].GetBuiltinOnly())
+	s.Require().NotNil(all["test.low"].GetRemovedAt(), "it shows as the removed definition")
 }
 
 func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
@@ -235,6 +315,17 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	s.Require().True(keys["test.low"], "builtin from the embedded host, not defined")
 	_, err = s.actions.DefineAction(reviewer, &mandatev1.DefineActionRequest{Key: "x.y", Risk: "low", Connector: "builtin"})
 	s.code(err, connect.CodePermissionDenied)
+	// Seconds too large for a duration are refused, not wrapped around:
+	// 2^55 seconds is 0 modulo 2^64 nanoseconds, which would read as the
+	// default, and 2^55 + 3600 as one hour.
+	for _, n := range []int64{1 << 55, 1<<55 + 3600, -(1 << 55)} {
+		_, err = s.actions.DefineAction(owner, &mandatev1.DefineActionRequest{Key: "x.wrap", Risk: "low", Connector: "builtin", WaitSeconds: n})
+		s.code(err, connect.CodeInvalidArgument)
+		s.Require().Contains(err.Error(), "between 1 minute and 30 days", "wait_seconds %d", n)
+		_, err = s.actions.DefineAction(owner, &mandatev1.DefineActionRequest{Key: "x.wrap", Risk: "low", Connector: "builtin", DeliverSeconds: n})
+		s.code(err, connect.CodeInvalidArgument)
+		s.Require().Contains(err.Error(), "within 2 minutes to 7 days", "deliver_seconds %d", n)
+	}
 
 	granted, err := s.mandates.GrantMandate(owner, &mandatev1.GrantMandateRequest{
 		AgentId: agent.GetAgent().GetId(), Actions: []string{"tickets.*"}, MaxRisk: "low", BudgetCount: 10, PolicyRef: "ACME-POLICY", Days: 30, Department: "Support",
@@ -297,10 +388,14 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	s.Require().Equal("flagged", byId[second.Id.String()].GetSkipReason())
 	s.Require().Equal("high", byId[second.Id.String()].GetRisk())
 
-	approved, err := s.props.ApproveProposal(reviewer, &mandatev1.ApproveProposalRequest{Id: first.Id.String(), Note: "ok", PayloadJson: `{"subject":"Printer jams on 3"}`})
+	approved, err := s.props.ApproveProposal(reviewer, &mandatev1.ApproveProposalRequest{Id: first.Id.String(), Title: "Printer jams on floor 3", Note: "ok", PayloadJson: `{"subject":"Printer jams on 3"}`})
 	s.Require().NoError(err)
 	s.Require().Equal("approved", approved.GetProposal().GetStatus())
 	s.Require().True(approved.GetProposal().GetEdited())
+	s.Require().Equal("Printer jams on floor 3", approved.GetProposal().GetTitle(), "the approver's title")
+	s.Require().JSONEq(`{"subject":"Printer jams on 3"}`, approved.GetProposal().GetPayloadJson(), "the approver's payload")
+	s.Require().JSONEq(`{"subject":"Printer jams"}`, approved.GetProposal().GetProposedPayloadJson(), "the agent's payload is kept beside it")
+	s.Require().Equal("ok", approved.GetProposal().GetDecisionNote())
 	s.Require().Equal("pending", approved.GetProposal().GetDelivery().GetStatus(), "the delivery waits for the job")
 	_, err = s.props.ApproveProposal(reviewer, &mandatev1.ApproveProposalRequest{Id: second.Id.String()})
 	s.code(err, connect.CodeInvalidArgument)
@@ -336,8 +431,13 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	_, err = s.props.RedeliverProposal(reviewer, &mandatev1.RedeliverProposalRequest{Id: first.Id.String()})
 	s.code(err, connect.CodeAlreadyExists)
 
-	// An owner removes a person; from then on their session opens nothing.
-	secondPerson := as(s.login("second@test.example"), t.Id.String())
+	// An owner removes a person; from then on their session opens nothing
+	// in this tenant, and still opens their other tenants.
+	elsewhere := s.W.NewTenant(s.T(), "Elsewhere")
+	_, err = s.W.Kernel.Tenants.AddPerson(elsewhere.Owner, "second@test.example", "Second", "reviewer")
+	s.Require().NoError(err)
+	secondToken := s.login("second@test.example")
+	secondPerson := as(secondToken, t.Id.String())
 	_, err = s.persons.ListPersons(secondPerson, &mandatev1.ListPersonsRequest{})
 	s.Require().NoError(err)
 	_, err = s.persons.RemovePerson(reviewer, &mandatev1.RemovePersonRequest{Id: added.GetPerson().GetId()})
@@ -350,6 +450,12 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	s.code(err, connect.CodePermissionDenied)
 	_, err = s.persons.ListPersons(as(s.login("second@test.example"), t.Id.String()), &mandatev1.ListPersonsRequest{})
 	s.code(err, connect.CodePermissionDenied)
+	_, err = s.persons.ListPersons(as(secondToken, elsewhere.Id.String()), &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err, "removal from one tenant leaves the session and the other tenants alone")
+	me, err := s.auth.Me(as(secondToken, ""), &mandatev1.MeRequest{})
+	s.Require().NoError(err)
+	s.Require().Len(me.GetTenants(), 1)
+	s.Require().Equal(elsewhere.Id.String(), me.GetTenants()[0].GetTenantId())
 	people, err := s.persons.ListPersons(owner, &mandatev1.ListPersonsRequest{})
 	s.Require().NoError(err)
 	removed := 0
@@ -373,8 +479,131 @@ func (s *ApiSuite) Test_OwnerRunsTheTenantAndReviewerDecides() {
 	s.Require().NotNil(agentsList.GetAgents()[len(agentsList.GetAgents())-1].GetRevokedAt())
 }
 
+// A high-risk proposal is approved over the people API only with the
+// explicit confirmation the inbox sends; without it nothing happens.
+func (s *ApiSuite) Test_AnUnknownStatusIsRefusedNotAnEmptyQueue() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	reviewer := as(s.login("reviewer-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
+	_, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Action: "test.manual", Title: "Waiting", Payload: json.RawMessage(`{}`), IdempotencyKey: "status-1", Rationale: "Why."})
+	s.Require().NoError(err)
+
+	_, err = s.props.ListProposals(reviewer, &mandatev1.ListProposalsRequest{Status: "waiting"})
+	s.code(err, connect.CodeInvalidArgument)
+	s.Require().Contains(err.Error(), "pending, approved, rejected, executed, withdrawn, expired, would_allow, dismissed", "the refusal names the valid statuses")
+	_, err = s.W.Kernel.Proposals.Count(t.Owner, "Pending", nil)
+	s.Require().Equal(fault.InvalidArgument, fault.CodeOf(err), "the total refuses it as well")
+
+	pending, err := s.props.ListProposals(reviewer, &mandatev1.ListProposalsRequest{Status: "pending"})
+	s.Require().NoError(err)
+	s.Require().Len(pending.GetProposals(), 1)
+	s.Require().Equal(int64(1), pending.GetTotal())
+	all, err := s.props.ListProposals(reviewer, &mandatev1.ListProposalsRequest{})
+	s.Require().NoError(err, "an empty status means all")
+	s.Require().Len(all.GetProposals(), 1)
+}
+
+func (s *ApiSuite) Test_AHighRiskApprovalNeedsTheConfirmation() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	reviewer := as(s.login("reviewer-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
+	high, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Why.", IdempotencyKey: uuid.NewString(), Action: "test.high", Title: "High", Payload: json.RawMessage(`{}`)})
+	s.Require().NoError(err)
+
+	_, err = s.props.ApproveProposal(reviewer, &mandatev1.ApproveProposalRequest{Id: high.Id.String()})
+	s.code(err, connect.CodeInvalidArgument)
+	still, err := s.props.GetProposal(reviewer, &mandatev1.GetProposalRequest{Id: high.Id.String()})
+	s.Require().NoError(err)
+	s.Require().Equal("pending", still.GetProposal().GetStatus(), "a refused approval changes nothing")
+	s.Require().NotContains(s.W.Applied(), high.Id)
+
+	approved, err := s.props.ApproveProposal(reviewer, &mandatev1.ApproveProposalRequest{Id: high.Id.String(), Confirm: true, Note: "checked"})
+	s.Require().NoError(err)
+	s.Require().Equal("approved", approved.GetProposal().GetStatus())
+	s.Require().Equal("high", approved.GetProposal().GetRisk())
+	s.Require().Equal("checked", approved.GetProposal().GetDecisionNote())
+	s.Require().Contains(s.W.Applied(), high.Id)
+}
+
+// A refusal for a state that has to pass first, or for a schema changed
+// since the proposal, says what to do, and the inbox shows that text. The
+// code stays already_exists, as 0.1.0 answers it.
+func (s *ApiSuite) Test_ARefusalOfTheStateSaysWhatToDo() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	owner := as(s.login("owner-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
+	reviewer := as(s.login("reviewer-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"outcome":"unknown","reason":"the bank did not answer"}`))
+	}))
+	defer receiver.Close()
+	define := func(schema string) {
+		s.T().Helper()
+		_, err := s.actions.DefineAction(owner, &mandatev1.DefineActionRequest{
+			Key: "tickets.create", Description: "Open a ticket", Risk: "low",
+			SchemaJson: schema, Connector: "webhook", ConnectorUrl: receiver.URL,
+		})
+		s.Require().NoError(err)
+	}
+	define(`{"type":"object","required":["subject"],"properties":{"subject":{"type":"string"}}}`)
+	propose := func(subject string) uuid.UUID {
+		s.T().Helper()
+		p, _, err := s.W.Kernel.Proposals.Propose(t.Agent, proposals.Input{Rationale: "Why.", IdempotencyKey: uuid.NewString(), Action: "tickets.create", Title: subject, Payload: json.RawMessage(`{"subject":"` + subject + `"}`)})
+		s.Require().NoError(err)
+		return p.Id
+	}
+	refund, toner := propose("Refund"), propose("Toner")
+
+	// The receiver does not know whether it was done: settling waits
+	// until the work can no longer happen, and the refusal says until when.
+	_, err := s.props.ApproveProposal(reviewer, &mandatev1.ApproveProposalRequest{Id: refund.String(), Note: "ok"})
+	s.Require().NoError(err)
+	delivery, found, err := s.W.Kernel.Deliveries.Get(t.Owner, refund)
+	s.Require().NoError(err)
+	s.Require().True(found)
+	s.Require().NoError(s.W.Kernel.Deliveries.Deliver(context.Background(), t.Id, delivery.Id, false))
+	unknown, err := s.props.GetProposal(reviewer, &mandatev1.GetProposalRequest{Id: refund.String()})
+	s.Require().NoError(err)
+	s.Require().Equal("unknown", unknown.GetProposal().GetDelivery().GetStatus())
+	_, err = s.props.SettleDelivery(reviewer, &mandatev1.SettleDeliveryRequest{Id: refund.String(), Done: false})
+	s.code(err, connect.CodeAlreadyExists)
+	var refused *connect.Error
+	s.Require().ErrorAs(err, &refused)
+	s.Require().Contains(refused.Message(), "not yet: the receiver may still be carrying it out until ")
+	s.Require().Contains(refused.Message(), delivery.SettleAfter().UTC().Format(time.RFC3339), "the refusal names the moment")
+
+	// The schema now asks for more than the agent sent: the approval is
+	// refused with what to change, and the proposal still waits.
+	define(`{"type":"object","required":["subject","amount"],"properties":{"subject":{"type":"string"},"amount":{"type":"number"}}}`)
+	_, err = s.props.ApproveProposal(reviewer, &mandatev1.ApproveProposalRequest{Id: toner.String(), Note: "ok"})
+	s.code(err, connect.CodeAlreadyExists)
+	s.Require().ErrorAs(err, &refused)
+	s.Require().Contains(refused.Message(), "the action's schema has changed since this was proposed")
+	s.Require().Contains(refused.Message(), "edit the payload to fit, or reject the proposal")
+	still, err := s.props.GetProposal(reviewer, &mandatev1.GetProposalRequest{Id: toner.String()})
+	s.Require().NoError(err)
+	s.Require().Equal("pending", still.GetProposal().GetStatus(), "a refused approval changes nothing")
+}
+
 // A waiting proposal that a condition stopped says which comparison and
 // what the payload had instead.
+// A broken chain is an answer, not a failure of the call: it says so and
+// where.
+func (s *ApiSuite) Test_VerifyChainReportsATamperedEvent() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	reviewer := as(s.login("reviewer-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
+	verified, err := s.evidence.VerifyChain(reviewer, &mandatev1.VerifyChainRequest{})
+	s.Require().NoError(err)
+	s.Require().True(verified.GetOk(), verified.GetError())
+	s.Require().Empty(verified.GetError())
+
+	s.Require().NoError(s.W.Pg.Tamper(context.Background(),
+		`UPDATE mandate.events SET payload = payload || '{"forged": true}' WHERE tenant_id = $1 AND seq = 2`, t.Id))
+	broken, err := s.evidence.VerifyChain(reviewer, &mandatev1.VerifyChainRequest{})
+	s.Require().NoError(err)
+	s.Require().False(broken.GetOk())
+	s.Require().Equal(events.ErrBroken.Error()+" at seq 2", broken.GetError())
+	s.Require().Equal(int64(2), broken.GetEvents(), "events read up to the broken one")
+}
+
 func (s *ApiSuite) Test_AWaitingProposalSaysWhatTheConditionMissed() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	reviewer := as(s.login("reviewer-"+t.Id.String()[:8]+"@test.example"), t.Id.String())
@@ -435,6 +664,7 @@ func (s *ApiSuite) Test_OidcSignsIn() {
 	location, err := url.Parse(start.Header.Get("Location"))
 	s.Require().NoError(err)
 	s.Require().True(strings.HasPrefix(location.String(), s.provider.server.URL+"/authorize"))
+	s.Require().Equal("S256", location.Query().Get("code_challenge_method"))
 	s.Require().NotEmpty(location.Query().Get("code_challenge"))
 	state := location.Query().Get("state")
 	s.Require().NotEmpty(state)
@@ -450,13 +680,13 @@ func (s *ApiSuite) Test_OidcSignsIn() {
 	_ = start.Body.Close()
 	location, _ = url.Parse(start.Header.Get("Location"))
 	state = location.Query().Get("state")
+	s.provider.authorize(location)
 	s.provider.email = "oidc@acme.example"
 	done, err := browser.Get(s.server.URL + auth.PathCallback + "?code=good&state=" + url.QueryEscape(state))
 	s.Require().NoError(err)
 	_ = done.Body.Close()
 	s.Require().Equal(http.StatusFound, done.StatusCode)
-	s.Require().Equal("/", done.Header.Get("Location"))
-	s.Require().True(s.provider.sawVerifier, "the exchange carried the PKCE verifier")
+	s.Require().Equal("/", done.Header.Get("Location"), "the exchange's verifier matched the challenge in the authorize URL")
 
 	withCookie := mandatev1connect.NewAuthServiceClient(&http.Client{Jar: jar}, s.server.URL)
 	me, err := withCookie.Me(context.Background(), &mandatev1.MeRequest{})
@@ -472,6 +702,7 @@ func (s *ApiSuite) Test_OidcSignsIn() {
 	s.Require().NoError(err)
 	_ = start.Body.Close()
 	location, _ = url.Parse(start.Header.Get("Location"))
+	s.provider.authorize(location)
 	unverified, err := browser.Get(s.server.URL + auth.PathCallback + "?code=good&state=" + url.QueryEscape(location.Query().Get("state")))
 	s.Require().NoError(err)
 	_ = unverified.Body.Close()
@@ -484,6 +715,7 @@ func (s *ApiSuite) Test_OidcSignsIn() {
 	s.Require().NoError(err)
 	_ = start.Body.Close()
 	location, _ = url.Parse(start.Header.Get("Location"))
+	s.provider.authorize(location)
 	bad, err := browser.Get(s.server.URL + auth.PathCallback + "?code=good&state=" + url.QueryEscape(location.Query().Get("state")))
 	s.Require().NoError(err)
 	_ = bad.Body.Close()
@@ -493,14 +725,27 @@ func (s *ApiSuite) Test_OidcSignsIn() {
 
 // fakeProvider is an OpenID provider for tests: discovery, JWKS and a
 // token endpoint that issues a signed id token for whoever the test says.
+// Like a real provider it enforces PKCE: the token endpoint refuses a
+// code_verifier that does not hash to the challenge of the authorize step.
 type fakeProvider struct {
-	server      *httptest.Server
-	key         *rsa.PrivateKey
-	email       string
-	subject     string
-	audience    string
-	verified    bool
-	sawVerifier bool
+	server   *httptest.Server
+	key      *rsa.PrivateKey
+	email    string
+	subject  string
+	audience string
+	verified bool
+	// challenge and challengeMethod are what the last authorize URL
+	// carried; authorize records them, and each exchange uses them up.
+	challenge       string
+	challengeMethod string
+}
+
+// authorize stands in for the provider's /authorize step, which the
+// test's browser does not follow: it remembers the PKCE challenge of the
+// authorize URL that pgmandate redirected to.
+func (p *fakeProvider) authorize(location *url.URL) {
+	p.challenge = location.Query().Get("code_challenge")
+	p.challengeMethod = location.Query().Get("code_challenge_method")
 }
 
 func newFakeProvider(t *testing.T) *fakeProvider {
@@ -531,7 +776,13 @@ func newFakeProvider(t *testing.T) *fakeProvider {
 			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
 			return
 		}
-		p.sawVerifier = r.PostFormValue("code_verifier") != ""
+		challenge, method := p.challenge, p.challengeMethod
+		p.challenge, p.challengeMethod = "", ""
+		digest := sha256.Sum256([]byte(r.PostFormValue("code_verifier")))
+		if method != "S256" || challenge == "" || base64.RawURLEncoding.EncodeToString(digest[:]) != challenge {
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		now := time.Now().Unix()
 		claims := map[string]any{"iss": p.server.URL, "sub": p.subject, "aud": p.audience, "exp": now + 300, "iat": now, "email": p.email, "email_verified": p.verified, "name": "Olga"}
@@ -563,6 +814,7 @@ func (s *ApiSuite) signIn(email, subject string) *http.Client {
 	_ = start.Body.Close()
 	location, err := url.Parse(start.Header.Get("Location"))
 	s.Require().NoError(err)
+	s.provider.authorize(location)
 	done, err := browser.Get(s.server.URL + auth.PathCallback + "?code=good&state=" + url.QueryEscape(location.Query().Get("state")))
 	s.Require().NoError(err)
 	_ = done.Body.Close()
@@ -724,4 +976,107 @@ func (s *ApiSuite) Test_DevLoginBindsNobody() {
 	_, err = mandatev1connect.NewPersonServiceClient(s.signIn("cy@acme.example", "cy-1"), s.server.URL).ListPersons(as("", t.Id.String()), &mandatev1.ListPersonsRequest{})
 	s.Require().NoError(err)
 	s.Require().Contains(s.eventTypes(t.Owner, cy.Id), "person.bound")
+}
+
+// A dev login session opens nothing on a server where dev login is off,
+// though both share the database; a provider's session still does.
+func (s *ApiSuite) Test_ADevLoginSessionOpensNothingWhereDevLoginIsOff() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	_, err := s.W.Kernel.Tenants.AddPerson(t.Owner, "di@acme.example", "Di", "reviewer")
+	s.Require().NoError(err)
+	devToken := s.login("di@acme.example")
+	strict := auth.NewService(s.W.Pg.App, auth.Config{
+		SessionTtl: time.Hour, PublicUrl: "http://127.0.0.1",
+		Oidc: &auth.OidcConfig{Issuer: s.provider.server.URL, ClientId: "mandate-web", ClientSecret: "shh"},
+	})
+	mux := http.NewServeMux()
+	api.New(s.W.Kernel, strict).Mount(mux)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, err = strict.Authenticate(context.Background(), devToken)
+	s.Require().Error(err)
+	s.Require().Equal(fault.Unauthenticated, fault.CodeOf(err))
+	_, err = mandatev1connect.NewAuthServiceClient(http.DefaultClient, server.URL).Me(as(devToken, ""), &mandatev1.MeRequest{})
+	s.code(err, connect.CodeUnauthenticated)
+	_, err = mandatev1connect.NewPersonServiceClient(http.DefaultClient, server.URL).ListPersons(as(devToken, t.Id.String()), &mandatev1.ListPersonsRequest{})
+	s.code(err, connect.CodeUnauthenticated)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/mandate.v1.AuthService/Me", strings.NewReader(`{}`))
+	s.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: devToken})
+	resp, err := http.DefaultClient.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusUnauthorized, resp.StatusCode)
+	var cleared bool
+	for _, c := range resp.Cookies() {
+		if c.Name == auth.CookieName && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	s.Require().True(cleared, "the cookie is cleared")
+
+	// Where dev login is on, the same session still works.
+	_, err = s.persons.ListPersons(as(devToken, t.Id.String()), &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err)
+	// A provider's session opens the strict server, which trusts the same
+	// provider.
+	oidcToken := s.sessionToken(s.signIn("di@acme.example", "di-1"))
+	_, err = mandatev1connect.NewPersonServiceClient(http.DefaultClient, server.URL).ListPersons(as(oidcToken, t.Id.String()), &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err)
+}
+
+// sessionToken is the session token in a browser's cookie for the server.
+func (s *ApiSuite) sessionToken(browser *http.Client) string {
+	s.T().Helper()
+	serverUrl, err := url.Parse(s.server.URL)
+	s.Require().NoError(err)
+	for _, c := range browser.Jar.Cookies(serverUrl) {
+		if c.Name == auth.CookieName {
+			return c.Value
+		}
+	}
+	s.Require().Fail("the browser has no session cookie")
+	return ""
+}
+
+// A provider's session opens nothing on a server that no longer trusts that
+// provider, removed or replaced, and binds nobody there; the person is then
+// still free for whoever signs in through the provider that is configured.
+func (s *ApiSuite) Test_ASessionFromAProviderNoLongerConfiguredOpensNothing() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	eve, err := s.W.Kernel.Tenants.AddPerson(t.Owner, "eve@acme.example", "Eve", "reviewer")
+	s.Require().NoError(err)
+	token := s.sessionToken(s.signIn("eve@acme.example", "eve-1"))
+
+	servers := map[string]*auth.Service{
+		"no provider": auth.NewService(s.W.Pg.App, auth.Config{SessionTtl: time.Hour, PublicUrl: "http://127.0.0.1"}),
+		"another provider": auth.NewService(s.W.Pg.App, auth.Config{
+			SessionTtl: time.Hour, PublicUrl: "http://127.0.0.1",
+			Oidc: &auth.OidcConfig{Issuer: "https://new-provider.example", ClientId: "mandate-web", ClientSecret: "shh"},
+		}),
+	}
+	for name, service := range servers {
+		_, err = service.Authenticate(context.Background(), token)
+		s.Require().Error(err, name)
+		s.Require().Equal(fault.Unauthenticated, fault.CodeOf(err), name)
+		mux := http.NewServeMux()
+		api.New(s.W.Kernel, service).Mount(mux)
+		server := httptest.NewServer(mux)
+		_, meErr := mandatev1connect.NewAuthServiceClient(http.DefaultClient, server.URL).Me(as(token, ""), &mandatev1.MeRequest{})
+		_, listErr := mandatev1connect.NewPersonServiceClient(http.DefaultClient, server.URL).ListPersons(as(token, t.Id.String()), &mandatev1.ListPersonsRequest{})
+		server.Close()
+		s.code(meErr, connect.CodeUnauthenticated)
+		s.code(listErr, connect.CodeUnauthenticated)
+	}
+	s.Require().NotContains(s.eventTypes(t.Owner, eve.Id), "person.bound", "a refused session binds nobody")
+	var issuer *string
+	s.Require().NoError(s.W.Pg.Owner.QueryRow(context.Background(), `SELECT issuer FROM mandate.persons WHERE id = $1`, eve.Id).Scan(&issuer))
+	s.Require().Nil(issuer)
+
+	// Where the provider is still the configured one, the session works.
+	_, err = s.persons.ListPersons(as(token, t.Id.String()), &mandatev1.ListPersonsRequest{})
+	s.Require().NoError(err)
+	s.Require().Contains(s.eventTypes(t.Owner, eve.Id), "person.bound")
 }

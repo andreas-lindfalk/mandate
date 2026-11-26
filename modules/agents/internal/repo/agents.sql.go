@@ -219,13 +219,16 @@ func (q *Queries) RevokeAgent(ctx context.Context, id uuid.UUID) (int64, error) 
 	return result.RowsAffected(), nil
 }
 
-const revokeToken = `-- name: RevokeToken :exec
+const revokeToken = `-- name: RevokeToken :execrows
 UPDATE mandate.agent_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 `
 
-func (q *Queries) RevokeToken(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.Exec(ctx, revokeToken, id)
-	return err
+func (q *Queries) RevokeToken(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeToken, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setAgentLimits = `-- name: SetAgentLimits :execrows

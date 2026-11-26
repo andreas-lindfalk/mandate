@@ -117,7 +117,8 @@ func (w *World) Close() {
 	w.Pg.Close()
 }
 
-// Now is the kernel's clock: the real time, or what SetNow set.
+// Now is the clock the kernel stamps new agent tokens with: the real time,
+// or what SetNow set. Every other time is the database's.
 func (w *World) Now() time.Time {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -136,6 +137,77 @@ func (w *World) SetNow(at time.Time) {
 		return
 	}
 	w.now = &at
+}
+
+// CommitUnder runs second while first's transaction, scoped by ctx, is
+// open: first has made its changes and holds their locks. Once a statement
+// whose text contains waitsIn waits on a lock, first commits, and
+// CommitUnder returns what second returned. second thus reads the state
+// from before first and writes after it, as the loser of two concurrent
+// calls does.
+func (w *World) CommitUnder(tb testing.TB, ctx context.Context, first func(tx pgx.Tx) error, waitsIn string, second func() error) error {
+	tb.Helper()
+	held, release, firstDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		firstDone <- db.InTx(ctx, w.Pg.App, func(tx pgx.Tx) error {
+			if err := first(tx); err != nil {
+				return err
+			}
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	released := false
+	releaseOnce := func() {
+		if !released {
+			released = true
+			close(release)
+		}
+	}
+	defer releaseOnce()
+	select {
+	case <-held:
+	case err := <-firstDone:
+		tb.Fatalf("the first transaction failed: %v", err)
+	case <-time.After(10 * time.Second):
+		tb.Fatal("timed out waiting for the first transaction")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- second() }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting bool
+		err := w.Pg.Owner.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND strpos(query, $1) > 0)`, waitsIn).Scan(&waiting)
+		if err != nil {
+			tb.Fatalf("pg_stat_activity: %v", err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case err := <-secondDone:
+			tb.Fatalf("the second call returned without waiting on a lock: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			tb.Fatalf("timed out waiting for %q to wait on a lock", waitsIn)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	releaseOnce()
+	if err := <-firstDone; err != nil {
+		tb.Fatalf("the first transaction did not commit: %v", err)
+	}
+	select {
+	case err := <-secondDone:
+		return err
+	case <-time.After(10 * time.Second):
+		tb.Fatal("timed out waiting for the second call")
+		return nil
+	}
 }
 
 // Applied lists the proposals the synthetic actions have applied, in order.
@@ -188,7 +260,8 @@ type Tenant struct {
 }
 
 // NewTenant creates a tenant with an owner, a reviewer and an agent with a
-// token, and purges it when the test ends.
+// token, and purges it when the test ends; a purge that fails fails the
+// test.
 func (w *World) NewTenant(tb testing.TB, name string) Tenant {
 	tb.Helper()
 	ctx := context.Background()
@@ -196,7 +269,14 @@ func (w *World) NewTenant(tb testing.TB, name string) Tenant {
 	if err != nil {
 		tb.Fatalf("create tenant: %v", err)
 	}
-	tb.Cleanup(func() { _ = w.Pg.PurgeTenant(context.Background(), tenant.Id) })
+	// The purge is the one way a tenant's append-only rows leave, so every
+	// test tenant doubles as a test of it: a trigger that blocked the cascade
+	// fails the test that left the rows.
+	tb.Cleanup(func() {
+		if err := w.Pg.PurgeTenant(context.Background(), tenant.Id); err != nil {
+			tb.Errorf("purge tenant: %v", err)
+		}
+	})
 	t := Tenant{Id: tenant.Id, System: actor.AsSystem(ctx, tenant.Id)}
 	suffix := tenant.Id.String()[:8]
 	owner, err := w.Kernel.Tenants.AddPerson(t.System, "owner-"+suffix+"@test.example", "Owner", tenants.RoleOwner)

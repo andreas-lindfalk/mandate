@@ -356,7 +356,13 @@ export type Proposal = Message<"mandate.v1.Proposal"> & {
   executionBasis?: ExecutionBasis | undefined;
 
   /**
-   * Why the last execution attempt left it for a person, if it did.
+   * Why it waits for a person, as a code: what the last execution attempt
+   * recorded, or what rules out executing it. One of no_mandate,
+   * risk_above_mandate, budget_spent, condition_not_met, flagged,
+   * action_not_executable, action_changed, payload_invalid, agent_revoked,
+   * action_failed, execution_failed or action_removed, or refused_ followed
+   * by the database's error code, as in refused_permission_denied. Codes
+   * may be added: handle one you do not know as "waits for a person".
    *
    * @generated from field: string skip_reason = 18;
    */
@@ -497,6 +503,10 @@ export const ProvenanceSchema: GenMessage<Provenance> = /*@__PURE__*/
  */
 export type ListProposalsRequest = Message<"mandate.v1.ListProposalsRequest"> & {
   /**
+   * One of pending, approved, rejected, executed, withdrawn, expired,
+   * would_allow or dismissed; empty for all. Any other value is refused
+   * with invalid_argument.
+   *
    * @generated from field: string status = 1;
    */
   status: string;

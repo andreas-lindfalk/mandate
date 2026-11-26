@@ -181,8 +181,9 @@ export const PersonService: GenService<{
     output: typeof AddPersonResponseSchema;
   },
   /**
-   * RemovePerson takes a person's role away for good and ends their
-   * sessions. The last owner cannot be removed.
+   * RemovePerson takes a person's role in this tenant away for good. Their
+   * next call in this tenant is refused; their sessions, which span
+   * tenants, are left alone. The last owner cannot be removed.
    *
    * @generated from rpc mandate.v1.PersonService.RemovePerson
    */

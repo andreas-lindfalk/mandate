@@ -47,8 +47,9 @@ const (
 type PersonServiceClient interface {
 	ListPersons(context.Context, *v1.ListPersonsRequest) (*v1.ListPersonsResponse, error)
 	AddPerson(context.Context, *v1.AddPersonRequest) (*v1.AddPersonResponse, error)
-	// RemovePerson takes a person's role away for good and ends their
-	// sessions. The last owner cannot be removed.
+	// RemovePerson takes a person's role in this tenant away for good. Their
+	// next call in this tenant is refused; their sessions, which span
+	// tenants, are left alone. The last owner cannot be removed.
 	RemovePerson(context.Context, *v1.RemovePersonRequest) (*v1.RemovePersonResponse, error)
 }
 
@@ -122,8 +123,9 @@ func (c *personServiceClient) RemovePerson(ctx context.Context, req *v1.RemovePe
 type PersonServiceHandler interface {
 	ListPersons(context.Context, *v1.ListPersonsRequest) (*v1.ListPersonsResponse, error)
 	AddPerson(context.Context, *v1.AddPersonRequest) (*v1.AddPersonResponse, error)
-	// RemovePerson takes a person's role away for good and ends their
-	// sessions. The last owner cannot be removed.
+	// RemovePerson takes a person's role in this tenant away for good. Their
+	// next call in this tenant is refused; their sessions, which span
+	// tenants, are left alone. The last owner cannot be removed.
 	RemovePerson(context.Context, *v1.RemovePersonRequest) (*v1.RemovePersonResponse, error)
 }
 

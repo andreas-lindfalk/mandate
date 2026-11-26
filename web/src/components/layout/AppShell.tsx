@@ -50,15 +50,24 @@ function NavItem({ to, icon, label, count, onNavigate }: { to: string; icon: Rea
 
 function TenantSwitcher({ onSelect }: { onSelect?: () => void }) {
   const session = useSession();
+  const navigate = useNavigate();
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  // A plain disclosure of buttons, not a listbox. Closing it from the
+  // keyboard or by choosing a tenant puts focus back on the trigger, so it
+  // does not drop to the page when the focused button unmounts.
+  const close = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
   React.useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") close();
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -71,10 +80,10 @@ function TenantSwitcher({ onSelect }: { onSelect?: () => void }) {
   return (
     <div className="relative" ref={ref}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-3 rounded-md border border-cream/10 bg-cream/5 px-3 py-2.5 text-left hover:bg-cream/10"
-        aria-haspopup="listbox"
         aria-expanded={open}
       >
         <div className="min-w-0 flex-1">
@@ -84,16 +93,19 @@ function TenantSwitcher({ onSelect }: { onSelect?: () => void }) {
         <ChevronsUpDown className="size-4 text-cream/50" />
       </button>
       {open ? (
-        <ul role="listbox" className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-md border border-cream/10 bg-espresso-2 py-1 shadow-popover">
+        <ul className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-md border border-cream/10 bg-espresso-2 py-1 shadow-popover">
           {session.tenants.map((tenant) => (
             <li key={tenant.tenantId}>
               <button
                 type="button"
-                role="option"
-                aria-selected={tenant.tenantId === session.tenant?.tenantId}
+                aria-current={tenant.tenantId === session.tenant?.tenantId || undefined}
                 onClick={() => {
+                  const changed = tenant.tenantId !== session.tenant?.tenantId;
                   session.selectTenant(tenant.tenantId);
-                  setOpen(false);
+                  close();
+                  // The open page belongs to the old tenant: a proposal id
+                  // there is not found in the new one, and filters carry over.
+                  if (changed) navigate("/inbox");
                   onSelect?.();
                 }}
                 className="flex w-full items-center justify-between px-3 py-2 text-left text-[14px] text-cream/80 hover:bg-cream/5 hover:text-cream"
@@ -111,7 +123,11 @@ function TenantSwitcher({ onSelect }: { onSelect?: () => void }) {
 
 function ChainStatus() {
   const chain = useQuery({ queryKey: ["chain"], queryFn: () => api.evidence.verifyChain({}), refetchInterval: 60_000 });
-  if (chain.isError) {
+  // A failed re-check keeps the last result: in TanStack Query v5 isError is
+  // also true after a failed refetch, and a broken trail must not turn into
+  // "could not check" just because the next full scan timed out.
+  if (!chain.data) {
+    if (!chain.isError) return null;
     return (
       <div className="flex items-center gap-2 text-[12px] text-cream/55" title="Trying again in a minute.">
         <ShieldQuestion className="size-3.5" />
@@ -119,14 +135,16 @@ function ChainStatus() {
       </div>
     );
   }
-  if (!chain.data) return null;
   const ok = chain.data.ok;
   return (
-    <div className={cn("flex items-center gap-2 text-[12px]", ok ? "text-cream/55" : "text-danger-on-dark")} title="Every event is hash linked to the one before it. The audit trail is recomputed from the start.">
-      {ok ? <ShieldCheck className="size-3.5 text-sand" /> : <ShieldAlert className="size-3.5" />}
-      <span>
-        {ok ? "Audit trail verified" : "The audit trail is broken"} · {Number(chain.data.events)} events
-      </span>
+    <div className={cn("flex flex-col gap-0.5 text-[12px]", ok ? "text-cream/55" : "text-danger-on-dark")} title="Every event is hash linked to the one before it. The audit trail is recomputed from the start.">
+      <div className="flex items-center gap-2">
+        {ok ? <ShieldCheck className="size-3.5 text-sand" /> : <ShieldAlert className="size-3.5" />}
+        <span>
+          {ok ? "Audit trail verified" : "The audit trail is broken"} · {Number(chain.data.events)} events
+        </span>
+      </div>
+      {chain.isError ? <span className="pl-5.5 text-cream/55">Could not re-check; this is the last result.</span> : null}
     </div>
   );
 }

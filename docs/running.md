@@ -27,7 +27,7 @@ It ends with the commands for what to do next:
 - The demo's receiver stops with the demo. Start the one it prints (`go run ./cmd/pgmandate receiver ...`) in another terminal, so that what you approve has somewhere to land. Without it a delivery retries and then shows as not delivered, and you can send it again before its deadline.
 - The token the demo prints connects your own agent ([agents.md](agents.md)). Its budget is spent, so grant a new mandate in the UI to see proposals go through by themselves.
 
-Each `make demo` adds another tenant with the same name; `make reset` starts clean. `make demo-ui-gifs` records the README's films of the UI from what the demo leaves behind, and `make demo-terminal-gif` its terminal film (with vhs and tmux).
+Each `make demo` adds another tenant with the same name; `make reset` starts clean. `make demo-ui-gifs` records the README's films of the UI: from a clean `make reset && make up && make demo`, with `make run` and the demo's receiver running, as `MANDATE_AGENT_TOKEN=<the token it printed> make demo-ui-gifs`. It needs Playwright's Chromium (`cd web && pnpm exec playwright install chromium`) and ffmpeg, and since it approves the demo's refund and grants a mandate, each recording starts from that clean reset again ([web/scripts/record-ui.mjs](../web/scripts/record-ui.mjs)). `make demo-terminal-gif` records its terminal film (with vhs and tmux).
 
 ## The quickstart's sign-in
 
@@ -83,14 +83,14 @@ export MANDATE_OIDC_ISSUER=... MANDATE_OIDC_CLIENT_ID=... MANDATE_OIDC_CLIENT_SE
 docker compose -f deploy/compose.yaml -f deploy/compose.server.yaml up -d   # --build builds this clone instead
 ```
 
-Keep both passwords and the signing key, in an `.env` file next to the compose files or a secret store: the owner password is fixed when the database volume is first created, and each start of `migrate` sets the app role's password again. This stack has its own database volume, apart from the one `make up` uses. Nobody can sign in until the provider is set, since dev login answers only on loopback. A receiver on the same machine is `http://host.docker.internal:<port>` from inside the container, a private address that needs `MANDATE_ALLOW_PRIVATE_CONNECTORS=true`; on Linux the receiver must listen on `0.0.0.0` (`-addr 0.0.0.0:8586`) to be reached that way. Then create a tenant with its first owner:
+Keep both passwords and the signing key, in an `.env` file next to the compose files or a secret store: the owner password is fixed when the database volume is first created, and each start of `migrate` sets the app role's password again. This stack has its own database volume, apart from the one `make up` uses. Dev login is refused here, since the server does not listen on loopback. Until a tenant exists, the server prints a single-use setup link to its log, valid for 30 minutes, and whoever opens it makes the first tenant and its owner: create the tenant right away, or open that link yourself. Without a provider, `pgmandate sign-in-link` in the `migrate` service gets a person back in (add `-e MANDATE_PUBLIC_URL=...` when the server is not at `http://127.0.0.1:8585`). A receiver on the same machine is `http://host.docker.internal:<port>` from inside the container, a private address that needs `MANDATE_ALLOW_PRIVATE_CONNECTORS=true`; on Linux the receiver must listen on `0.0.0.0` (`-addr 0.0.0.0:8586`) to be reached that way. Then create a tenant with its first owner:
 
 ```sh
 docker compose -f deploy/compose.yaml -f deploy/compose.server.yaml run --rm \
   migrate tenant create -name "Acme" -owner alice@acme.example -owner-name Alice
 ```
 
-The administrative commands act on the database as the application role, at the address and with the app password worked out from the owner connection, so they run where that connection is set: in the `migrate` service here.
+The administrative commands act on the database as the application role: through `MANDATE_APP_DATABASE_URL` when it is set, otherwise at the address and with the app password worked out from the owner connection. Here they run in the `migrate` service.
 
 From there the owner works in the UI. Locally the same command is `go run ./cmd/pgmandate tenant create ...`, and `go run ./cmd/pgmandate help` lists the rest.
 
@@ -121,7 +121,7 @@ From there the owner works in the UI. Locally the same command is `go run ./cmd/
 
 RDS, Aurora, Cloud SQL, AlloyDB, Azure, Supabase and Neon give you an admin role that is no superuser. Point `MANDATE_DATABASE_URL` at that admin, in a database it owns or may create in, and run `pgmandate migrate`. It creates `mandate_app` without the attributes only a superuser may set, or uses one a DBA made beforehand (`MANDATE_CREATE_APP_ROLE=false`). The admin owns the tables; the server connects as `mandate_app` only (`MANDATE_APP_DATABASE_URL`).
 
-`migrate`, and `serve` when it starts, refuse to go on when `mandate_app` could get past the rules: when it may set `session_replication_role`, or is, or through membership can act as, a role that is a superuser, bypasses row level security, creates roles, replicates, is the service's admin (`rds_superuser`, `cloudsqlsuperuser`, `azure_pg_admin` and the like), is one of Postgres's own roles with the server's files or every table (`pg_execute_server_program`, `pg_read_all_data` and the like), or owns pgmandate's schemas or tables. The error says which. Each of these gets past row level security or the append-only guard, and a role a DBA set up for convenience often has one. `migrate` also warns when the role may create objects in the schema `public`.
+`migrate`, and `serve` when it starts, refuse to go on when `mandate_app` could get past the rules: when it may set `session_replication_role`, or is, or through membership can act as, a role that is a superuser, bypasses row level security, creates roles, replicates, is the service's admin (`rds_superuser`, `cloudsqlsuperuser`, `azure_pg_admin` and the like), is one of Postgres's own roles with the server's files or every table (`pg_execute_server_program`, `pg_read_all_data` and the like), or owns pgmandate's schemas or tables, or may truncate or add triggers to them (as `GRANT ALL ON ALL TABLES` allows). The error says which. Each of these gets past row level security or the append-only guard, and a role a DBA set up for convenience often has one. `migrate` also warns when the role may create objects in the schema `public`.
 
 ## Building the image yourself
 

@@ -153,6 +153,55 @@ func (s *McpSuite) Test_TokensGateTheServer() {
 	s.Require().ElementsMatch([]string{"list_actions", "propose", "get_proposal", "list_proposals", "withdraw_proposal"}, names)
 }
 
+// Test_ARevocationEndsAnOpenSession holds that the bearer is checked on
+// every request, not once when a session starts: revoking the token, or the
+// agent, stops a session that is already open, and the refused calls leave
+// no proposal and no agent.tool_called behind.
+func (s *McpSuite) Test_ARevocationEndsAnOpenSession() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	revocations := map[string]func(token uuid.UUID) error{
+		"token": func(token uuid.UUID) error { return s.W.Kernel.Agents.RevokeToken(t.Owner, token) },
+		"agent": func(uuid.UUID) error { return s.W.Kernel.Agents.Revoke(t.Owner, t.AgentId) },
+	}
+	for _, what := range []string{"token", "agent"} {
+		token, secret, err := s.W.Kernel.Agents.IssueToken(t.Owner, t.AgentId, 1)
+		s.Require().NoError(err)
+		session, err := s.connect(secret)
+		s.Require().NoError(err)
+		_, errText := s.call(session, "list_actions", nil)
+		s.Require().Empty(errText, what)
+		callsBefore := s.toolCalls(t)
+
+		s.Require().NoError(revocations[what](token.Id), what)
+
+		_, err = session.CallTool(context.Background(), &sdk.CallToolParams{Name: "list_actions"})
+		s.Require().Error(err, "a revoked %s ends the open session", what)
+		_, err = session.CallTool(context.Background(), &sdk.CallToolParams{Name: "propose", Arguments: map[string]any{
+			"action": "tickets.create", "title": "After revocation", "payload": map[string]any{"subject": "s", "body": "b"},
+			"idempotency_key": uuid.NewString(), "rationale": "Test rationale.",
+		}})
+		s.Require().Error(err, "a revoked %s cannot propose on the open session", what)
+		_ = session.Close()
+
+		stored, err := s.W.Kernel.Proposals.List(t.Owner, proposals.Filter{})
+		s.Require().NoError(err)
+		s.Require().Empty(stored, "nothing was proposed after the %s was revoked", what)
+		s.Require().Equal(callsBefore, s.toolCalls(t), "a refused call runs no tool, so it writes no agent.tool_called")
+	}
+}
+
+// toolCalls counts the agent.tool_called events of the tenant's agent.
+func (s *McpSuite) toolCalls(t testfix.Tenant) int {
+	s.T().Helper()
+	calls := 0
+	for _, e := range s.eventTypes(t.Owner, t.AgentId) {
+		if e == "agent.tool_called" {
+			calls++
+		}
+	}
+	return calls
+}
+
 func (s *McpSuite) Test_AnAgentProposesAndSeesTheOutcome() {
 	t := s.W.NewTenant(s.T(), "Acme")
 	m, err := s.W.Kernel.Mandates.Grant(t.Owner, mandates.Input{AgentId: &t.AgentId, Actions: []string{"tickets.*"}, MaxRisk: mandates.RiskLow, BudgetCount: 2, PolicyRef: "ACME-POLICY", Days: 30})
@@ -285,13 +334,9 @@ func (s *McpSuite) Test_AnAgentProposesAndSeesTheOutcome() {
 		}
 	}
 	s.Require().Equal(16, calls, "every call, failed ones included, is in the chain")
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if p, err := s.W.Kernel.Proposals.Get(t.Owner, uuid.MustParse(second["proposalId"].(string))); err == nil && p.Status == proposals.StatusExecuted {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	stored, err := s.W.Kernel.Proposals.Get(t.Owner, uuid.MustParse(second["proposalId"].(string)))
+	s.Require().NoError(err)
+	s.Require().Equal(proposals.StatusExecuted, stored.Status, "the replayed idempotency key leaves the executed proposal as it was")
 	s.Require().True(strings.HasPrefix(t.Token, "mnd_"))
 }
 
@@ -429,6 +474,7 @@ func (s *McpSuite) Test_ARepeatedRequestIsDoneOnce() {
 	// The same key for something else is a mistake, and the agent is told.
 	_, errText = s.call(session, "propose", map[string]any{"rationale": "Test rationale.", "action": "notes.add", "title": "A note", "payload": map[string]any{"text": "other"}, "idempotency_key": "run-9:note-1"})
 	s.Require().Contains(errText, "already used")
+	s.Require().Contains(errText, "with another action or payload", "the refusal names both things the key covers")
 	s.Require().Contains(errText, "get_proposal", "a retry is pointed at reading the first, not at proposing again")
 	conflict, err := session.CallTool(context.Background(), &sdk.CallToolParams{Name: "propose", Arguments: map[string]any{
 		"action": "notes.add", "title": "A note", "payload": map[string]any{"text": "other"}, "idempotency_key": "run-9:note-1", "rationale": "Test rationale.",
@@ -442,6 +488,7 @@ func (s *McpSuite) Test_ARepeatedRequestIsDoneOnce() {
 	s.Require().Contains(errText, "use a new key")
 	_, errText = s.call(session, "propose", map[string]any{"rationale": "Test rationale.", "action": "notes.purge", "title": "A note", "payload": map[string]any{"text": "hello", "tags": []any{"a", "b"}}, "idempotency_key": "run-9:note-1"})
 	s.Require().Contains(errText, "already used")
+	s.Require().Contains(errText, "with another action or payload", "the same payload under another action is refused as another action, not another payload")
 
 	// Waiting for a person: the repeat is the same waiting proposal, also
 	// after the person has edited and approved it.
@@ -745,6 +792,45 @@ func (s *McpSuite) Test_WithoutAMandateEverythingWaits() {
 	s.Require().Equal(proposals.StatusPending, p["status"])
 	s.Require().Equal(mandates.SkipNoMandate, p["skipped"])
 	_ = testfix.ErrApplyFailed
+}
+
+// The instructions say what each refusal means for the key, as the
+// contract does: a key reused for another request is refused however the
+// request is corrected, so the agent is told to take a new key for it.
+func (s *McpSuite) Test_TheInstructionsSayWhatARefusalMeansForTheKey() {
+	t := s.W.NewTenant(s.T(), "Acme")
+	session, err := s.connect(t.Token)
+	s.Require().NoError(err)
+	defer session.Close() //nolint:errcheck
+
+	instructions := session.InitializeResult().Instructions
+	s.Require().NotContains(instructions, "A call refused with an error stored nothing", "not every refusal stored nothing")
+	s.Require().Contains(instructions, "A call refused with invalid_argument, permission_denied or not_found stored nothing: correct it and send it again under the same key")
+	s.Require().Contains(instructions, "one refused with rate_limited stored nothing either, so send it again unchanged after retryAfterSeconds")
+	s.Require().Contains(instructions, "A conflict on the key means it was already used for another request: to retry that one, read it with get_proposal; for a new request, use a new key.")
+	s.Require().Contains(instructions, "After internal or canceled a proposal may have been stored: send the same call under the same key")
+
+	// What the instructions say about a conflict holds: a corrected request
+	// under the used key is refused again, and under a new key it is taken.
+	s.propose(session, "tickets.create", "x", map[string]any{"subject": "s", "body": "first"}, map[string]any{"idempotency_key": "run-9:1"})
+	for _, body := range []string{"second", "second, corrected"} {
+		result, err := session.CallTool(context.Background(), &sdk.CallToolParams{Name: "propose", Arguments: map[string]any{
+			"action": "tickets.create", "title": "x", "payload": map[string]any{"subject": "s", "body": body}, "idempotency_key": "run-9:1", "rationale": "Why.",
+		}})
+		s.Require().NoError(err)
+		s.Require().True(result.IsError)
+		structured, err := json.Marshal(result.StructuredContent)
+		s.Require().NoError(err)
+		var refusal struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		s.Require().NoError(json.Unmarshal(structured, &refusal))
+		s.Require().Equal("conflict", refusal.Error.Code, string(structured))
+	}
+	taken := s.propose(session, "tickets.create", "x", map[string]any{"subject": "s", "body": "second, corrected"}, map[string]any{"idempotency_key": "run-9:2"})
+	s.Require().Equal(true, taken["created"])
 }
 
 // An agent is told when a proposal expired, can list what expired, and
