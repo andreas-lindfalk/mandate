@@ -18,6 +18,8 @@ export default defineConfig({
       "/auth/": { target: api, changeOrigin: true },
       "/mcp": { target: api, changeOrigin: true },
       "/healthz": { target: api, changeOrigin: true },
+      // The published keys, as the page that tells a receiver about them shows.
+      "/.well-known/": { target: api, changeOrigin: true },
     },
   },
   build: { outDir: "dist", emptyOutDir: true, sourcemap: false },

@@ -646,10 +646,11 @@ export function AgentsPage() {
             <Card className="border-accent/60 p-5">
               <p className="font-serif text-[18px]">Tell the receiver</p>
               <p className="mt-1 text-[13.5px] text-muted">
-                The receiver at {receiverFor.connectorUrl} accepts only deliveries for this audience, and verifies each one with the published keys. Neither is
-                a secret.
+                The receiver at {receiverFor.connectorUrl} accepts only deliveries for this tenant and audience, and verifies each one with the published
+                keys. None of them is a secret.
               </p>
               <div className="mt-3 flex flex-col gap-3">
+                {session.tenant ? <Snippet title="Tenant" text={session.tenant.tenantId} /> : null}
                 <Snippet title="Audience" text={receiverFor.audience} />
                 <Snippet title="Keys" text={`${window.location.origin}/.well-known/pgmandate-keys`} />
               </div>

@@ -22,14 +22,7 @@ AI agents have started to change things. They refund orders, change customers' a
 
 Think of pull requests for agent actions. A proposal is the pull request. A mandate is the branch rule that allows auto-merge. The log is the history.
 
-```mermaid
-%%{init: {"flowchart": {"htmlLabels": false}}}%%
-flowchart LR
-    A["Agent<br/>any framework,<br/>no credentials"] <-- "propose /<br/>decision and result" --> P[("pgmandate<br/>on your Postgres")]
-    H["Person<br/>UI or API"] -- "approve, edit, reject,<br/>grant mandates" --> P
-    P <-- "signed delivery once decided /<br/>result" --> R["Receiver<br/>holds the credential,<br/>checks the facts"]
-    R -- "does the write" --> S["Your system"]
-```
+![An agent with no credentials proposes to pgmandate on your Postgres; a person decides or grants mandates; a decided proposal goes, signed, to a receiver that holds the credential, checks the facts and writes to your system; the result goes back to the agent.](img/overview.svg)
 
 It consists of three things:
 
@@ -97,7 +90,7 @@ It is the agent's claim, not a checked fact, and it is only as good as the agent
 
 ### The terms
 
-The code, the UI and the documents use these words. The README's glossary follows this list.
+The code, the UI and the documents use these words.
 
 | Term | Meaning |
 |---|---|
@@ -113,9 +106,32 @@ The code, the UI and the documents use these words. The README's glossary follow
 | **Decision** | A person's approval, edit or rejection, or a mandate's allowance. An allowance records its *basis*: the mandate, the policy reference, the risk limit, the condition and the budget at that moment. |
 | **Connector, receiver** | Where a decision goes to be carried out. The connector is the signed webhook address defined on the action. The receiver is the service that answers there. A Go service that embeds pgmandate can instead carry an action out in its own code, in the same database transaction that decides it (a *builtin* action). |
 | **Delivery** | One decided proposal on its way to a receiver, with its attempts and the result. |
+| **Expiry** | A proposal nobody decides before its action's waiting time is up expires: nothing is done, and the agent is told. |
 | **Run** | The agent's own id for one piece of work. It groups the agent's proposals and makes its idempotency keys. |
 | **Log** | The append-only, hash linked record of everything that happened in a tenant. It can be verified without the server. The UI calls it the audit trail and shows it, with its exports, on the Evidence page; the hash linked export is called the chain. |
 | **Tenant, owner, reviewer** | The organisation. A person who defines actions, grants mandates and decides. A person who only decides. |
+
+### The same things, elsewhere
+
+Other tools use other words for much of this.
+
+| Term | Elsewhere called |
+|---|---|
+| Action | Tool call, operation |
+| Proposal | Approval request, human in the loop |
+| Condition | Policy rule, guard |
+| Mandate | Delegation, standing authorisation |
+| Budget | Spend limit |
+| Expiry | Timeout |
+| Policy reference | Policy |
+| Basis, of an allowance | Authorisation record |
+| Connector, receiver | Integration, webhook target |
+| Delivery | Webhook delivery |
+| Log | Audit log, audit trail, chain |
+| Run | Task, session |
+| Tenant, owner, reviewer | Organisation, admin, approver |
+
+The word is used elsewhere too: Google's Agent Payments Protocol calls its signed payment authorisations mandates, and an IETF draft describes agent mandates across domains. pgmandate is unrelated to both: its mandates cover any action, and they are rows in Postgres, not signed credentials.
 
 The project was first called *mandate*, and that name stays in identifiers on the wire and in the database: `MANDATE_*` variables, `Mandate-*` headers, the `mandate.v1` API, and the `mandate` schema and roles. In prose it is pgmandate.
 
@@ -162,7 +178,7 @@ pgmandate means something only when these hold. The software cannot make them ho
 
 ## Piloting it
 
-**Pilot on 0.1.0.** 0.0.1 is for trying pgmandate locally. Until 0.1.0 nothing is kept compatible: the schema and the delivery contract change, and a 0.0.1 database is reset rather than upgraded. 0.1.0 brings what a pilot needs:
+**Pilot on 0.1.0.** It is the first version a database is upgraded from rather than reset; before it nothing was kept compatible. It brings what a pilot needs:
 - a Docker-only quickstart
 - setup on managed Postgres without a superuser
 - proposal expiry
@@ -170,9 +186,9 @@ pgmandate means something only when these hold. The software cannot make them ho
 - a delivery contract that receivers are written against once
 
 **What a team does:**
-- **Run** one container and a Postgres, with sign-in through your OpenID Connect provider. Locally, the README's five minutes show the whole loop.
+- **Run** one container and a Postgres, with sign-in through your OpenID Connect provider. Locally, the README's demo shows the whole loop.
 - **Define** the actions an agent may propose: a key, a payload schema, a risk and the receiver's address.
-- **Write** a receiver for each system. It verifies the signature, does nothing twice for the same delivery id, checks the facts, and writes. `examples/refunds` does this in under 150 lines of Go today. The 0.1.0 contract is specified for any language, with a template in Python and a conformance test in phase 2.
+- **Write** a receiver for each system. It verifies the signature, does nothing twice for the same delivery id, checks the facts, and writes. `examples/refunds` does this in about a hundred lines of Go today, comments aside. The 0.1.0 contract is specified for any language, with a template in Python and a conformance test in phase 2.
 - **Change** the agent so that it proposes instead of calling the system.
 - **Grant** mandates for what may run without a person. Decide the rest in the inbox, with a Slack or Discord notice when something waits.
 
@@ -196,29 +212,7 @@ Questions and pilots start with an issue on the repository. Security reports go 
 
 pgmandate needs Postgres, tested on version 18. It does not care what language the agent is written in or which framework runs it.
 
-```mermaid
-%%{init: {"flowchart": {"htmlLabels": false}}}%%
-flowchart TB
-    subgraph agents ["Agents, any language"]
-        F1["OpenAI Agents SDK,<br/>LangGraph, Claude Agent SDK,<br/>any MCP client"]
-    end
-    GW["Gateway, optional:<br/>routes and filters calls"]
-    subgraph pgm ["pgmandate"]
-        API["agent API: MCP or HTTP"]
-        UI["UI and people API"]
-        DB[("Postgres:<br/>rules, mandates, log")]
-    end
-    subgraph yours ["Next to your systems"]
-        R1["Receiver: refunds"]
-        R2["Receiver: accounts"]
-    end
-    F1 --> GW --> API
-    F1 --> API
-    API --> DB
-    UI --> DB
-    DB --> R1
-    DB --> R2
-```
+![Agents in any language call pgmandate's agent API over MCP or HTTP, directly or through an optional gateway; people use the UI and the people's API; both write to Postgres, which holds the rules, mandates and log; decided proposals go as signed deliveries to receivers next to your systems.](img/where-it-fits.svg)
 
 ### As its own service (the main shape)
 
@@ -278,7 +272,7 @@ The roadmap turns this into tests, so that a change that breaks a shape fails in
   - Reads never pass through it.
 - **A waiting proposal expires.** It waits until a person decides it, the agent withdraws it, or its action's waiting time is up (7 days unless the owner sets another). Then it expires: nothing is done, and the agent is told. A sweep looks for due proposals every minute; a decision after the deadline is refused even before the sweep comes.
 - **Revoking a mandate** stops it from allowing anything more. What it already allowed stays decided and is delivered.
-- **It is tested as one instance.** The log and the per-agent proposal limits are built for several instances, with the database's clock and locks. That is not yet tested. The per-second call limit is kept in each instance's memory, and there is no guidance yet for high availability.
+- **Several instances can share one database.** Tests hold decisions, budgets, the per-agent proposal limits and the log across two instances, with the database's clock and locks. The per-second call limit is kept in each instance's memory, and there is no guidance yet for high availability.
 
 ## Data it keeps
 
@@ -318,7 +312,7 @@ It is not for teams without Postgres. Postgres cannot be swapped for another sto
 
 ## Status
 
-Version 0.0.1. pgmandate is an open-source project (Apache-2.0) with one maintainer. It is not a product, and nobody offers it hosted. It runs, it is tested against a real Postgres, and the demo in the README shows the core loop.
+Version 0.1.0. pgmandate is an open-source project (Apache-2.0) with one maintainer. It is not a product, and nobody offers it hosted. It runs, it is tested against a real Postgres, and the demo in the README shows the core loop.
 
 - No production users.
 - No external security review.

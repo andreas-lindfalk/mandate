@@ -7,9 +7,9 @@
 #
 # For trying it out, not for production: the database passwords are fixed
 # here, which is safe only because Postgres is reachable from this compose
-# network alone. "Running it" in the README is how to run it for real.
+# network alone. docs/running.md is how to run it for real.
 #
-# Before the first release is published, build the image from this clone:
+# To try a change of your own, build the image from this clone, as CI does:
 #   docker compose -f deploy/quickstart/compose.yaml up --build
 
 name: pgmandate-quickstart

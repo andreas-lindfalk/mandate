@@ -46,16 +46,31 @@ echo "smoke: set up tenant $tenant"
 echo "smoke: an agent, an action, a proposal and a decision"
 agent="$(call /mandate.v1.AgentService/CreateAgent "$session" '{"name": "smoke-bot", "mode": "live"}' "$tenant" | jq -r '.agent.id')"
 agent_token="$(call /mandate.v1.AgentService/IssueToken "$session" "$(jq -n --arg a "$agent" '{agentId: $a, days: 1}')" "$tenant" | jq -r '.secret')"
-call /mandate.v1.ActionService/DefineAction "$session" '{"key": "tickets.create", "description": "Open a ticket", "risk": "low",
+# The action is delivered to a receiver in the same container, as the
+# README's quickstart does it.
+audience="$(call /mandate.v1.ActionService/DefineAction "$session" '{"key": "tickets.create", "description": "Open a ticket", "risk": "low",
   "schemaJson": "{\"type\":\"object\",\"required\":[\"subject\"],\"properties\":{\"subject\":{\"type\":\"string\"}}}",
-  "connector": "webhook", "connectorUrl": "https://receiver.invalid/hooks"}' "$tenant" >/dev/null
+  "connector": "webhook", "connectorUrl": "http://127.0.0.1:8586/"}' "$tenant" | jq -r '.action.audience')"
+[ -n "$audience" ] && [ "$audience" != "null" ] || fail "the action has no audience"
+"${compose[@]}" exec -d pgmandate /pgmandate receiver -tenant "$tenant" -audience "$audience"
 proposal="$(call /mandate.agent.v1.AgentService/Propose "$agent_token" '{"action": "tickets.create", "title": "Printer jams",
   "payloadJson": "{\"subject\":\"Printer jams\"}", "idempotencyKey": "smoke:1", "rationale": "The smoke test proposes."}' | jq -r '.proposal.proposalId')"
 [ -n "$proposal" ] && [ "$proposal" != "null" ] || fail "the agent's proposal was not made"
 status="$(call /mandate.v1.ProposalService/ApproveProposal "$session" "$(jq -n --arg p "$proposal" '{id: $p, note: "Approved by the smoke test."}')" "$tenant" | jq -r '.proposal.status')"
 [ "$status" = "approved" ] || fail "the approval answered $status"
-read_status="$(call /mandate.agent.v1.AgentService/GetProposal "$agent_token" "$(jq -n --arg p "$proposal" '{proposalId: $p}')" | jq -r '.proposal.status')"
-[ "$read_status" = "approved" ] || fail "the agent reads $read_status"
+echo "smoke: the receiver carries it out, and the agent reads its result"
+delivery=""
+# The receiver may still be starting: an attempt it misses is retried.
+for _ in $(seq 1 90); do
+  read="$(call /mandate.agent.v1.AgentService/GetProposal "$agent_token" "$(jq -n --arg p "$proposal" '{proposalId: $p}')")"
+  delivery="$(jq -r '.proposal.delivery.status' <<<"$read")"
+  # Anything but pending is final: done, or a failure to report at once.
+  [ "$delivery" != "pending" ] && [ "$delivery" != "null" ] && break
+  sleep 1
+done
+[ "$(jq -r '.proposal.status' <<<"$read")" = "approved" ] || fail "the agent reads $(jq -r '.proposal.status' <<<"$read")"
+[ "$delivery" = "done" ] || fail "the delivery is $delivery: $(jq -c '.proposal.delivery' <<<"$read")"
+jq -e '.proposal.resultJson | fromjson | .reference' <<<"$read" >/dev/null || fail "no result from the receiver: $(jq -c '.proposal' <<<"$read")"
 
 echo "smoke: back in with a sign-in link from the command line"
 person_link="$("${compose[@]}" exec -T pgmandate /pgmandate sign-in-link -tenant "$tenant" -email sam@smoke.example | grep -o "$url/sign-in#[A-Za-z0-9_-]*")"

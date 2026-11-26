@@ -14,3 +14,17 @@ What others ship that overlaps with pgmandate, going by their own documentation 
 | Approval layers of the same kind | SidClaw, Countersign, OpenLeash, withHuman, Placet, awaithumans | Policy, approval and a hash-chained audit around an agent's tool calls; OpenLeash lets agents propose policies to their owner | Closest in intent. Mostly in front of the tool or in the agent's process; pgmandate's difference is the database as a second gate and the mandate as one bounded grant |
 | Pre-approved changes | ITSM standard changes, such as ServiceNow | Change types allowed without review | The same idea for IT operations. pgmandate applies it to agents' actions |
 | Payment mandates | Google's AP2 and Verifiable Intent | Signed spending limits for purchases | The nearest relative, and the source of the word. It covers payments, and the agent carries it as a credential |
+
+## In their own words
+
+Keeping credentials away from agents and asking a person before risky calls is, by late 2026, a common pattern. What others ship, as far as their own documentation says in November 2026:
+
+- **Cloud agent platforms.** [Policy in Amazon Bedrock AgentCore](https://aws.amazon.com/about-aws/whats-new/2026/03/policy-amazon-bedrock-agentcore-generally-available) (generally available since March 2026) applies Cedar policies, conditions on a call's arguments included, at the gateway between agent and tool. DigitalOcean's [Action Gateway](https://docs.digitalocean.com/products/managed-agents/action-gateway/concepts/tool-policies/) (preview) decides allow, ask or deny per tool and keeps the credentials.
+- **MCP gateways.** TrueFoundry and Permit.io's MCP gateway ask a person before a tool call, and can let an approval cover a time window or exempt a trusted agent. LangSmith's [Tool Gateway](https://docs.langchain.com/langsmith/tool-gateway-policies) (beta, November 2026) blocks a call or asks the caller to approve it. Docker's MCP gateway can require an in-session confirmation through its sandbox policies. Kong's MCP proxy and Enkrypt's gateway apply allow and deny rules and guardrails.
+- **Governance libraries.** Microsoft's [Agent Governance Toolkit](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit/) (MIT, April 2026) runs policies in the agent's process, with approvals, spend limits and a chained audit log.
+- **Approval layers of the same kind.** SidClaw wraps an MCP server with policy, approval and a hash-chained audit. Countersign ("the model proposes, deterministic code disposes") is a reference implementation with a hash-chained audit and two approvers for high risk. OpenLeash lets owners set policies that agents ask under, and lets agents propose new policies.
+- **Credential brokers**, such as Infisical Agent Vault (in preview) and Auth0's Token Vault with asynchronous authorisation, hold the secret and inject it, so the agent never sees it.
+- **Identity platforms**, such as Microsoft Entra Agent ID with Agent 365, and Okta, give agents an identity, an owner and access reviews.
+- **Agent frameworks** have approval steps inside one run.
+
+What pgmandate does differently, and what it lacks, is in the README's [Why not an API key and an approval step?](../README.md#why-not-an-api-key-and-an-approval-step).
