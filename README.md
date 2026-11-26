@@ -2,11 +2,11 @@
 
 **Agents propose. A person, or a standing permission a person granted, decides. The server checks the rules, and Postgres checks them again.**
 
-pgmandate sits between your AI agents and the systems they change. An agent holds no credentials to those systems: it can only *propose* an action, such as a refund. A person approves it in an inbox, or a *mandate* that a person granted earlier allows it at once, within a budget, a risk limit and an end date. Only then is the action sent, signed, to a small *receiver* next to your system, which holds the credential and does the write. Every step is a row in your Postgres, which checks the rules again.
+pgmandate sits between your AI agents and the systems they change. An agent holds no credentials to those systems: it can only *propose* an action, such as a refund. A person approves it in an inbox, or a *mandate* that a person granted earlier allows it at once, within a budget, a risk limit and an end date. Only then is the action sent, signed, to a small *receiver* next to your system, which holds the credential and does the write. Every step is a row in pgmandate's Postgres, which checks the rules again. Your own systems can be on any database and in any language.
 
 Think of pull requests for agent actions. A proposal is the pull request, a mandate is the branch rule that allows auto-merge, and the log is the history.
 
-![An agent with no credentials proposes to pgmandate on your Postgres. A person decides, or grants mandates that decide. A decided proposal goes, signed, to a receiver that holds the credential and writes to your system. The result goes back to the agent.](docs/img/overview.svg)
+![An agent with no credentials proposes to pgmandate, on Postgres. A person decides, or grants mandates that decide. A decided proposal goes, signed, to a receiver that holds the credential and writes to your system. The result goes back to the agent.](docs/img/overview.svg)
 
 ## See it
 
@@ -37,9 +37,29 @@ Think of pull requests for agent actions. A proposal is the pull request, a mand
 
 Agents connect over MCP or as JSON over HTTP; people use the web UI or its API. It is one binary and one Postgres, on your machine, in your cloud or on-premise. The binary is published as a container image, `ghcr.io/andreas-lindfalk/pgmandate`, for amd64 and arm64, with the web app inside. A Go service can also embed it in its own process and database. [docs/design.md](docs/design.md) shows how the parts fit.
 
+## Your stack
+
+pgmandate brings its own Postgres. That is the one thing it asks of your stack, and it can be a small managed instance kept for pgmandate alone. Everything else stays as it is:
+
+| Part | What it needs |
+|---|---|
+| pgmandate | One container, `ghcr.io/andreas-lindfalk/pgmandate`. |
+| Its database | A Postgres, tested on 18: a database on a server you already run, or a small managed one (Cloud SQL, RDS, Azure). Setup needs no superuser. |
+| Your agents | Any language and framework, over MCP or JSON over HTTP. |
+| Your receivers | Any language. The contract is HTTPS, JSON and an Ed25519 signature ([docs/receivers.md](docs/receivers.md)). |
+| Your systems | Any database: MySQL, Spanner, Oracle, Postgres or none. Run as a service, pgmandate never touches them; the receivers do. |
+| Your people | The web UI, or your own admin tool over the people API. Sign-in is through your OpenID Connect provider. |
+
+Which form fits:
+
+- **Go and Postgres:** run it as a service, or embed it, so that the decision and your own write commit in one transaction.
+- **Postgres, another language:** run it as a service, with its database on your Postgres server.
+- **No Postgres, any language,** such as Java and MySQL: run it as a service with a small Postgres of its own. A Java team writes its receivers in Java; Ed25519 is in the JDK from version 15. [docs/scope.md](docs/scope.md#on-a-stack-without-postgres-or-go) walks through it.
+- **In process, in another language:** not possible. pgmandate is a Go library or a service, and the service is the way in.
+
 ## Why Postgres
 
-**Why a database at all.** The decision, the budget it spends, the delivery it records and the log event commit in one transaction, or not at all, so two servers cannot both spend the last of a budget. The rules hold on every path that writes, whether the server, a Go service that embeds pgmandate, or the command line, so a bug in the service cannot record what they refuse. The tests check this by writing to the database directly, past the Go code. And the record of who allowed what lives next to your data, in a database you already run, back up and audit.
+**Why a database at all.** The decision, the budget it spends, the delivery it records and the log event commit in one transaction, or not at all, so two servers cannot both spend the last of a budget. The rules hold on every path that writes, whether the server, a Go service that embeds pgmandate, or the command line, so a bug in the service cannot record what they refuse. The tests check this by writing to the database directly, past the Go code. And the record of who allowed what is in a database you run, back up and audit yourself. When it is a Postgres kept for pgmandate alone, that record is also apart from your systems' data, out of reach of a bug or a person with access only to them.
 
 **Why Postgres, and not MySQL, Spanner or SQLite.** The second gate is built from features that Postgres has together and the others lack:
 
@@ -49,7 +69,7 @@ Agents connect over MCP or as JSON over HTTP; people use the web UI or its API. 
 - **The job queue in the same transaction.** Deliveries are jobs in [River](https://riverqueue.com), a queue built on Postgres, so a delivery's job commits with its decision or not at all.
 - **It runs everywhere.** Every cloud offers it managed, setup needs no superuser, and it runs on-premise and in a test container, with no licence to buy.
 
-So the store is not pluggable: the database as a second gate is the point. Nor is pgmandate a Postgres extension. It is a server that keeps its tables in schemas of their own, in a database of yours.
+So the store is not pluggable: the database as a second gate is the point. Nor is pgmandate a Postgres extension. It is a server that keeps its tables in schemas of their own, in a database of yours: on a Postgres server you already run, or on one kept for it.
 
 ## What it protects against, and what it does not
 
@@ -68,6 +88,7 @@ It is for teams that let agents make consequential changes, such as refunds, acc
 
 What it asks of you:
 
+- **One Postgres, for pgmandate.** Managed is fine. Your own systems stay on whatever database they use ([Your stack](#your-stack)).
 - **Take the agent's credentials away.** pgmandate means something only when the agent has no other way to act. That is an organisational change, not an install, and the dry run is how to get there.
 - **A receiver per system.** It verifies the signature, does nothing twice, checks the facts and writes. [examples/refunds](examples/refunds) does this in about a hundred lines of Go, comments aside.
 - **Ids, not personal data, in payloads.** Payloads are kept for the life of the tenant and cannot yet be erased one by one, so refunds, cancellations and other actions on ids make the best first pilot.

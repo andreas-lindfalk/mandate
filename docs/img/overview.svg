@@ -25,7 +25,7 @@
   <path class="box" d="M330,62 a100,12 0 0 1 200,0 v96 a100,12 0 0 1 -200,0 z" fill="#fff1e5" stroke="#fb8f44"/>
   <path d="M330,62 a100,12 0 0 0 200,0" fill="none" stroke="#fb8f44" stroke-width="1.5"/>
   <text class="title" x="430" y="104" text-anchor="middle">pgmandate</text>
-  <text class="sub" x="430" y="124" text-anchor="middle">on your Postgres:</text>
+  <text class="sub" x="430" y="124" text-anchor="middle">on Postgres:</text>
   <text class="sub" x="430" y="141" text-anchor="middle">rules, mandates, the log</text>
 
   <!-- Receiver -->

@@ -22,7 +22,7 @@ AI agents have started to change things. They refund orders, change customers' a
 
 Think of pull requests for agent actions. A proposal is the pull request. A mandate is the branch rule that allows auto-merge. The log is the history.
 
-![An agent with no credentials proposes to pgmandate on your Postgres; a person decides or grants mandates; a decided proposal goes, signed, to a receiver that holds the credential, checks the facts and writes to your system; the result goes back to the agent.](img/overview.svg)
+![An agent with no credentials proposes to pgmandate, on Postgres; a person decides or grants mandates; a decided proposal goes, signed, to a receiver that holds the credential, checks the facts and writes to your system; the result goes back to the agent.](img/overview.svg)
 
 It consists of three things:
 
@@ -210,18 +210,41 @@ Questions and pilots start with an issue on the repository. Security reports go 
 
 ## Where it fits
 
-pgmandate needs Postgres, tested on version 18. It does not care what language the agent is written in or which framework runs it.
+pgmandate needs a Postgres of its own, tested on version 18: a database on a Postgres server you already run, or a small managed instance kept for it. Nothing else in your stack has to match. Agents, receivers and the systems they change can use any language, any framework and any database.
 
 ![Agents in any language call pgmandate's agent API over MCP or HTTP, directly or through an optional gateway; people use the UI and the people's API; both write to Postgres, which holds the rules, mandates and log; decided proposals go as signed deliveries to receivers next to your systems.](img/where-it-fits.svg)
 
 ### As its own service (the main shape)
 
-This is one binary or container and a Postgres. The Postgres can be yours, on your premises, or managed by a cloud.
+This is one binary or container and a Postgres. The Postgres can be yours, on your premises, or managed by a cloud. It need not be a database your systems use: for a team on MySQL, Spanner or anything else, it is one small managed Postgres kept for pgmandate.
 - Agents connect over the agent API.
 - People use the UI, or your own UI or admin tool through the people API.
 - Receivers run next to the systems they change, so the credentials stay there.
 
 *What you write:* a receiver per system. Examples in Go are in `examples/`; the roadmap adds templates in other languages and a conformance test.
+
+### On a stack without Postgres or Go
+
+This is the service above, for a team whose systems run on another database and another language. Take a team on Java and MySQL:
+
+1. **Run** the container and a small managed Postgres for it, such as RDS or Cloud SQL. Sign-in goes through the team's OpenID Connect provider, such as Okta, Entra ID or Keycloak.
+2. **Define** each action in the UI: a key such as `orders.refund`, a payload schema, a risk, and the receiver's address.
+3. **Connect** the agent over MCP or HTTP with an agent token. It keeps its read tools and loses its credentials for writing.
+4. **Write** a receiver per system, in Java. It:
+   - fetches the trusted keys from `<server>/.well-known/pgmandate-keys` and checks the Ed25519 signature, which the JDK has supported since version 15
+   - accepts only its own audience and tenant, and nothing after the deadline
+   - checks the facts in the payload against MySQL
+   - writes, and records the delivery id in the same MySQL transaction, so that a delivery sent again is answered as before and not done twice
+   - answers done, refused or unknown
+
+   [receivers.md](receivers.md) is the contract step by step, and [delivery-v2.schema.json](delivery-v2.schema.json) describes the body for generating types.
+5. **Start** in a dry run, let people decide everything for a while, then grant mandates.
+
+What the team does not get: pgmandate's database cannot guard its MySQL tables, and a decision cannot commit in one transaction with its write. The receiver is the guard on that side, as it is for every system pgmandate delivers to.
+
+*What is missing to make this easy:* receiver templates in Java, Python and TypeScript, and a conformance test that checks a receiver against the contract. Both are in phase 2 of the [roadmap](roadmap.md).
+
+A library for another language's own process is not planned. Without Postgres underneath, it would lose the second gate; with it, it is the service with extra steps.
 
 ### Embedded in a Go service
 
@@ -281,7 +304,7 @@ The roadmap turns this into tests, so that a change that breaks a shape fails in
   - Put ids in payloads, such as a customer id or an order id, and let the receiver look up the rest in its own records.
   - Agents are told to refer to people by id.
   - Erasure that keeps the log verifiable is on the roadmap. Until then, keep actions that must carry personal data out of a pilot (see [Piloting it](#piloting-it)).
-- **Where it lives:** in your Postgres, wherever you run it. Nothing is sent elsewhere except deliveries to your receivers and, if an owner sets one, a notice to a Slack or Discord channel that carries none of the agent's text.
+- **Where it lives:** in the Postgres you run for pgmandate, wherever that is. Nothing is sent elsewhere except deliveries to your receivers and, if an owner sets one, a notice to a Slack or Discord channel that carries none of the agent's text.
 
 ## What it brings
 
@@ -304,11 +327,11 @@ Others solve parts of this: gateways and cloud agent platforms, framework approv
 Teams that let agents make consequential changes, such as refunds, account changes, messages that leave the company or edits to records, **and** that will:
 - take the agents' credentials to those systems away
 - run a receiver next to each system
-- run Postgres
+- run one Postgres for pgmandate, managed or their own
 
-In return, a person or a bounded permission a person granted decides each change, and the record says who. The agent can be written in any language and use any framework.
+In return, a person or a bounded permission a person granted decides each change, and the record says who. The agent and the receivers can be written in any language and use any framework, and the systems they change can use any database.
 
-It is not for teams without Postgres. Postgres cannot be swapped for another store, because the database as the second gate is the point.
+pgmandate's own store cannot be swapped for another, because the database as the second gate is the point. A team that will not run a Postgres for it, even a managed one, cannot use it.
 
 ## Status
 
