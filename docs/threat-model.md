@@ -101,7 +101,7 @@ What holds each of them follows. The triggers in [schema/](../schema/) are the a
 ## Known gaps
 
 - Notifier addresses are stored unencrypted, and are in every backup.
-- The receiver's checks are its own. pgmandate cannot see whether a receiver verifies the signature, checks the audience, keeps the ids it has seen, or stops at `notAfter`. `examples/webhook` does all four; a conformance test any receiver can run is planned for phase 2.
+- The receiver's checks are its own. pgmandate cannot see whether a receiver verifies the signature, checks the audience, keeps the ids it has seen, or stops at `notAfter`. `examples/webhook` does all four; a conformance test any receiver can run is next in the [roadmap](roadmap.md#next-for-a-first-pilot).
 - An *unknown* delivery waits for a person, with nothing to remind them yet beyond the inbox.
 - A condition's text is written by an owner and kept in the log as written. An owner who puts personal data in a condition cannot erase it.
 - The log's digests are SHA-256 without a salt. They show that content changed; they do not hide short or guessable content (an order id, a short note) from someone who can read the log and guess it.

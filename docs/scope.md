@@ -131,7 +131,7 @@ Other tools use other words for much of this.
 | Run | Task, session |
 | Tenant, owner, reviewer | Organisation, admin, approver |
 
-The word is used elsewhere too: Google's Agent Payments Protocol calls its signed payment authorisations mandates, and an IETF draft describes agent mandates across domains. pgmandate is unrelated to both: its mandates cover any action, and they are rows in Postgres, not signed credentials.
+The word is used elsewhere too: the Agent Payments Protocol, begun at Google and now at the FIDO Alliance, calls its signed payment authorisations mandates, and an IETF draft describes agent mandates across domains. pgmandate is unrelated to both: its mandates cover any action, and they are rows in Postgres, not signed credentials.
 
 The project was first called *mandate*, and that name stays in identifiers on the wire and in the database: `MANDATE_*` variables, `Mandate-*` headers, the `mandate.v1` API, and the `mandate` schema and roles. In prose it is pgmandate.
 
@@ -188,11 +188,11 @@ pgmandate means something only when these hold. The software cannot make them ho
 **What a team does:**
 - **Run** one container and a Postgres, with sign-in through your OpenID Connect provider. Locally, the README's demo shows the whole loop.
 - **Define** the actions an agent may propose: a key, a payload schema, a risk and the receiver's address.
-- **Write** a receiver for each system. It verifies the signature, does nothing twice for the same delivery id, checks the facts, and writes. `examples/refunds` does this in about a hundred lines of Go today, comments aside. The delivery contract is specified for any language, with a template in Python and a conformance test in phase 2.
+- **Write** a receiver for each system. It verifies the signature, does nothing twice for the same delivery id, checks the facts, and writes. `examples/refunds` does this in about a hundred lines of Go today, comments aside. The delivery contract is specified for any language, and a Go receiver kit and a conformance test any receiver can run come next in the [roadmap](roadmap.md#next-for-a-first-pilot).
 - **Change** the agent so that it proposes instead of calling the system.
 - **Grant** mandates for what may run without a person. Decide the rest in the inbox, with a Slack or Discord notice when something waits.
 
-**From Python today.** There is no Python client yet; that is phase 2.
+**From Python today.** There is no Python client yet; it is in the [roadmap](roadmap.md#expected-by-adopters).
 - A LangGraph agent reaches pgmandate over MCP through `langchain-mcp-adapters`.
 - `propose` answers at once, or within two seconds if a mandate allows it.
 - `get_proposal` waits up to 50 seconds per call.
@@ -242,7 +242,7 @@ This is the service above, for a team whose systems run on another database and 
 
 What the team does not get: pgmandate's database cannot guard its MySQL tables, and a decision cannot commit in one transaction with its write. The receiver is the guard on that side, as it is for every system pgmandate delivers to.
 
-*What is missing to make this easy:* receiver templates in Java, Python and TypeScript, and a conformance test that checks a receiver against the contract. Both are in phase 2 of the [roadmap](roadmap.md).
+*What is missing to make this easy:* receiver templates in Java, Python and TypeScript, and a conformance test that checks a receiver against the contract. The conformance test comes next in the [roadmap](roadmap.md#next-for-a-first-pilot). Templates in Python and TypeScript follow it, and one in Java when a team needs it.
 
 A library for another language's own process is not planned. Without Postgres underneath, it would lose the second gate; with it, it is the service with extra steps.
 
@@ -270,7 +270,7 @@ With pgmandate the governed tool does something else: its body proposes and wait
 
 ### Hosted
 
-Not built, and not ruled out. Tenancy is in the schema from the first migration: row level security on every table with tenant data, a log per tenant, and removing a tenant takes its rows with it. Credentials to customers' systems live with receivers, not in pgmandate. What hosting for several organisations would still need is listed under *later* in the roadmap. Delivery contract v2, in phase 1, signs with a key pair, so a receiver holds only a public key, and the signing key is kept outside the database.
+Not built, and not ruled out. Tenancy is in the schema from the first migration: row level security on every table with tenant data, a log per tenant, and removing a tenant takes its rows with it. Credentials to customers' systems live with receivers, not in pgmandate. What hosting for several organisations would still need is listed under *Later* in the roadmap. Delivery contract v2 signs with a key pair, so a receiver holds only a public key, and the signing key is kept outside the database.
 
 ### Your own UI
 
@@ -314,7 +314,7 @@ Others solve parts of this: gateways and cloud agent platforms, framework approv
 
 - **The mandate as one bounded grant.** A named person grants an agent a set of actions with a risk limit, a [rule on the payload](#rules-on-the-payload), a budget, a policy reference and an end date. It is one row, and every decision it allows cites it. Each part exists elsewhere. Putting them in one row a person grants, on your own database, is what pgmandate does.
 - **The database as a second gate.** Postgres checks the rules again, and evaluates the payload rule itself on the payload actually executed. Gateways also apply rules to a call's arguments, but only in the gateway. Here a bug in the service cannot allow what the rules refuse. This guards against bugs, not against a compromised service. Whoever holds the server's signing key can make a receiver act, which is why the receiver checks the facts.
-- **The reasoning kept with the decision.** Every proposal must carry the agent's rationale, and may carry its evidence and provenance (the [justification](#the-agents-justification-kept-with-the-decision)). It is kept unchanged beside the decision and named in the log. In November 2026 we found no other approval tool that requires it.
+- **The reasoning kept with the decision.** Every proposal must carry the agent's rationale, and may carry its evidence and provenance (the [justification](#the-agents-justification-kept-with-the-decision)). It is kept unchanged beside the decision, shown to the person apart from what pgmandate checked, and named in the log by digest. Others can require a justification as a rule on a tool, as Preloop does; here no proposal is made without one.
 
 **What it shares with others,** without leading with it:
 
