@@ -100,7 +100,13 @@ In this order. A dry run needs no receiver, so the first three serve the dry run
 
 Claims the project makes, turned into tests and write-ups. None of it adds a feature. In this order:
 
-1. **The two evaluators fuzzed against each other.** A condition is evaluated in Go and again in SQL, and the log's numbers are written in Go and read as `jsonb`. A fuzz test feeds both sides the same conditions and payloads and fails on any difference. Today a table of hand-picked cases holds them together. It comes first: it is small, and the replay above rests on the SQL side being the truth.
+1. **The two evaluators fuzzed against each other.** Built. A condition is evaluated in Go and again in SQL, and the log's numbers are written in Go and read as `jsonb`. Tests make conditions, plans, payloads and numbers from a seed, run each through both sides, and fail on any difference; two fuzz targets cover the logic that needs no database. A normal run is short, and a hunt runs millions of cases. The first runs found four things, each fixed with its case kept in the tests ([decisions.md](decisions.md)):
+   - the database's check of a plan answered NULL for a plan with a field missing, and a CHECK constraint passes on NULL
+   - the same check took a plan with a field of another operator, which the service cannot read
+   - the compiler took an empty field name, which the database's check refuses
+   - the canonical form left one kind of number unexpanded that `jsonb` spells out, so its digest changed through the database
+
+   None let a mandate allow what it should not. Compiled conditions agreed between the two evaluators from the first run.
 2. **Model-based tests against the database.** A small reference model of a proposal's and a delivery's states, written by hand in Go. A test fires random sequences of operations straight at the database, under random scopes: an agent, a person, the system, another tenant. After each step it checks what must always hold:
    - a decided proposal stays decided
    - a mandate's spend never passes its budget

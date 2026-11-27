@@ -3,6 +3,7 @@ package events
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -52,6 +53,25 @@ func TestCanonicalReplacesNulInStringsAndKeys(t *testing.T) {
 	again, err := canonicalJson(got)
 	require.NoError(t, err)
 	require.Equal(t, string(got), string(again), "canonical form is stable")
+}
+
+// Found by random numbers against jsonb (jsonb_random_test.go): the
+// canonical form had a bound of its own, which counted the zero before the
+// point, so a number that fits kept its exponent and its digest changed
+// through the database.
+func TestANumberThatFitsIsAlwaysSpelledOut(t *testing.T) {
+	require.Equal(t, "5"+strings.Repeat("0", MaxIntegerDigits-1), plainDecimal("0.5e131072"))
+	widest := "0." + strings.Repeat("9", MaxIntegerDigits+MaxDecimalDigits) + "e131072"
+	require.Equal(t, strings.Repeat("9", MaxIntegerDigits)+"."+strings.Repeat("9", MaxDecimalDigits), plainDecimal(widest))
+	for _, n := range []string{"0.5e131072", widest, "1e131071", "0e-16383", "-0.0e5"} {
+		require.True(t, NumberFits(n), n[:min(len(n), 40)])
+		require.NotContains(t, plainDecimal(n), "e", n[:min(len(n), 40)])
+	}
+	// One that does not fit is left as written, whichever bound it passes.
+	for _, n := range []string{"1e131072", "1.5e-16383", "0e-16384", "5E999999999"} {
+		require.False(t, NumberFits(n), n)
+		require.Equal(t, n, plainDecimal(n), n)
+	}
 }
 
 func TestNumbersPostgresCannotKeepAreNotSpelledOut(t *testing.T) {

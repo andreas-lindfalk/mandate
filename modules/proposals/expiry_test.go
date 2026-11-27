@@ -287,6 +287,13 @@ func (s *ExpirySuite) Test_ADecisionAndTheSweepHaveOneWinner() {
 		}()
 		wg.Wait()
 		s.Require().NoError(expireErr)
+		// The sweep skips a row that a decision holds locked. When that
+		// decision is then refused as too late, the proposal is still
+		// pending after this one sweep, and the next sweep expires it.
+		if s.status(t, p.Id) == proposals.StatusPending {
+			_, err := s.W.Kernel.Proposals.ExpireDue(t.System)
+			s.Require().NoError(err)
+		}
 		final := s.status(t, p.Id)
 		s.Require().Contains([]string{proposals.StatusApproved, proposals.StatusExpired}, final)
 		if final == proposals.StatusApproved {
