@@ -54,7 +54,7 @@ What holds each of them follows. The triggers in [schema/](../schema/) are the a
 - Every new proposal has a rationale, and the rationale, the evidence and the provenance are never changed, by a person deciding either. Evidence and provenance are held to their shape.
 - An agent's proposals beyond its limits are refused, counted under a lock so that concurrent proposals cannot pass them.
 - A notifier's address is written by an owner and read only by a transaction scoped as the system, through `notifier_of`; the application role may write the column but has no right to read it. It must be a Slack or Discord incoming webhook address.
-- A condition's plan is held to the shape the compiler writes: known operators, paths into the payload or the action, number, string or boolean literals, bounded in depth and size.
+- A condition's plan is held to the shape the compiler writes: known operators, each with exactly its own fields, paths into the payload or the action, number, string or boolean literals, bounded in depth and size.
 - Only the agent that made a proposal withdraws it, only while it waits, and nothing else changes with it.
 - The budget, the agent's limits and the last owner are counted after a lock, which holds only under read committed; the service's transactions begin read committed whatever the server's default, and an execution, a proposal or a change to people under another isolation level is refused rather than counted wrongly.
 - A payload with an ambiguous key is refused.

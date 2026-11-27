@@ -352,9 +352,11 @@ func PlainLength(number string) int {
 // NumberFits says whether a JSON number can be stored as Postgres keeps it.
 func NumberFits(number string) bool {
 	_, whole, fraction, exponent, ok := splitNumber(number)
-	if !ok {
-		return false
-	}
+	return ok && partsFit(whole, fraction, exponent)
+}
+
+// partsFit is NumberFits for a number already split.
+func partsFit(whole, fraction string, exponent int) bool {
 	point := len(strings.TrimLeft(whole, "0")) + exponent
 	return point <= MaxIntegerDigits && len(fraction)-exponent <= MaxDecimalDigits
 }
@@ -366,16 +368,16 @@ func NumberFits(number string) bool {
 func plainDecimal(number string) string {
 	// A number Postgres cannot store is left as written rather than spelled
 	// out: an exponent chosen by a caller must not choose how much memory
-	// this takes.
+	// this takes. NumberFits is the one test of that, the same one a payload
+	// is refused by, so a number that fits is always spelled as jsonb gives
+	// it back. A bound of its own here once differed from it by the zero
+	// before the point, and 0.5e131072 kept its exponent.
 	sign, whole, fraction, exponent, ok := splitNumber(number)
-	if !ok {
+	if !ok || !partsFit(whole, fraction, exponent) {
 		return number
 	}
 	digits := whole + fraction
 	point := len(whole) + exponent
-	if point > MaxIntegerDigits || 1-point > MaxDecimalDigits || len(digits) > MaxIntegerDigits+MaxDecimalDigits {
-		return number
-	}
 	switch {
 	case point <= 0:
 		digits = strings.Repeat("0", 1-point) + digits

@@ -331,6 +331,10 @@ func checkPath(path []string) error {
 		return conditionError("a field in the condition is at most %d levels deep", maxPathLength)
 	}
 	for _, key := range path[1:] {
+		// The database's check of a plan takes no empty name either.
+		if key == "" {
+			return conditionError("a field name in the condition cannot be empty")
+		}
 		if len(key) > maxKeyLength {
 			return conditionError("a field name in the condition is at most %d bytes", maxKeyLength)
 		}

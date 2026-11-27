@@ -2,6 +2,25 @@
 
 Newest first. A decision that changes the rules also changes `AGENTS.md`. A decision that changes what pgmandate is also changes [scope.md](scope.md).
 
+## 2026-11-27: the two evaluators held together by generated cases
+
+The first item of the roadmap's evidence track. A condition is evaluated by the service and again by the database, and a table of cases written by hand held the two together. Now cases made from a seed do too.
+
+- **A seed and a generator, not Go's fuzzing, where the database is the other side.** Go's fuzzer runs each worker as its own process and steers by coverage of Go code. A comparison with Postgres needs one database and gains nothing from that coverage. So these tests make cases from a seed, send them to the database five hundred at a time, and log the seed. A normal run is short and always the same; `MANDATE_RANDOM_CASES` and `MANDATE_RANDOM_SEED` make a hunt of it. Go's fuzzing is used where no database is needed: the decimal comparison, held to `math/big`, and the compiler with its evaluator.
+- **The generator aims.** Cases made blindly answered unknown four times in five, since a condition seldom named a field the payload had. The generator writes the payload first and aims the condition at its fields and values, so true, false and unknown each get a fair share, and equality is met across spellings of one number.
+- **What is claimed, exactly:**
+  - A condition the compiler takes gives a plan the database's check accepts, and both evaluators give it the same answer on any payload.
+  - A plan the database's check accepts, however it got there, the service can read, reads as the same plan, and answers alike. The service reads it as the database stores it, where a key written twice is there once.
+  - A plan the check refuses is never stored, so nothing is claimed for it.
+  - A number the service says Postgres can store, `jsonb` stores and gives back spelled as the canonical form spells it, and a document's digest is the same before and after.
+- **Four findings, none of which let a mandate allow what it should not.** Compiled conditions agreed from the first run.
+  1. **The database's check of a plan could answer NULL** (migration `0004`). A node with a field missing made the check NULL, not false, and a CHECK constraint passes on NULL. Inside an and, or or not it was worse: the node was skipped and the plan counted as valid. Such a node evaluates to unknown, which never allows, but the check promised more than it held.
+  2. **The check looked only at the fields an operator uses** (the same migration). A comparison could carry an `args` of any shape, which the service cannot read, so a row written past the service could make it fail on that mandate. Each node now carries exactly its operator's fields. The check also no longer leans on the order in which Postgres evaluates an OR.
+  3. **The compiler took an empty field name,** as in `payload[""]`, which the database's check refuses. A grant would have failed with the database's error. The compiler now refuses it in words a person can act on. The database was not loosened: an empty name is more likely a mistake than a field.
+  4. **The canonical form had a bound of its own for numbers,** which counted the zero before the point. So `0.5e131072`, which Postgres stores, kept its exponent in the canonical form while `jsonb` spelled it out, and its digest changed through the database. The canonical form now asks `NumberFits`, the one test a payload is refused by. A number that does not fit is left as written; a narrow band of them was spelled out before. No payload holds such a number, since the service refuses them.
+- **A stricter check must never keep a mandate from being revoked.** Postgres holds a CHECK on every update of a row, a revocation included. A row written past the service under the old check could fail the new one, and then it could not be revoked. A review of this change found that, and a test showed it. So `0004` also replaces the constraint: a live mandate's plan is checked, a revoked one's is not, since nothing evaluates it again. A mandate is never inserted revoked and never changed except to revoke it, so every plan is still checked when it is written. The constraint is added as NOT VALID, which leaves existing rows unread. The service itself only ever stored plans its compiler wrote, and those pass.
+- **A finding is kept as a case.** Each of the four is in the hand-written tests with its fix, so it stays fixed whatever the seed.
+
 ## 2026-11-27: the roadmap after 0.1.0
 
 Phase 1 is built and released, and a first pilot is being prepared, starting as a dry run. Before choosing what comes next, the project was reviewed from several angles: an audit of the code, a first user's walk through the documentation, a ranking of the known gaps, the open-source relatives, the platforms and gateways, the standards, what practitioners ask for, and recent research. The roadmap is rewritten from that.

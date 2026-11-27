@@ -98,7 +98,12 @@ func TestCompileCondition(t *testing.T) {
 		"payload.code == \"a\x00\"":          "NUL",
 		`payload[payload.k] == 1`:            "index that is not a literal string",
 		`payload.a.b.c.d.e.f.g.h.i.j.k == 1`: "levels deep",
-		`payload == {"a": 1}`:                "the payload as a whole",
+		// The database's check of a plan takes no empty name, so the
+		// compiler says so first, in words a person can act on.
+		`payload[""] == 1`:        "cannot be empty",
+		`payload.name[""].n == 1`: "cannot be empty",
+		`has(payload[""].a)`:      "cannot be empty",
+		`payload == {"a": 1}`:     "the payload as a whole",
 		strings.Repeat("payload.a==1||", 110) + "payload.a==1": "more than 100 parts",
 		strings.Repeat(" ", 2001):                              "at most 2000 characters",
 	} {

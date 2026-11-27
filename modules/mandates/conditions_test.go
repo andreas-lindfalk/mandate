@@ -239,8 +239,27 @@ func (s *ConditionsSuite) Test_TheDatabaseKeepsTheConditionAsGranted() {
 		"empty and":          `{"op":"and","args":[]}`,
 		"not of two":         `{"op":"not","args":[{"op":"has","path":["payload","a"]},{"op":"has","path":["payload","b"]}]}`,
 		"has on action":      `{"op":"has","path":["action"]}`,
-		"too deep":           deep,
-		"too big":            `{"op":"in","path":["payload","n"],"values":["` + strings.Repeat("x", 20_000) + `"]}`,
+		// Found by random plans (evaluators_random_test.go): the check
+		// answered NULL for these, and a CHECK passes on NULL; inside an
+		// and, or or not, the node was skipped and the plan passed.
+		"no path":                 `{"op":"==","value":1}`,
+		"no value":                `{"op":"==","path":["payload","n"]}`,
+		"no fields":               `{"op":"=="}`,
+		"no path in has":          `{"op":"has"}`,
+		"no values":               `{"op":"in","path":["payload","n"]}`,
+		"no op":                   `{"path":["payload","n"],"value":1}`,
+		"an op that is no string": `{"op":1,"path":["payload","n"],"value":1}`,
+		"a part with no fields":   `{"op":"and","args":[{"op":"=="}]}`,
+		"a part with no path":     `{"op":"or","args":[{"op":"has","path":["payload","a"]},{"op":"==","value":1}]}`,
+		"a not of no fields":      `{"op":"not","args":[{"op":"in"}]}`,
+		// A field of another op, which the service cannot read.
+		"args on a comparison": `{"op":"==","path":["payload","n"],"value":1,"args":"x"}`,
+		"args on has":          `{"op":"has","path":["payload","n"],"args":[]}`,
+		"a value on has":       `{"op":"has","path":["payload","n"],"value":1}`,
+		"values on ==":         `{"op":"==","path":["payload","n"],"value":1,"values":[1]}`,
+		"a path on and":        `{"op":"and","args":[{"op":"has","path":["payload","a"]}],"path":["payload","a"]}`,
+		"too deep":             deep,
+		"too big":              `{"op":"in","path":["payload","n"],"values":["` + strings.Repeat("x", 20_000) + `"]}`,
 	} {
 		s.Require().False(s.validPlan(t.Owner, json.RawMessage(plan)), name)
 		s.invalid(t.Owner, insert, t.Id, "payload.n == 1", plan)

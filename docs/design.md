@@ -49,6 +49,10 @@ At the grant the service parses and type-checks the condition with cel-go, compi
 - numbers compare exactly as decimals, strings by their bytes (collation "C"), booleans only by equality;
 - a step into anything but an object, a missing field, or a value of another type than the literal is unknown, as SQL's NULL: `&&` and `||` follow SQL's three-valued logic, `!` keeps unknown, and only true allows.
 
+Two kinds of test hold them to that. One is a table of cases written by hand. The other makes conditions, plans and payloads from a seed, runs each through both evaluators, and fails on any difference (`modules/mandates/evaluators_random_test.go`). A third does the same for the log's numbers: what the canonical form writes is what `jsonb` gives back (`pkg/events/jsonb_random_test.go`).
+
+A plan is held to the shape the compiler writes by a check in the database, when it is written and for as long as its mandate is live: each node carries exactly the fields of its operator, and the check answers true or false, never NULL, which a CHECK constraint would let through. A revoked mandate's plan is not checked again, so that no later tightening of the check can keep a mandate from being revoked.
+
 The execution's basis records the condition, and the delivery carries it to the receiver.
 
 ## The agent's justification
