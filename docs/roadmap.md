@@ -113,7 +113,7 @@ Claims the project makes, turned into tests and write-ups. None of it adds a fea
 5. **An attack on its own privilege model, written up.** The threat model ends with "no independent person has tried to break it". Until one has, the author tries: the setting that allows a purge, the functions that run with their owner's rights, advisory locks any session can take, the check on a receiver's address. Each finding gets a test that fails before its fix. An outside review still comes after.
 6. **Web tests that exercise behaviour.** Most of the web app's tests match the source text. They are replaced by tests that render a component or drive a browser, a page at a time, as pages are touched.
 
-**Upkeep:** the release image is built by cross-compiling, without emulation, and the build has a time limit. A release build hung under emulation once.
+**Upkeep, done:** the release image is built by cross-compiling, without an emulator, and the build has a time limit. A release build hung under emulation once. Every pull request that touches the image now builds it for both architectures, as a release does.
 
 ## Being found
 

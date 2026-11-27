@@ -1,6 +1,9 @@
 # The quickstart, end to end, as a newcomer with only Docker would run it:
 # build the image, start it, set it up from the link in the log, and have an
 # agent propose and a person decide (deploy/quickstart/smoke.sh).
+#
+# A second job builds the image as a release does, for both architectures and
+# without an emulator, so a release build that cannot work fails here first.
 name: quickstart
 on:
   push:
@@ -22,9 +25,11 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/quickstart.yml"
+      - ".github/workflows/release.yml"
 jobs:
   quickstart:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Start
@@ -34,3 +39,17 @@ jobs:
       - name: Logs
         if: failure()
         run: docker compose -f deploy/quickstart/compose.yaml logs
+  release-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build for both architectures, as a release does
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: VERSION=ci

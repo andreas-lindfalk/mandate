@@ -141,4 +141,4 @@ Push a tag, or publish a release on GitHub with a new tag:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-The `release` workflow builds the image for amd64 and arm64 and publishes it as `ghcr.io/andreas-lindfalk/pgmandate:v0.1.0` and `:latest`, reporting `v0.1.0` as its version. The package takes the public repository's visibility, so anyone can pull it; its settings are under your profile's *Packages* tab, *pgmandate*, *Package settings*.
+The `release` workflow builds the image for amd64 and arm64, by cross-compiling on the runner, and publishes it as `ghcr.io/andreas-lindfalk/pgmandate:v0.1.0` and `:latest`, reporting `v0.1.0` as its version. The package takes the public repository's visibility, so anyone can pull it; its settings are under your profile's *Packages* tab, *pgmandate*, *Package settings*.
